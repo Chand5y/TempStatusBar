@@ -21,6 +21,11 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
       - name: Build Debug APK
         run: gradle assembleDebug --stacktrace
 
@@ -29,4 +34,3 @@ jobs:
         with:
           name: TempMonitor-APK
           path: app/build/outputs/apk/debug/*.apk
-          
