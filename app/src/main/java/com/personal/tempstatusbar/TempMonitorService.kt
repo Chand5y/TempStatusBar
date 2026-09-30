@@ -57,7 +57,8 @@ class TempMonitorService : Service() {
             .setOnlyAlertOnce(true)
             .build()
 
-        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notif)
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        manager?.notify(NOTIF_ID, notif)
     }
 
     private fun createIcon(text: String): Icon {
@@ -87,7 +88,8 @@ class TempMonitorService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val chan = NotificationChannel(CHANNEL_ID, "Live Temp", NotificationManager.IMPORTANCE_LOW)
             chan.setShowBadge(false)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(chan)
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            manager?.createNotificationChannel(chan)
         }
     }
 }
