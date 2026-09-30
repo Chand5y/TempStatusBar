@@ -1,5 +1,6 @@
 package com.personal.tempstatusbar
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -16,7 +17,6 @@ import android.graphics.drawable.Icon
 import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
 
 class TempMonitorService : Service() {
 
@@ -39,11 +39,10 @@ class TempMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+        val notif = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Temp Monitor Active")
             .setSmallIcon(createIcon("--"))
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
         startForeground(NOTIF_ID, notif)
@@ -51,12 +50,11 @@ class TempMonitorService : Service() {
     }
 
     private fun updateNotification(temp: Int) {
-        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+        val notif = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Battery: $temp°C")
             .setSmallIcon(createIcon("$temp°"))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notif)
