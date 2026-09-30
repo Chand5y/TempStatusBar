@@ -7,8 +7,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="Temp Monitor"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:label="Temp Monitor">
 
         <activity
             android:name=".MainActivity"
@@ -22,6 +21,10 @@
         <service
             android:name=".TempMonitorService"
             android:foregroundServiceType="specialUse"
-            android:exported="false" />
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Status bar temperature display" />
+        </service>
     </application>
 </manifest>
