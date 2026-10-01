@@ -28,7 +28,6 @@ class TempMonitorService : Service() {
     private var lastLoggedMa = -999
     private var isScreenOn = true
 
-    // Reusable Graphics Memory (Zero GC pauses)
     private val iconSize = 64
     private val cachedBitmap = Bitmap.createBitmap(iconSize, iconSize, Bitmap.Config.ARGB_8888)
     private val cachedCanvas = Canvas(cachedBitmap)
@@ -43,7 +42,7 @@ class TempMonitorService : Service() {
         override fun run() {
             if (isScreenOn && settings.showNotification && settings.showPowerMetrics) {
                 checkPowerDeltaAndUpdate()
-                backgroundHandler.postDelayed(this, 1500L) // 1.5s sampling strictly when screen is active
+                backgroundHandler.postDelayed(this, 1500L)
             }
         }
     }
@@ -64,7 +63,6 @@ class TempMonitorService : Service() {
                         lastPlugged = plugged
                         pushNotificationUpdate()
 
-                        // Commit delta to SQLite asynchronously
                         backgroundHandler.post {
                             val chargeType = when (plugged) {
                                 BatteryManager.BATTERY_PLUGGED_AC -> "Fast AC Charger"
@@ -86,7 +84,7 @@ class TempMonitorService : Service() {
                 }
                 Intent.ACTION_SCREEN_OFF -> {
                     isScreenOn = false
-                    backgroundHandler.removeCallbacks(powerRunnable) // Drop straight into kernel sleep
+                    backgroundHandler.removeCallbacks(powerRunnable)
                 }
             }
         }
@@ -118,13 +116,12 @@ class TempMonitorService : Service() {
         val cutoffLimit = settings.cutoffTemp
         val resumeLimit = settings.resumeTemp
 
-        // 1. Warning Audio & Heads-up Notification
         if (temp >= warnLimit) {
             HardwareThermalControl.playThermalAlert()
 
             val alertNotif = Notification.Builder(this, ALERT_CHANNEL_ID)
                 .setContentTitle("THERMAL ALERT: ${temp}°C")
-                .setContentText("Hardware thermal warning limit ($warnLimit°C) reached!")
+                .setContentText("Hardware warning threshold ($warnLimit°C) reached!")
                 .setSmallIcon(drawIcon("!"))
                 .setColor(Color.RED)
                 .setOngoing(true)
@@ -136,12 +133,9 @@ class TempMonitorService : Service() {
             manager?.cancel(ALERT_NOTIF_ID)
         }
 
-        // 2. Hardware PMIC Charging Cutoff
         if (temp >= cutoffLimit && isCharging && !HardwareThermalControl.isChargingThrottled) {
             HardwareThermalControl.setChargingEnabled(false)
-        } 
-        // 3. PMIC Charging Resume Hysteresis
-        else if (temp <= resumeLimit && HardwareThermalControl.isChargingThrottled) {
+        } else if (temp <= resumeLimit && HardwareThermalControl.isChargingThrottled) {
             HardwareThermalControl.setChargingEnabled(true)
         }
     }
@@ -151,7 +145,6 @@ class TempMonitorService : Service() {
         val wattDelta = abs(stats.wattage - lastLoggedWatts)
         val maDelta = abs(stats.currentMa - lastLoggedMa)
 
-        // Only update IPC notification if meaningful change occurred
         if (wattDelta >= 0.5 || maDelta >= 50) {
             lastLoggedWatts = stats.wattage
             lastLoggedMa = stats.currentMa
@@ -166,7 +159,7 @@ class TempMonitorService : Service() {
             return
         }
 
-        val stats = PowerHardwareHelper.readPowerStats(lastPlugged != 0)
+        val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val bodyText = if (settings.showPowerMetrics) {
             if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)"
             else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)"
