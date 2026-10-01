@@ -30,6 +30,13 @@ class MainActivity : Activity() {
     private lateinit var actualCapacityText: TextView
     private lateinit var cyclesText: TextView
 
+    // Touch Inspection Card References
+    private lateinit var detailTimeText: TextView
+    private lateinit var detailTempText: TextView
+    private lateinit var detailPowerText: TextView
+    private lateinit var detailSourceBadge: TextView
+    private lateinit var detailAppContent: TextView
+
     private lateinit var warnLabel: TextView
     private lateinit var cutoffLabel: TextView
     private lateinit var resumeLabel: TextView
@@ -51,7 +58,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        pulseView.stopAnimation() // 0% CPU footprint when minimized
+        pulseView.stopAnimation()
     }
 
     private fun buildHyperOsInterface() {
@@ -82,9 +89,7 @@ class MainActivity : Activity() {
         val statusCard = createCard(cardBg)
         val statusRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 0, 0, 0)
         }
-
         pulseView = SubtlePulseView(this).apply {
             layoutParams = LinearLayout.LayoutParams(60, 60)
         }
@@ -116,7 +121,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 0, 0, 20)
         }
-
         healthPercentText = TextView(this).apply {
             text = "--%"
             textSize = 40f
@@ -144,22 +148,89 @@ class MainActivity : Activity() {
         healthCard.addView(specRow)
         rootLayout.addView(healthCard)
 
-        // 3. CARD: Sliders & Thermal Threshold Protection
+        // 3. CARD: Thermal Timeline Chart Card
+        val chartCard = createCard(cardBg)
+        val cHeader = TextView(this).apply {
+            text = "THERMAL TIMELINE"
+            textSize = 12f
+            setTextColor(textSecondary)
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            setPadding(0, 0, 0, 15)
+        }
+        chartCard.addView(cHeader)
+
+        chartView = TemperatureChartView(this).apply {
+            this.isDarkMode = isDark
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 420)
+        }
+        chartCard.addView(chartView)
+        rootLayout.addView(chartCard)
+
+        // 4. CARD: Touch Inspection Breakdown Card (Restored)
+        val detailCard = createCard(cardBg)
+        detailTimeText = TextView(this).apply {
+            textSize = 12f
+            setTextColor(textSecondary)
+        }
+        detailCard.addView(detailTimeText)
+
+        val tempPowerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 4, 0, 6)
+        }
+        detailTempText = TextView(this).apply {
+            textSize = 32f
+            setTextColor(Color.parseColor("#FF5722"))
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        }
+        tempPowerRow.addView(detailTempText)
+
+        detailPowerText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(textPrimary)
+            setPadding(20, 18, 0, 0)
+        }
+        tempPowerRow.addView(detailPowerText)
+        detailCard.addView(tempPowerRow)
+
+        detailSourceBadge = TextView(this).apply {
+            textSize = 12f
+            setPadding(0, 0, 0, 10)
+        }
+        detailCard.addView(detailSourceBadge)
+
+        val procTitle = TextView(this).apply {
+            text = "ACTIVE APPS & BACKGROUND PROCESSES:"
+            textSize = 11f
+            setTextColor(textSecondary)
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            setPadding(0, 8, 0, 6)
+        }
+        detailCard.addView(procTitle)
+
+        detailAppContent = TextView(this).apply {
+            textSize = 12f
+            setTextColor(if (isDark) Color.parseColor("#CFD8DC") else Color.parseColor("#37474F"))
+            typeface = Typeface.MONOSPACE
+        }
+        detailCard.addView(detailAppContent)
+        rootLayout.addView(detailCard)
+
+        // 5. CARD: Sliders & Thermal Threshold Protection
         val controlCard = createCard(cardBg)
-        val cTitle = TextView(this).apply {
+        val ctrlTitle = TextView(this).apply {
             text = "HARDWARE THERMAL PROTECTION"
             textSize = 12f
             setTextColor(textSecondary)
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             setPadding(0, 0, 0, 20)
         }
-        controlCard.addView(cTitle)
+        controlCard.addView(ctrlTitle)
 
-        // Warning Alert Slider (35 - 48°C)
-        warnLabel = TextView(this).apply { setTextColor(textPrimary); textSize = 14f }
+        warnLabel = TextView(this).apply { setTextColor(textPrimary); textSize = 13f }
         controlCard.addView(warnLabel)
         val warnSeek = SeekBar(this).apply {
-            max = 13 // 35 + 13 = 48
+            max = 13
             progress = settings.warningTemp - 35
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, b: Boolean) {
@@ -174,25 +245,21 @@ class MainActivity : Activity() {
         warnLabel.text = "⚠️ Warning Sound Alert: ${settings.warningTemp}°C"
         controlCard.addView(warnSeek)
 
-        // PMIC Cutoff Slider (38 - 50°C)
-        cutoffLabel = TextView(this).apply { setTextColor(textPrimary); textSize = 14f; setPadding(0, 20, 0, 0) }
+        cutoffLabel = TextView(this).apply { setTextColor(textPrimary); textSize = 13f; setPadding(0, 16, 0, 0) }
         controlCard.addView(cutoffLabel)
         val cutoffSeek = SeekBar(this)
 
-        // PMIC Resume Slider (32 - 45°C)
-        resumeLabel = TextView(this).apply { setTextColor(textPrimary); textSize = 14f; setPadding(0, 20, 0, 0) }
+        resumeLabel = TextView(this).apply { setTextColor(textPrimary); textSize = 13f; setPadding(0, 16, 0, 0) }
         val resumeSeek = SeekBar(this)
 
         cutoffSeek.apply {
-            max = 12 // 38 + 12 = 50
+            max = 12
             progress = settings.cutoffTemp - 38
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, b: Boolean) {
                     val v = 38 + p
                     settings.cutoffTemp = v
                     cutoffLabel.text = "🛑 Cut Off Charging (PMIC): $v°C"
-
-                    // Auto-clamp resume slider to maintain 2°C hysteresis
                     if (settings.resumeTemp >= v - 1) {
                         settings.resumeTemp = v - 2
                         resumeSeek.progress = (v - 2) - 32
@@ -207,7 +274,7 @@ class MainActivity : Activity() {
         controlCard.addView(cutoffSeek)
 
         resumeSeek.apply {
-            max = 13 // 32 + 13 = 45
+            max = 13
             progress = settings.resumeTemp - 32
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, b: Boolean) {
@@ -228,7 +295,7 @@ class MainActivity : Activity() {
         controlCard.addView(resumeSeek)
         rootLayout.addView(controlCard)
 
-        // 4. CARD: Notification Toggles
+        // 6. CARD: Notification Toggles
         val toggleCard = createCard(cardBg)
         val tTitle = TextView(this).apply {
             text = "NOTIFICATION PREFERENCES"
@@ -253,6 +320,120 @@ class MainActivity : Activity() {
         val switchPower = Switch(this).apply {
             text = "Show Real-Time Wattage / Drain"
             setTextColor(textPrimary)
+            isChecked = settings.showPowerMetrics
+            setOnCheckedChangeListener { _, checked ->
+                settings.showPowerMetrics = checked
+                startService()
+            }
+        }
+        toggleCard.addView(switchPower)
+        rootLayout.addView(toggleCard)
+
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(bgCanvas)
+            isFillViewport = true
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            addView(rootLayout)
+        }
+        setContentView(scroll)
+
+        // Connect touch inspection listener
+        chartView.onRecordSelected = { r ->
+            val sdf = SimpleDateFormat("MMM dd, hh:mm:ss a", Locale.getDefault())
+            detailTimeText.text = sdf.format(Date(r.timestamp))
+            detailTempText.text = "${r.temp}°C"
+
+            val pfx = if (r.isCharging) "⚡ Charging:" else "🔋 Discharging:"
+            detailPowerText.text = "$pfx ${r.chargeType}"
+
+            if (r.isRoot) {
+                detailSourceBadge.text = "🛡️ Kernel Deep Trace (Root Access)"
+                detailSourceBadge.setTextColor(Color.parseColor("#00E676"))
+            } else {
+                detailSourceBadge.text = "📱 System Usage Log (Non-Root)"
+                detailSourceBadge.setTextColor(Color.parseColor("#29B6F6"))
+            }
+            detailAppContent.text = r.appDetails
+        }
+    }
+
+    private fun createCard(bgColor: Int): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val shape = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 48f
+                setColor(bgColor)
+            }
+            background = shape
+            setPadding(40, 36, 40, 36)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.bottomMargin = 24
+            layoutParams = lp
+        }
+    }
+
+    private fun createSpecCol(title: String, value: String, primaryColor: Int, secondaryColor: Int, parent: LinearLayout): TextView {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val tView = TextView(this).apply {
+            text = title
+            textSize = 11f
+            setTextColor(secondaryColor)
+        }
+        val vView = TextView(this).apply {
+            text = value
+            textSize = 15f
+            setTextColor(primaryColor)
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            setPadding(0, 4, 0, 0)
+        }
+        col.addView(tView)
+        col.addView(vView)
+        parent.addView(col)
+        return vView
+    }
+
+    private fun refreshDashboard() {
+        val health = BatteryHealthHelper.getHealthData(this)
+        healthPercentText.text = "${health.healthPercent}%"
+        healthStatusText.text = "• ${health.statusText}"
+        designCapacityText.text = "${health.designCapacityMah} mAh"
+        actualCapacityText.text = "${health.actualCapacityMah} mAh"
+        cyclesText.text = "${health.cycleCount}"
+
+        val stats = PowerHardwareHelper.readPowerStats(this, false)
+        pulseView.setMode(stats.isCharging)
+        livePowerText.text = if (stats.isCharging) {
+            "⚡ Charging: ${stats.wattage}W (+${stats.currentMa} mA)"
+        } else {
+            "🔋 Discharging: ${stats.currentMa} mA (-${stats.wattage}W)"
+        }
+
+        chartView.setData(dbHelper.getAllRecords())
+    }
+
+    private fun startService() {
+        val intent = Intent(this, TempMonitorService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    private fun checkPermissionsAndStartService() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
+        startService()
+    }
+}
+
             isChecked = settings.showPowerMetrics
             setOnCheckedChangeListener { _, checked ->
                 settings.showPowerMetrics = checked
