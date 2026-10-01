@@ -147,7 +147,7 @@ class TempMonitorService : Service() {
     }
 
     private fun checkPowerDeltaAndUpdate() {
-        val stats = PowerHardwareHelper.readPowerStats(lastPlugged != 0)
+        val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val wattDelta = abs(stats.wattage - lastLoggedWatts)
         val maDelta = abs(stats.currentMa - lastLoggedMa)
 
