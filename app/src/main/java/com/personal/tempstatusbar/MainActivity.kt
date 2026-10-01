@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
@@ -22,7 +23,6 @@ class MainActivity : Activity() {
     private lateinit var settings: SettingsManager
     private lateinit var pulseView: SubtlePulseView
 
-    // References
     private lateinit var livePowerText: TextView
     private lateinit var healthPercentText: TextView
     private lateinit var healthStatusText: TextView
@@ -30,7 +30,7 @@ class MainActivity : Activity() {
     private lateinit var actualCapacityText: TextView
     private lateinit var cyclesText: TextView
 
-    // Touch Inspection Card References
+    // Touch inspection references
     private lateinit var detailTimeText: TextView
     private lateinit var detailTempText: TextView
     private lateinit var detailPowerText: TextView
@@ -75,7 +75,6 @@ class MainActivity : Activity() {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
-        // Header Title
         val header = TextView(this).apply {
             text = "Battery & Thermal Shield"
             textSize = 26f
@@ -85,7 +84,7 @@ class MainActivity : Activity() {
         }
         rootLayout.addView(header)
 
-        // 1. CARD: Live Status with Subtle Animation Indicator
+        // 1. CARD: Live Status & Power Indicator
         val statusCard = createCard(cardBg)
         val statusRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -166,7 +165,7 @@ class MainActivity : Activity() {
         chartCard.addView(chartView)
         rootLayout.addView(chartCard)
 
-        // 4. CARD: Touch Inspection Breakdown Card (Restored)
+        // 4. CARD: Touch Inspection Breakdown Card
         val detailCard = createCard(cardBg)
         detailTimeText = TextView(this).apply {
             textSize = 12f
@@ -216,7 +215,7 @@ class MainActivity : Activity() {
         detailCard.addView(detailAppContent)
         rootLayout.addView(detailCard)
 
-        // 5. CARD: Sliders & Thermal Threshold Protection
+        // 5. CARD: Sliders & Threshold Protection
         val controlCard = createCard(cardBg)
         val ctrlTitle = TextView(this).apply {
             text = "HARDWARE THERMAL PROTECTION"
@@ -337,7 +336,6 @@ class MainActivity : Activity() {
         }
         setContentView(scroll)
 
-        // Connect touch inspection listener
         chartView.onRecordSelected = { r ->
             val sdf = SimpleDateFormat("MMM dd, hh:mm:ss a", Locale.getDefault())
             detailTimeText.text = sdf.format(Date(r.timestamp))
@@ -404,111 +402,12 @@ class MainActivity : Activity() {
         actualCapacityText.text = "${health.actualCapacityMah} mAh"
         cyclesText.text = "${health.cycleCount}"
 
-        val stats = PowerHardwareHelper.readPowerStats(this, false)
-        pulseView.setMode(stats.isCharging)
-        livePowerText.text = if (stats.isCharging) {
-            "⚡ Charging: ${stats.wattage}W (+${stats.currentMa} mA)"
-        } else {
-            "🔋 Discharging: ${stats.currentMa} mA (-${stats.wattage}W)"
-        }
+        // Query live hardware plug state dynamically
+        val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val plugged = batteryIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        val isPlugged = plugged != 0
 
-        chartView.setData(dbHelper.getAllRecords())
-    }
-
-    private fun startService() {
-        val intent = Intent(this, TempMonitorService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
-    }
-
-    private fun checkPermissionsAndStartService() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
-            }
-        }
-        startService()
-    }
-}
-
-            isChecked = settings.showPowerMetrics
-            setOnCheckedChangeListener { _, checked ->
-                settings.showPowerMetrics = checked
-                startService()
-            }
-        }
-        toggleCard.addView(switchPower)
-        rootLayout.addView(toggleCard)
-
-        // 5. CARD: Thermal Timeline Chart Card
-        val chartCard = createCard(cardBg)
-        chartView = TemperatureChartView(this).apply {
-            this.isDarkMode = isDark
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 460)
-        }
-        chartCard.addView(chartView)
-        rootLayout.addView(chartCard)
-
-        val scroll = ScrollView(this).apply {
-            setBackgroundColor(bgCanvas)
-            isFillViewport = true
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            addView(rootLayout)
-        }
-        setContentView(scroll)
-    }
-
-    private fun createCard(bgColor: Int): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val shape = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 48f
-                setColor(bgColor)
-            }
-            background = shape
-            setPadding(40, 36, 40, 36)
-            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            lp.bottomMargin = 28
-            layoutParams = lp
-        }
-    }
-
-    private fun createSpecCol(title: String, value: String, primaryColor: Int, secondaryColor: Int, parent: LinearLayout): TextView {
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        val tView = TextView(this).apply {
-            text = title
-            textSize = 11f
-            setTextColor(secondaryColor)
-        }
-        val vView = TextView(this).apply {
-            text = value
-            textSize = 15f
-            setTextColor(primaryColor)
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            setPadding(0, 4, 0, 0)
-        }
-        col.addView(tView)
-        col.addView(vView)
-        parent.addView(col)
-        return vView
-    }
-
-    private fun refreshDashboard() {
-        val health = BatteryHealthHelper.getHealthData(this)
-        healthPercentText.text = "${health.healthPercent}%"
-        healthStatusText.text = "• ${health.statusText}"
-        designCapacityText.text = "${health.designCapacityMah} mAh"
-        actualCapacityText.text = "${health.actualCapacityMah} mAh"
-        cyclesText.text = "${health.cycleCount}"
-
-        val stats = PowerHardwareHelper.readPowerStats(false)
+        val stats = PowerHardwareHelper.readPowerStats(this, isPlugged)
         pulseView.setMode(stats.isCharging)
         livePowerText.text = if (stats.isCharging) {
             "⚡ Charging: ${stats.wattage}W (+${stats.currentMa} mA)"
