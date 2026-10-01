@@ -10,30 +10,41 @@ class TemperatureChartView(context: Context) : View(context) {
     private var records: List<TempRecord> = emptyList()
     private var selectedIndex = -1
     var onRecordSelected: ((TempRecord) -> Unit)? = null
+    var isDarkMode = true
 
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#FF5722") // Thermal Coral
-        strokeWidth = 5f
+        color = Color.parseColor("#FF5722")
+        strokeWidth = 6f
         style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
     }
 
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2A2A2A")
-        strokeWidth = 2f
+        strokeWidth = 1.5f
     }
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#8E8E93")
-        textSize = 28f
+        textSize = 26f
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
     }
 
-    private val highlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00E5FF") // Highlighting touch line
+    private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00E5FF")
         strokeWidth = 3f
+        pathEffect = DashPathEffect(floatArrayOf(12f, 12f), 0f)
     }
 
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#00E5FF")
+        style = Paint.Style.FILL
+    }
+
+    private val dotHalo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#3300E5FF")
         style = Paint.Style.FILL
     }
 
@@ -46,47 +57,69 @@ class TemperatureChartView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Color.parseColor("#121212")) // Dark background
+
+        gridPaint.color = if (isDarkMode) Color.parseColor("#2C2C2E") else Color.parseColor("#E5E5EA")
+        textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
 
         if (records.size < 2) {
-            val emptyText = "Collecting thermal history... (Waiting for updates)"
-            canvas.drawText(emptyText, width / 2f - 240, height / 2f, textPaint)
+            val emptyMsg = "Logging thermal updates in background..."
+            val bounds = Rect()
+            textPaint.getTextBounds(emptyMsg, 0, emptyMsg.length, bounds)
+            canvas.drawText(emptyMsg, (width - bounds.width()) / 2f, height / 2f, textPaint)
             return
         }
 
-        val padding = 70f
-        val w = width - padding * 2
-        val h = height - padding * 2
+        val padX = 80f
+        val padY = 50f
+        val w = width - padX * 2
+        val h = height - padY * 2
 
-        val minTemp = (records.minOf { it.temp } - 2).coerceAtLeast(20)
-        val maxTemp = (records.maxOf { it.temp } + 2).coerceAtLeast(minTemp + 5)
+        val minTemp = (records.minOf { it.temp } - 2).coerceAtLeast(15)
+        val maxTemp = (records.maxOf { it.temp } + 2).coerceAtLeast(minTemp + 4)
 
-        // Draw horizontal grid lines
-        for (i in 0..4) {
-            val y = padding + (h / 4f) * i
-            canvas.drawLine(padding, y, width - padding, y, gridPaint)
-            val tempLabel = "${maxTemp - ((maxTemp - minTemp) / 4 * i)}°C"
-            canvas.drawText(tempLabel, 10f, y + 10, textPaint)
+        // Subtle Gridlines
+        for (i in 0..3) {
+            val y = padY + (h / 3f) * i
+            canvas.drawLine(padX, y, width - padX, y, gridPaint)
+            val lbl = "${maxTemp - ((maxTemp - minTemp) / 3 * i)}°"
+            canvas.drawText(lbl, 15f, y + 8, textPaint)
         }
 
-        // Build curve path
-        val path = Path()
         val stepX = w / (records.size - 1).toFloat()
+        val path = Path()
+        val fillPath = Path()
 
         records.forEachIndexed { i, r ->
-            val x = padding + (i * stepX)
-            val y = padding + h - ((r.temp - minTemp).toFloat() / (maxTemp - minTemp)) * h
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            val x = padX + (i * stepX)
+            val y = padY + h - ((r.temp - minTemp).toFloat() / (maxTemp - minTemp)) * h
+
+            if (i == 0) {
+                path.moveTo(x, y)
+                fillPath.moveTo(x, padY + h)
+                fillPath.lineTo(x, y)
+            } else {
+                path.lineTo(x, y)
+                fillPath.lineTo(x, y)
+            }
         }
+
+        fillPath.lineTo(padX + w, padY + h)
+        fillPath.close()
+
+        // Gradient Fill Below Curve
+        val startColor = if (isDarkMode) Color.parseColor("#44FF5722") else Color.parseColor("#22FF5722")
+        fillPaint.shader = LinearGradient(0f, padY, 0f, padY + h, startColor, Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        canvas.drawPath(fillPath, fillPaint)
         canvas.drawPath(path, linePaint)
 
-        // Draw touched selection marker
+        // Selected Point Marker
         if (selectedIndex in records.indices) {
             val r = records[selectedIndex]
-            val x = padding + (selectedIndex * stepX)
-            val y = padding + h - ((r.temp - minTemp).toFloat() / (maxTemp - minTemp)) * h
+            val x = padX + (selectedIndex * stepX)
+            val y = padY + h - ((r.temp - minTemp).toFloat() / (maxTemp - minTemp)) * h
 
-            canvas.drawLine(x, padding, x, height - padding, highlightPaint)
+            canvas.drawLine(x, padY, x, padY + h, guidePaint)
+            canvas.drawCircle(x, y, 22f, dotHalo)
             canvas.drawCircle(x, y, 10f, dotPaint)
         }
     }
@@ -94,14 +127,14 @@ class TemperatureChartView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (records.isEmpty()) return false
         if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) {
-            val padding = 70f
-            val w = width - padding * 2
+            val padX = 80f
+            val w = width - padX * 2
             val stepX = w / (records.size - 1).coerceAtLeast(1).toFloat()
-            val touchX = event.x - padding
-            val index = (touchX / stepX).toInt().coerceIn(0, records.size - 1)
+            val touchX = event.x - padX
+            val idx = (touchX / stepX).toInt().coerceIn(0, records.size - 1)
 
-            if (index != selectedIndex) {
-                selectedIndex = index
+            if (idx != selectedIndex) {
+                selectedIndex = idx
                 onRecordSelected?.invoke(records[selectedIndex])
                 invalidate()
             }
