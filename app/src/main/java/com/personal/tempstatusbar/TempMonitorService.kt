@@ -31,8 +31,19 @@ class TempMonitorService : Service() {
     private val iconSize = 64
     private val cachedBitmap = Bitmap.createBitmap(iconSize, iconSize, Bitmap.Config.ARGB_8888)
     private val cachedCanvas = Canvas(cachedBitmap)
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; textSize = 38f; textAlign = Paint.Align.CENTER; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 38f; textAlign = Paint.Align.CENTER; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+
+    // Forces a DB log every 60 seconds so the chart never stays empty
+    private val dbLogRunnable = object : Runnable {
+        override fun run() {
+            val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val currentTemp = (intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10
+            val plugged = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+            if (currentTemp > 0) {
+                triggerDatabaseSnapshot(currentTemp, plugged != 0, isScreenOn)
+            }
+            backgroundHandler.postDelayed(this, 60000L)
+        }
     }
 
     private val powerRunnable = object : Runnable {
@@ -51,15 +62,13 @@ class TempMonitorService : Service() {
                     val currentTemp = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
                     val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
                     val stats = PowerHardwareHelper.readPowerStats(applicationContext, plugged != 0)
-                    val isCharging = stats.isCharging 
 
-                    handleThermalSafety(currentTemp, isCharging)
+                    handleThermalSafety(currentTemp, stats.isCharging)
 
                     if (currentTemp != lastTemp || plugged != lastPlugged) {
                         lastTemp = currentTemp
                         lastPlugged = plugged
                         pushNotificationUpdate()
-                        triggerDatabaseSnapshot(currentTemp, isCharging, isScreenOn)
                     }
                 }
                 Intent.ACTION_SCREEN_ON -> { isScreenOn = true; backgroundHandler.post(powerRunnable) }
@@ -82,6 +91,9 @@ class TempMonitorService : Service() {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
         })
+        
+        // Start the 60-second database logger
+        backgroundHandler.post(dbLogRunnable)
     }
 
     private fun triggerDatabaseSnapshot(temp: Int, isCharging: Boolean, screenOn: Boolean) {
@@ -90,12 +102,8 @@ class TempMonitorService : Service() {
             val hasRoot = HardwareThermalControl.isRootAvailable()
             val details = if (hasRoot) {
                 val snapshotList = HardwareThermalControl.getKernelProcessSnapshot(applicationContext)
-                if (snapshotList.isNotEmpty()) {
-                    snapshotList.joinToString("\n") { "• ${it.name} — ${it.cpu}% CPU" }
-                } else "Kernel active (Idle)"
-            } else {
-                ProcessInspector.captureNonRootActiveApps(applicationContext)
-            }
+                if (snapshotList.isNotEmpty()) snapshotList.joinToString("\n") { "• ${it.name} — ${it.cpu}% CPU" } else "Kernel active (Idle)"
+            } else { ProcessInspector.captureNonRootActiveApps(applicationContext) }
             dbHelper.insertRecord(temp, isCharging, chargeType, details, hasRoot, screenOn)
         }
     }
@@ -140,10 +148,7 @@ class TempMonitorService : Service() {
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val wattDelta = abs(stats.wattage - lastLoggedWatts)
         val maDelta = abs(stats.currentMa - lastLoggedMa)
-        if (wattDelta >= 0.5 || maDelta >= 50) {
-            lastLoggedWatts = stats.wattage; lastLoggedMa = stats.currentMa
-            pushNotificationUpdate()
-        }
+        if (wattDelta >= 0.5 || maDelta >= 50) { lastLoggedWatts = stats.wattage; lastLoggedMa = stats.currentMa; pushNotificationUpdate() }
     }
 
     private fun pushNotificationUpdate() {
@@ -153,9 +158,7 @@ class TempMonitorService : Service() {
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val bodyText = if (settings.showPowerMetrics) {
             if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)" else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)"
-        } else {
-            if (stats.isCharging) "⚡ Charging" else "🔋 Discharging"
-        }
+        } else { if (stats.isCharging) "⚡ Charging" else "🔋 Discharging" }
 
         val notif = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Battery: $lastTemp°C")
