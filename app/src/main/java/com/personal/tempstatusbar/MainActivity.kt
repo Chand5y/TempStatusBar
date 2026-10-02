@@ -148,13 +148,11 @@ class MainActivity : Activity() {
         val cardBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val textPrimary = if (isDark) Color.WHITE else Color.BLACK
 
-        // Chart Card
         val chartCard = createCard(cardBg)
         chartView = TemperatureChartView(this).apply { this.isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 450) }
         chartCard.addView(chartView)
         layout.addView(chartCard)
 
-        // Inspector Card
         val detailCard = createCard(cardBg)
         detailTimeText = TextView(this).apply { textSize = 12f; setTextColor(Color.GRAY) }
         detailCard.addView(detailTimeText)
@@ -180,7 +178,6 @@ class MainActivity : Activity() {
             detailAppContent.text = r.appDetails
         }
 
-        // Sliders Card
         val controlCard = createCard(cardBg)
         controlCard.addView(TextView(this).apply { text = "HARDWARE THERMAL PROTECTION"; textSize = 11f; setTextColor(Color.GRAY); setPadding(0, 0, 0, 20) })
 
@@ -233,13 +230,12 @@ class MainActivity : Activity() {
         controlCard.addView(resumeSeek)
         layout.addView(controlCard)
 
-        // Toggles Card
         val toggleCard = createCard(cardBg)
         toggleCard.addView(TextView(this).apply { text = "NOTIFICATION PREFERENCES"; textSize = 11f; setTextColor(Color.GRAY); setPadding(0, 0, 0, 15) })
         toggleCard.addView(Switch(this).apply { text = "Show Status Bar Notification"; setTextColor(textPrimary); isChecked = settings.showNotification
-            setOnCheckedChangeListener { _, c -> settings.showNotification = c; startMonitorService() } })
+            setOnCheckedChangeListener { _, c -> settings.showNotification = c; this@MainActivity.startMonitorService() } })
         toggleCard.addView(Switch(this).apply { text = "Show Real-Time Wattage / Drain"; setTextColor(textPrimary); isChecked = settings.showPowerMetrics
-            setOnCheckedChangeListener { _, c -> settings.showPowerMetrics = c; startMonitorService() } })
+            setOnCheckedChangeListener { _, c -> settings.showPowerMetrics = c; this@MainActivity.startMonitorService() } })
         layout.addView(toggleCard)
         
         return ScrollView(this).apply { addView(layout); isFillViewport = true }
@@ -291,11 +287,11 @@ class MainActivity : Activity() {
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnRow.addView(Button(this).apply {
             text = "Disable Prime Core 7"; textSize = 11f; layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { HardwareThermalControl.setCoreOnline(7, false); Toast.makeText(context, "Core 7 Disabled (Cooling Mode)", Toast.LENGTH_SHORT).show() }
+            setOnClickListener { HardwareThermalControl.setCoreOnline(7, false); Toast.makeText(this@MainActivity, "Core 7 Disabled (Cooling Mode)", Toast.LENGTH_SHORT).show() }
         })
         btnRow.addView(Button(this).apply {
             text = "Enable Core 7"; textSize = 11f; layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { HardwareThermalControl.setCoreOnline(7, true); Toast.makeText(context, "Core 7 Enabled (Performance Mode)", Toast.LENGTH_SHORT).show() }
+            setOnClickListener { HardwareThermalControl.setCoreOnline(7, true); Toast.makeText(this@MainActivity, "Core 7 Enabled (Performance Mode)", Toast.LENGTH_SHORT).show() }
         })
         coreCard.addView(btnRow)
         layout.addView(coreCard)
@@ -372,17 +368,15 @@ class MainActivity : Activity() {
             if (pidMatch != null && !line.contains("system_server") && !line.contains("surfaceflinger")) {
                 val pid = pidMatch.groupValues[1].toInt()
                 
-                // RESTRICT Button
                 row.addView(Button(this).apply {
                     text = "RESTRICT"; textSize = 9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#FF9800")); setPadding(5, 0, 5, 0)
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 70).apply { rightMargin = 10 }
                     setOnClickListener { 
                         HardwareThermalControl.pinProcessToEfficiencyCores(pid)
-                        Toast.makeText(context, "Task pinned to Efficiency Cores (0-3)", Toast.LENGTH_SHORT).show() 
+                        Toast.makeText(this@MainActivity, "Task pinned to Efficiency Cores (0-3)", Toast.LENGTH_SHORT).show() 
                     }
                 })
 
-                // KILL Button
                 row.addView(Button(this).apply {
                     text = "KILL"; textSize = 9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F")); setPadding(5, 0, 5, 0)
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 70)
@@ -397,4 +391,5 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Terminate Process?")
             .setMessage("Are you sure you want to kill PID $pid?\n\n$processDesc")
-            .setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(pid); Toast.makeTex
+            .setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(pid); Toast.makeText(this@MainActivity, "Force Stop signal sent to PID $pid", Toast.LENGTH_SHORT).show() }
+        
