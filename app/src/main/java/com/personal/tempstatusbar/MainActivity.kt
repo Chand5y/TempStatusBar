@@ -1,8 +1,11 @@
 package com.personal.tempstatusbar
 
 import android.Manifest
+import android.animation.LayoutTransition
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
@@ -12,6 +15,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.*
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
@@ -47,12 +51,17 @@ class MainActivity : Activity() {
     private var isCpuTabActive = false
     private val uiHandler = Handler(Looper.getMainLooper())
 
+    private val uiReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_BATTERY_CHANGED) refreshDashboardData(intent)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         dbHelper = DatabaseHelper(this)
         settings = SettingsManager(this)
         buildBaseLayout()
-        
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
         }
@@ -61,6 +70,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        registerReceiver(uiReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         pulseView.startAnimation()
         refreshDashboardData(null)
         if (isCpuTabActive) startLiveCpuUpdates()
@@ -68,6 +78,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        unregisterReceiver(uiReceiver)
         pulseView.stopAnimation()
         isCpuTabActive = false
     }
@@ -77,24 +88,47 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
     }
 
+    // --- UX HELPERS ---
+    private fun haptic(v: View) { v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) }
+
+    private fun showModal(title: String, content: String) {
+        val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
+        val tv = txt(content, 12f, Color.GRAY).apply { typeface = Typeface.MONOSPACE }
+        sv.addView(tv)
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle(title).setView(sv).setPositiveButton("Close", null).show()
+    }
+
     private fun txt(t: String, sz: Float, col: Int, bold: Boolean = false): TextView = TextView(this).apply {
         text = t; textSize = sz; setTextColor(col)
         if (bold) typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
     }
 
-    private fun card(bg: Int): LinearLayout = LinearLayout(this).apply {
+    private fun card(bg: Int, onClick: (() -> Unit)? = null): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(35, 30, 35, 30)
         background = GradientDrawable().apply { cornerRadius = 40f; setColor(bg) }
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 25 }
+        layoutTransition = LayoutTransition() // Smooth animations inside card
+        if (onClick != null) {
+            isClickable = true; isFocusable = true
+            setOnClickListener { haptic(this); onClick() }
+        }
     }
 
     private fun buildBaseLayout() {
         val isDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         val bg = if (isDark) Color.BLACK else Color.parseColor("#F4F4F6")
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
+        
+        val root = LinearLayout(this).apply { 
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(bg)
+            layoutTransition = LayoutTransition() // Smooth UI crossfading globally
+        }
         root.addView(txt("Hardware Shield", 22f, if (isDark) Color.WHITE else Color.BLACK, true).apply { setPadding(40, 50, 40, 20) })
         
-        contentFrame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
+        contentFrame = FrameLayout(this).apply { 
+            layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) 
+            layoutTransition = LayoutTransition()
+        }
         root.addView(contentFrame)
 
         tab1Thermal = buildTab1(isDark)
@@ -107,12 +141,13 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(-1, 160); setPadding(20, 10, 20, 10)
         }
         tabButtons = listOf("Thermal", "Battery", "CPU Core").mapIndexed { i, t ->
-            txt(t, 14f, Color.GRAY, true).apply { gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, -1, 1f); setOnClickListener { switchTab(i) } }
+            txt(t, 14f, Color.GRAY, true).apply { 
+                gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+                setOnClickListener { haptic(this); switchTab(i) } 
+            }
         }
         tabButtons.forEach { nav.addView(it) }
-        
-        // This is the missing line that attaches the nav bar to the screen!
-        root.addView(nav) 
+        root.addView(nav)
         
         setContentView(root)
         switchTab(0)
@@ -128,22 +163,34 @@ class MainActivity : Activity() {
         if (isCpuTabActive) startLiveCpuUpdates()
     }
 
+    // ==========================================
+    // TAB 1: THERMAL & SETTINGS
+    // ==========================================
     private fun buildTab1(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
-        val c1 = card(cBg)
+        // Clickable Chart opens Full Database Log
+        val c1 = card(cBg) {
+            val records = dbHelper.getAllRecords().takeLast(50).joinToString("\n\n") { 
+                val time = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(it.timestamp))
+                "[$time] ${it.temp}°C | ${it.chargeType}\n${it.appDetails}"
+            }
+            showModal("Raw Thermal Database", if (records.isEmpty()) "No logs yet." else records)
+        }
+        c1.addView(txt("TAP CHART TO VIEW RAW LOGS", 10f, Color.GRAY).apply{ gravity=Gravity.CENTER; setPadding(0,0,0,10) })
         chartView = TemperatureChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
         c1.addView(chartView); lay.addView(c1)
 
         val c2 = card(cBg)
-        detailTimeText = txt("", 12f, Color.GRAY); c2.addView(detailTimeText)
-        detailTempText = txt("", 28f, Color.parseColor("#FF5722"), true); c2.addView(detailTempText)
+        detailTimeText = txt("Select a point on the chart", 12f, Color.GRAY); c2.addView(detailTimeText)
+        detailTempText = txt("--°C", 28f, Color.parseColor("#FF5722"), true); c2.addView(detailTempText)
         detailAppContent = txt("", 12f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { typeface = Typeface.MONOSPACE; setPadding(0,10,0,0) }
         c2.addView(detailAppContent); lay.addView(c2)
 
         chartView.onRecordSelected = { r ->
+            haptic(chartView)
             val s = if (r.screenOn) "📱 Screen ON" else "💤 Screen OFF"
             val b = if (r.isRoot) "🛡️ Root Trace" else "📱 Non-Root Trace"
             detailTimeText.text = "${SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))} • $s • $b"
@@ -151,12 +198,12 @@ class MainActivity : Activity() {
             detailAppContent.text = r.appDetails
         }
 
-        val c3 = card(cBg)
-        c3.addView(txt("HARDWARE THERMAL PROTECTION", 11f, Color.GRAY).apply { setPadding(0,0,0,20) })
+        val c3 = card(cBg) { showModal("PMIC Safety Engine", "These hardware-level sliders control the Qualcomm charging IC directly.\n\nCut Off (🛑): Instantly breaks the circuit from the charger to the battery when this temp is hit.\nResume (🔄): Restores the circuit once the battery has cooled down.") }
+        c3.addView(txt("HARDWARE THERMAL PROTECTION (TAP FOR INFO)", 11f, Color.GRAY).apply { setPadding(0,0,0,20) })
         warnLabel = txt("⚠️ Warning Sound Alert: ${settings.warningTemp}°C", 13f, tPri); c3.addView(warnLabel)
         c3.addView(SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35; setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=35+p; settings.warningTemp=v; warnLabel.text="⚠️ Warning Sound Alert: $v°C" }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}
+            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
         })})
 
         cutoffLabel = txt("🛑 Cut Off Charging (PMIC): ${settings.cutoffTemp}°C", 13f, tPri).apply { setPadding(0,16,0,0) }; c3.addView(cutoffLabel)
@@ -166,23 +213,26 @@ class MainActivity : Activity() {
         cutS.apply { max = 12; progress = settings.cutoffTemp - 38; setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=38+p; settings.cutoffTemp=v; cutoffLabel.text="🛑 Cut Off Charging (PMIC): $v°C"
                 if (settings.resumeTemp >= v-1) { settings.resumeTemp = v-2; resS.progress = (v-2)-32; resumeLabel.text="🔄 Resume Charging: ${v-2}°C" } }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}
+            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
         })}; c3.addView(cutS); c3.addView(resumeLabel)
 
         resS.apply { max = 13; progress = settings.resumeTemp - 32; setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { var v=32+p; if(v>settings.cutoffTemp-2){v=settings.cutoffTemp-2; progress=v-32}; settings.resumeTemp=v; resumeLabel.text="🔄 Resume Charging: $v°C" }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}
+            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
         })}; c3.addView(resS); lay.addView(c3)
 
         val c4 = card(cBg)
         c4.addView(txt("NOTIFICATION PREFERENCES", 11f, Color.GRAY).apply { setPadding(0,0,0,15) })
-        c4.addView(Switch(this).apply { text = "Show Status Bar Notification"; setTextColor(tPri); isChecked = settings.showNotification; setOnCheckedChangeListener { _, c -> settings.showNotification = c; startMonitorService() } })
-        c4.addView(Switch(this).apply { text = "Show Real-Time Wattage / Drain"; setTextColor(tPri); isChecked = settings.showPowerMetrics; setOnCheckedChangeListener { _, c -> settings.showPowerMetrics = c; startMonitorService() } })
+        c4.addView(Switch(this).apply { text = "Show Status Bar Notification"; setTextColor(tPri); isChecked = settings.showNotification; setOnCheckedChangeListener { _, c -> haptic(this); settings.showNotification = c; startMonitorService() } })
+        c4.addView(Switch(this).apply { text = "Show Real-Time Wattage / Drain"; setTextColor(tPri); isChecked = settings.showPowerMetrics; setOnCheckedChangeListener { _, c -> haptic(this); settings.showPowerMetrics = c; startMonitorService() } })
         lay.addView(c4)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
 
+    // ==========================================
+    // TAB 2: BATTERY HEALTH & POWER
+    // ==========================================
     private fun buildTab2(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
@@ -199,8 +249,13 @@ class MainActivity : Activity() {
         currentLevelText = txt("--%", 48f, tPri, true); c2.addView(currentLevelText)
         lay.addView(c2)
 
-        val c3 = card(cBg)
-        c3.addView(txt("BATTERY DEGRADATION HEALTH", 11f, Color.GRAY))
+        // Clickable Health Card
+        val c3 = card(cBg) {
+            val h = BatteryHealthHelper.getHealthData(this)
+            val wear = 100 - h.healthPercent
+            showModal("Battery Diagnostic", "Design Capacity: ${h.designCapacityMah} mAh\nActual Capacity: ${h.actualCapacityMah} mAh\nTotal Charge Cycles: ${h.cycleCount}\n\nWear Level: $wear%\nStatus: ${h.statusText}")
+        }
+        c3.addView(txt("BATTERY DEGRADATION HEALTH (TAP FOR DETAILS)", 11f, Color.GRAY))
         healthPercentText = txt("", 28f, tPri, true); c3.addView(healthPercentText)
         actualCapacityText = txt("", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(actualCapacityText)
         lay.addView(c3)
@@ -213,6 +268,9 @@ class MainActivity : Activity() {
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
 
+    // ==========================================
+    // TAB 3: CPU & RAM DASHBOARD
+    // ==========================================
     private fun buildTab3(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
@@ -220,8 +278,22 @@ class MainActivity : Activity() {
 
         val rCard = card(cBg)
         rCard.addView(txt("LIVE MEMORY (RAM) USAGE", 11f, Color.GRAY).apply{setPadding(0,0,0,10)})
-        ramUsageText = txt("Loading...", 14f, tPri, true)
-        rCard.addView(ramUsageText); lay.addView(rCard)
+        
+        val ramRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        ramUsageText = txt("Loading...", 14f, tPri, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
+        ramRow.addView(ramUsageText)
+        
+        // NEW FEATURE: RAM Cache Cleaner
+        ramRow.addView(Button(this).apply {
+            text = "CLEAN RAM"; textSize = 9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#2196F3"))
+            layoutParams = LinearLayout.LayoutParams(-2, 70)
+            setOnClickListener { 
+                haptic(this)
+                HardwareThermalControl.clearRamCaches()
+                Toast.makeText(this@MainActivity, "Kernel RAM caches dropped.", Toast.LENGTH_SHORT).show()
+            }
+        })
+        rCard.addView(ramRow); lay.addView(rCard)
 
         val cCard = card(cBg)
         cCard.addView(txt("8-CORE PROCESSOR FREQUENCIES", 11f, Color.GRAY).apply{setPadding(0,0,0,15)})
@@ -238,13 +310,16 @@ class MainActivity : Activity() {
         cCard.addView(coreGrid)
 
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,15,0,0) }
-        btnRow.addView(Button(this).apply { text="Disable Prime (C7)"; textSize=10f; layoutParams=LinearLayout.LayoutParams(0,-2,1f); setOnClickListener { HardwareThermalControl.setCoreOnline(7, false); Toast.makeText(context, "Core 7 Disabled", Toast.LENGTH_SHORT).show() } })
-        btnRow.addView(Button(this).apply { text="Enable Prime (C7)"; textSize=10f; layoutParams=LinearLayout.LayoutParams(0,-2,1f); setOnClickListener { HardwareThermalControl.setCoreOnline(7, true); Toast.makeText(context, "Core 7 Enabled", Toast.LENGTH_SHORT).show() } })
+        btnRow.addView(Button(this).apply { text="Disable Prime (C7)"; textSize=10f; layoutParams=LinearLayout.LayoutParams(0,-2,1f); setOnClickListener { haptic(this); HardwareThermalControl.setCoreOnline(7, false); Toast.makeText(context, "Core 7 Disabled", Toast.LENGTH_SHORT).show() } })
+        btnRow.addView(Button(this).apply { text="Enable Prime (C7)"; textSize=10f; layoutParams=LinearLayout.LayoutParams(0,-2,1f); setOnClickListener { haptic(this); HardwareThermalControl.setCoreOnline(7, true); Toast.makeText(context, "Core 7 Enabled", Toast.LENGTH_SHORT).show() } })
         cCard.addView(btnRow); lay.addView(cCard)
 
         val pCard = card(cBg)
         pCard.addView(txt("LIVE CPU STRESS & TERMINATION", 11f, Color.GRAY).apply{setPadding(0,0,0,15)})
-        processListContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        processListContainer = LinearLayout(this).apply { 
+            orientation = LinearLayout.VERTICAL
+            layoutTransition = LayoutTransition() // Smooth row changes
+        }
         pCard.addView(processListContainer); lay.addView(pCard)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
@@ -310,8 +385,8 @@ class MainActivity : Activity() {
             Regex("\\(PID (\\d+)\\)").find(line)?.let { match ->
                 val pid = match.groupValues[1].toInt()
                 if (pid > 0 && !line.contains("Android Core Engine") && !line.contains("Display Compositor")) {
-                    row.addView(Button(this).apply { text="RESTRICT"; textSize=9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#FF9800")); setPadding(5,0,5,0); layoutParams=LinearLayout.LayoutParams(-2, 70).apply{rightMargin=10}; setOnClickListener { HardwareThermalControl.pinProcessToEfficiencyCores(pid); Toast.makeText(this@MainActivity, "Pinned to Cores 0-3", Toast.LENGTH_SHORT).show() } })
-                    row.addView(Button(this).apply { text="KILL"; textSize=9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F")); setPadding(5,0,5,0); layoutParams=LinearLayout.LayoutParams(-2, 70); setOnClickListener { showKillConfirmDialog(pid, line) } })
+                    row.addView(Button(this).apply { text="RESTRICT"; textSize=9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#FF9800")); setPadding(5,0,5,0); layoutParams=LinearLayout.LayoutParams(-2, 70).apply{rightMargin=10}; setOnClickListener { haptic(this); HardwareThermalControl.pinProcessToEfficiencyCores(pid); Toast.makeText(this@MainActivity, "Pinned to Cores 0-3", Toast.LENGTH_SHORT).show() } })
+                    row.addView(Button(this).apply { text="KILL"; textSize=9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F")); setPadding(5,0,5,0); layoutParams=LinearLayout.LayoutParams(-2, 70); setOnClickListener { haptic(this); showKillConfirmDialog(pid, line) } })
                 }
             }
             processListContainer.addView(row)
