@@ -118,7 +118,6 @@ object HardwareThermalControl {
         return list.sortedByDescending { it.sizeMb }
     }
 
-    // Resolves package names to friendly names, hides PID structurally
     fun getKernelProcessSnapshot(context: Context): List<ProcessData> {
         val list = mutableListOf<ProcessData>()
         if (!isRootAvailable()) return list
