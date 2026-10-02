@@ -237,9 +237,9 @@ class MainActivity : Activity() {
         val toggleCard = createCard(cardBg)
         toggleCard.addView(TextView(this).apply { text = "NOTIFICATION PREFERENCES"; textSize = 11f; setTextColor(Color.GRAY); setPadding(0, 0, 0, 15) })
         toggleCard.addView(Switch(this).apply { text = "Show Status Bar Notification"; setTextColor(textPrimary); isChecked = settings.showNotification
-            setOnCheckedChangeListener { _, c -> settings.showNotification = c; startService() } })
+            setOnCheckedChangeListener { _, c -> settings.showNotification = c; startMonitorService() } })
         toggleCard.addView(Switch(this).apply { text = "Show Real-Time Wattage / Drain"; setTextColor(textPrimary); isChecked = settings.showPowerMetrics
-            setOnCheckedChangeListener { _, c -> settings.showPowerMetrics = c; startService() } })
+            setOnCheckedChangeListener { _, c -> settings.showPowerMetrics = c; startMonitorService() } })
         layout.addView(toggleCard)
         
         return ScrollView(this).apply { addView(layout); isFillViewport = true }
@@ -326,8 +326,8 @@ class MainActivity : Activity() {
         healthPercentText.text = "${health.healthPercent}%"
         actualCapacityText.text = "Actual: ${health.actualCapacityMah} mAh / Design: ${health.designCapacityMah} mAh\nCycles: ${health.cycleCount}"
 
-        // Correct Charging Detection using Electrical Current
-        val stats = PowerHardwareHelper.readPowerStats(this, false)
+        val isPlugged = (registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        val stats = PowerHardwareHelper.readPowerStats(this, isPlugged)
         pulseView.setMode(stats.isCharging)
         livePowerText.text = if (stats.isCharging) "⚡ ${stats.wattage}W (+${stats.currentMa} mA)" else "🔋 Discharging (-${stats.wattage}W)"
 
@@ -372,7 +372,7 @@ class MainActivity : Activity() {
             if (pidMatch != null && !line.contains("system_server") && !line.contains("surfaceflinger")) {
                 val pid = pidMatch.groupValues[1].toInt()
                 
-                // RESTRICT Button (Taskset Affinity)
+                // RESTRICT Button
                 row.addView(Button(this).apply {
                     text = "RESTRICT"; textSize = 9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#FF9800")); setPadding(5, 0, 5, 0)
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 70).apply { rightMargin = 10 }
@@ -397,5 +397,4 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Terminate Process?")
             .setMessage("Are you sure you want to kill PID $pid?\n\n$processDesc")
-            .setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(pid); Toast.makeText(this, "Force Stop signal sent to PID $pid", Toast.LENGTH_SHORT).show() }
-           
+            .setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(pid); Toast.makeTex
