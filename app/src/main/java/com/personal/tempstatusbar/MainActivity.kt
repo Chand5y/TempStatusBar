@@ -50,16 +50,13 @@ class BatteryGraphicView(context: Context) : View(context) {
     
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val pad = 10f
-        val bw = width - 30f 
-        val bh = height - 20f
+        val pad = 10f; val bw = width - 30f; val bh = height - 20f
         canvas.drawRoundRect(pad, pad, bw, pad + bh, 15f, 15f, outlinePaint)
         canvas.drawRoundRect(bw, pad + (bh/3f), bw + 15f, pad + (bh*2f/3f), 5f, 5f, fillPaint)
         val fillWidth = (bw - pad - 10f) * (level / 100f)
         if (fillWidth > 0) canvas.drawRoundRect(pad + 5f, pad + 5f, pad + 5f + fillWidth, pad + bh - 5f, 10f, 10f, fillPaint)
         if (isCharging) {
-            val bolt = Path()
-            val cx = bw / 2f; val cy = height / 2f
+            val bolt = Path(); val cx = bw / 2f; val cy = height / 2f
             bolt.moveTo(cx + 10f, cy - 20f); bolt.lineTo(cx - 10f, cy + 5f)
             bolt.lineTo(cx + 5f, cy + 5f); bolt.lineTo(cx - 10f, cy + 25f)
             bolt.lineTo(cx + 15f, cy); bolt.lineTo(cx, cy); bolt.close()
@@ -125,6 +122,7 @@ class MainActivity : Activity() {
         super.onResume()
         isPaused = false
         uiHandler.post(liveHardwarePoller)
+        refreshDashboardData()
         if (isCpuTabActive) startLiveCpuUpdates()
     }
 
@@ -194,7 +192,6 @@ class MainActivity : Activity() {
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; setBackgroundColor(if (isDark) Color.parseColor("#121212") else Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(-1, 180); setPadding(20, 10, 20, 10)
-            
             setOnTouchListener { v, event ->
                 if (event.action == MotionEvent.ACTION_MOVE || event.action == MotionEvent.ACTION_DOWN) {
                     val idx = (event.x / (v.width / 3)).toInt().coerceIn(0, 2)
@@ -241,19 +238,17 @@ class MainActivity : Activity() {
         if (isCpuTabActive) startLiveCpuUpdates()
     }
 
-    // ==========================================
-    // TAB 1: THERMAL
-    // ==========================================
     private fun buildTab1(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
         val c1 = card(cBg) {
-            // Added filter to hide corrupted old database logs
-            val validRecords = dbHelper.getAllRecords().filter { !it.appDetails.contains("TempRecord(") }
-            val records = validRecords.takeLast(50).joinToString("\n\n") { "[$it.chargeType] ${it.temp}°C\n${it.appDetails}" }
-            showModal("Raw Thermal Database", if (records.isEmpty()) "No logs yet." else records)
+            try {
+                val validRecords = dbHelper.getAllRecords().filter { !it.appDetails.contains("TempRecord(") }
+                val records = validRecords.takeLast(50).joinToString("\n\n") { "[$it.chargeType] ${it.temp}°C\n${it.appDetails}" }
+                showModal("Raw Thermal Database", if (records.isEmpty()) "No logs yet." else records)
+            } catch (e: Exception) { showModal("Error", "Could not read database") }
         }
         c1.addView(txt("TAP CHART TO VIEW RAW LOGS", 11f, Color.GRAY).apply{ gravity=Gravity.CENTER; setPadding(0,0,0,15) })
         chartView = TemperatureChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 500) }
@@ -304,9 +299,6 @@ class MainActivity : Activity() {
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
 
-    // ==========================================
-    // TAB 2: GRAPHICAL BATTERY
-    // ==========================================
     private fun buildTab2(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
@@ -320,16 +312,18 @@ class MainActivity : Activity() {
         
         val pInfo = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         currentLevelText = txt("--%", 28f, tPri, true); pInfo.addView(currentLevelText)
-        livePowerText = txt("Loading...", 13f, Color.GRAY); pInfo.addView(livePowerText)
+        livePowerText = txt("Calculating...", 13f, Color.GRAY); pInfo.addView(livePowerText)
         r1.addView(pInfo)
         c1.addView(r1); lay.addView(c1)
 
         val c3 = card(cBg) {
-            val h = BatteryHealthHelper.getHealthData(this@MainActivity)
-            showModal("Battery Diagnostic", "Design Capacity: ${h.designCapacityMah} mAh\nActual Capacity: ${h.actualCapacityMah} mAh\nTotal Charge Cycles: ${h.cycleCount}\n\nWear Level: ${100 - h.healthPercent}%\nStatus: ${h.statusText}")
+            try {
+                val h = BatteryHealthHelper.getHealthData(this@MainActivity)
+                showModal("Battery Diagnostic", "Design Capacity: ${h.designCapacityMah} mAh\nActual Capacity: ${h.actualCapacityMah} mAh\nTotal Charge Cycles: ${h.cycleCount}\n\nWear Level: ${100 - h.healthPercent}%\nStatus: ${h.statusText}")
+            } catch (e: Exception) { showModal("Error", "Could not parse health data.") }
         }
         c3.addView(txt("BATTERY DEGRADATION HEALTH (TAP FOR DETAILS)", 12f, Color.GRAY))
-        healthPercentText = txt("Calculating...", 32f, tPri, true); c3.addView(healthPercentText)
+        healthPercentText = txt("--%", 32f, tPri, true); c3.addView(healthPercentText)
         actualCapacityText = txt("Loading metrics...", 15f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(actualCapacityText)
         lay.addView(c3)
 
@@ -341,9 +335,6 @@ class MainActivity : Activity() {
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
 
-    // ==========================================
-    // TAB 3: VISUAL CPU ARCHITECTURE
-    // ==========================================
     private fun buildTab3(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
@@ -369,7 +360,6 @@ class MainActivity : Activity() {
         val cCard = card(cBg)
         cCard.addView(txt("CPU ARCHITECTURE STRESS MAP", 12f, Color.GRAY).apply{setPadding(0,0,0,20)})
         
-        // Increased height from 280 to 380 so text isn't squished
         cpuArchitectureGrid = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f; layoutParams = LinearLayout.LayoutParams(-1, 380) }
         coreBlocks = Array(8) { TextView(this) }
         
@@ -389,8 +379,8 @@ class MainActivity : Activity() {
         cCard.addView(cpuArchitectureGrid)
 
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,25,0,0) }
-        btnRow.addView(Button(this).apply { text="Disable Prime (C7)"; textSize=11f; layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply{rightMargin=10}; setOnClickListener { haptic(this); HardwareThermalControl.setCoreOnline(7, false); Toast.makeText(context, "Core 7 Disabled", Toast.LENGTH_SHORT).show() } })
-        btnRow.addView(Button(this).apply { text="Enable Prime (C7)"; textSize=11f; layoutParams=LinearLayout.LayoutParams(0,-2,1f); setOnClickListener { haptic(this); HardwareThermalControl.setCoreOnline(7, true); Toast.makeText(context, "Core 7 Enabled", Toast.LENGTH_SHORT).show() } })
+        btnRow.addView(Button(this).apply { text="Throttle Prime (C7)"; textSize=11f; layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply{rightMargin=10}; setOnClickListener { haptic(this); HardwareThermalControl.throttlePrimeCore(true); Toast.makeText(context, "Core 7 Throttled to Minimum", Toast.LENGTH_SHORT).show() } })
+        btnRow.addView(Button(this).apply { text="Restore Prime (C7)"; textSize=11f; layoutParams=LinearLayout.LayoutParams(0,-2,1f); setOnClickListener { haptic(this); HardwareThermalControl.throttlePrimeCore(false); Toast.makeText(context, "Core 7 Restored", Toast.LENGTH_SHORT).show() } })
         cCard.addView(btnRow); lay.addView(cCard)
 
         val pCard = card(cBg)
@@ -402,20 +392,37 @@ class MainActivity : Activity() {
     }
 
     private fun refreshLiveHardware() {
-        val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val stats = PowerHardwareHelper.readPowerStats(this, bm.isCharging)
-        currentLevelText.text = "$lvl%"
-        batteryGraphic.update(lvl, stats.isCharging)
-        livePowerText.text = if (stats.isCharging) "Charging AC\n⚡ ${stats.wattage}W (+${stats.currentMa} mA)" else "Discharging\n🔋 -${stats.wattage}W (${stats.currentMa} mA)"
+        try {
+            val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val isPlugged = (intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+            val lvl = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: 0
+            val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: 100
+            val pct = if (scale > 0) (lvl * 100 / scale.toFloat()).toInt() else 0
+
+            val stats = PowerHardwareHelper.readPowerStats(this, isPlugged)
+            currentLevelText.text = "$pct%"
+            batteryGraphic.update(pct, stats.isCharging)
+            livePowerText.text = if (stats.isCharging) "Charging AC\n⚡ ${stats.wattage}W (+${stats.currentMa} mA)" else "Discharging\n🔋 -${stats.wattage}W (${stats.currentMa} mA)"
+        } catch (e: Exception) {
+            livePowerText.text = "Hardware parsing error"
+        }
     }
 
-    private fun refreshDashboardData(intent: Intent?) {
+    private fun refreshDashboardData() {
         refreshLiveHardware()
-        val h = BatteryHealthHelper.getHealthData(this)
-        healthPercentText.text = "${h.healthPercent}%"
-        actualCapacityText.text = "Actual: ${h.actualCapacityMah} mAh\nDesign: ${h.designCapacityMah} mAh\nCycles: ${h.cycleCount}"
-        chartView.setData(dbHelper.getAllRecords())
+        try {
+            val h = BatteryHealthHelper.getHealthData(this)
+            healthPercentText.text = "${h.healthPercent}%"
+            actualCapacityText.text = "Actual: ${h.actualCapacityMah} mAh\nDesign: ${h.designCapacityMah} mAh\nCycles: ${h.cycleCount}"
+        } catch(e: Exception) {
+            healthPercentText.text = "--%"
+            actualCapacityText.text = "Error reading health"
+        }
+        
+        try {
+            chartView.setData(dbHelper.getAllRecords())
+        } catch(e: Exception) {}
+        
         thread { val s = HardwareThermalControl.getAppBatteryDrain(); uiHandler.post { batteryDrainList.text = s } }
     }
 
@@ -436,11 +443,13 @@ class MainActivity : Activity() {
                         val blk = coreBlocks[i]
                         if (i < freqs.size) {
                             val fStr = freqs[i]
-                            if (fStr == "Offline") {
+                            val mhz = fStr.replace(" MHz", "").toIntOrNull() ?: 0
+                            
+                            // Visual indicator for throttled state (Snapdragon Prime Core specific)
+                            if (fStr == "Offline" || (i == 7 && mhz <= 844 && mhz > 0)) {
                                 (blk.background as GradientDrawable).setColor(Color.parseColor("#333333"))
-                                blk.text = "C$i\nOFF"
+                                blk.text = "C$i\nTHROTTLED"
                             } else {
-                                val mhz = fStr.replace(" MHz", "").toIntOrNull() ?: 0
                                 val col = when {
                                     mhz < 1000 -> Color.parseColor("#4CAF50")
                                     mhz < 2000 -> Color.parseColor("#FF9800")
@@ -456,11 +465,9 @@ class MainActivity : Activity() {
                     procs.forEach { p ->
                         val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 15, 0, 15); gravity = Gravity.CENTER_VERTICAL }
                         
-                        // Enforces single-line truncation so the text doesn't wrap awkwardly
                         val procTxt = txt("${p.name} — ${p.cpu}%", 12f, if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES) Color.WHITE else Color.BLACK).apply { 
                             layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 15 }
-                            maxLines = 1
-                            ellipsize = TextUtils.TruncateAt.END
+                            maxLines = 1; ellipsize = TextUtils.TruncateAt.END
                         }
                         row.addView(procTxt)
                         
