@@ -27,6 +27,7 @@ class TempMonitorService : Service() {
     private var lastLoggedWatts = -1.0
     private var lastLoggedMa = -999
     private var isScreenOn = true
+    private var topCulpritPid = -1
 
     private val iconSize = 64
     private val cachedBitmap = Bitmap.createBitmap(iconSize, iconSize, Bitmap.Config.ARGB_8888)
@@ -51,8 +52,7 @@ class TempMonitorService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 Intent.ACTION_BATTERY_CHANGED -> {
-                    val rawTemp = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
-                    val currentTemp = rawTemp / 10
+                    val currentTemp = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
                     val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
                     val isCharging = plugged != 0
 
@@ -62,8 +62,7 @@ class TempMonitorService : Service() {
                         lastTemp = currentTemp
                         lastPlugged = plugged
                         pushNotificationUpdate()
-
-                        triggerDatabaseSnapshot(currentTemp, plugged)
+                        triggerDatabaseSnapshot(currentTemp, plugged, isScreenOn)
                     }
                 }
                 Intent.ACTION_SCREEN_ON -> {
@@ -95,67 +94,65 @@ class TempMonitorService : Service() {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
         }
-        val batteryIntent = registerReceiver(receiver, filter)
-
-        batteryIntent?.let {
-            val initialTemp = it.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
-            val initialPlugged = it.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
-            lastTemp = initialTemp
-            lastPlugged = initialPlugged
-            triggerDatabaseSnapshot(initialTemp, initialPlugged)
-        }
+        registerReceiver(receiver, filter)
     }
 
-    private fun triggerDatabaseSnapshot(temp: Int, plugged: Int) {
+    private fun triggerDatabaseSnapshot(temp: Int, plugged: Int, screenOn: Boolean) {
         backgroundHandler.post {
             val isCharging = plugged != 0
-            val chargeType = when (plugged) {
-                BatteryManager.BATTERY_PLUGGED_AC -> "Fast AC Charger"
-                BatteryManager.BATTERY_PLUGGED_USB -> "USB Cable"
-                BatteryManager.BATTERY_PLUGGED_WIRELESS -> "Wireless Dock"
-                else -> "Discharging (Battery)"
-            }
-
+            val chargeType = if (isCharging) "Charging Connected" else "Discharging (Battery)"
             val hasRoot = HardwareThermalControl.isRootAvailable()
             val details: String
 
             if (hasRoot) {
-                val kernelSnapshot = HardwareThermalControl.getKernelProcessSnapshot()
-                details = if (kernelSnapshot.isNotEmpty()) kernelSnapshot else "Kernel active (System running within normal thresholds)"
+                val (snapshot, topPid) = HardwareThermalControl.getKernelProcessSnapshot()
+                topCulpritPid = topPid
+                details = snapshot.ifEmpty { "Kernel active" }
             } else {
                 details = ProcessInspector.captureNonRootActiveApps(applicationContext)
             }
 
-            dbHelper.insertRecord(temp, isCharging, chargeType, details, hasRoot)
+            dbHelper.insertRecord(temp, isCharging, chargeType, details, hasRoot, screenOn)
         }
     }
 
     private fun handleThermalSafety(temp: Int, isCharging: Boolean) {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-        val warnLimit = settings.warningTemp
-        val cutoffLimit = settings.cutoffTemp
-        val resumeLimit = settings.resumeTemp
+        
+        // Dynamic Emergency Target: Cool down to 1°C below current warning
+        val targetSafeTemp = settings.warningTemp - 1
 
-        if (temp >= warnLimit) {
+        if (temp >= settings.warningTemp) {
             HardwareThermalControl.playThermalAlert()
 
+            val muteIntent = PendingIntent.getBroadcast(this, 0, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_MUTE" }, PendingIntent.FLAG_IMMUTABLE)
+            val coolIntent = PendingIntent.getBroadcast(this, 1, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_COOLDOWN" }, PendingIntent.FLAG_IMMUTABLE)
+
             val alertNotif = Notification.Builder(this, ALERT_CHANNEL_ID)
-                .setContentTitle("THERMAL ALERT: ${temp}°C")
-                .setContentText("Hardware warning threshold ($warnLimit°C) reached!")
+                .setContentTitle("⚠️ OVERHEATING: ${temp}°C")
+                .setContentText("Hardware thermal limits exceeded.")
                 .setSmallIcon(drawIcon("!"))
                 .setColor(Color.RED)
                 .setOngoing(true)
+                .addAction(Notification.Action.Builder(null, "MUTE SOUND", muteIntent).build())
+                .addAction(Notification.Action.Builder(null, "COOL DOWN NOW", coolIntent).build())
                 .setContentIntent(getLaunchIntent())
                 .build()
 
             manager?.notify(ALERT_NOTIF_ID, alertNotif)
-        } else {
+        } else if (temp <= targetSafeTemp) {
             manager?.cancel(ALERT_NOTIF_ID)
+            HardwareThermalControl.resetMute()
+            if (HardwareThermalControl.isEmergencyCooldownActive) {
+                HardwareThermalControl.clearEmergencyCooldown()
+                HardwareThermalControl.setChargingEnabled(true)
+            }
         }
 
-        if (temp >= cutoffLimit && isCharging && !HardwareThermalControl.isChargingThrottled) {
+        // Standard Hysteresis 
+        if (temp >= settings.cutoffTemp && isCharging && !HardwareThermalControl.isChargingThrottled && !HardwareThermalControl.isEmergencyCooldownActive) {
             HardwareThermalControl.setChargingEnabled(false)
-        } else if (temp <= resumeLimit && HardwareThermalControl.isChargingThrottled) {
+        } else if (temp <= settings.resumeTemp && HardwareThermalControl.isChargingThrottled && !HardwareThermalControl.isEmergencyCooldownActive) {
             HardwareThermalControl.setChargingEnabled(true)
         }
     }
@@ -164,7 +161,6 @@ class TempMonitorService : Service() {
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val wattDelta = abs(stats.wattage - lastLoggedWatts)
         val maDelta = abs(stats.currentMa - lastLoggedMa)
-
         if (wattDelta >= 0.5 || maDelta >= 50) {
             lastLoggedWatts = stats.wattage
             lastLoggedMa = stats.currentMa
@@ -174,15 +170,11 @@ class TempMonitorService : Service() {
 
     private fun pushNotificationUpdate() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-        if (!settings.showNotification) {
-            manager?.cancel(NOTIF_ID)
-            return
-        }
+        if (!settings.showNotification) return
 
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val bodyText = if (settings.showPowerMetrics) {
-            if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)"
-            else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)"
+            if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)" else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)"
         } else {
             if (stats.isCharging) "⚡ Charging" else "🔋 Discharging"
         }
@@ -195,33 +187,22 @@ class TempMonitorService : Service() {
             .setOnlyAlertOnce(true)
             .setContentIntent(getLaunchIntent())
             .build()
-
         manager?.notify(NOTIF_ID, notif)
     }
 
     private fun getLaunchIntent(): PendingIntent {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
+        val intent = Intent(this, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP }
         return PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
     private fun drawIcon(text: String): Icon {
         cachedBitmap.eraseColor(Color.TRANSPARENT)
-        val yPos = (iconSize / 2 - (textPaint.descent() + textPaint.ascent()) / 2)
-        cachedCanvas.drawText(text, iconSize / 2f, yPos, textPaint)
+        cachedCanvas.drawText(text, iconSize / 2f, (iconSize / 2 - (textPaint.descent() + textPaint.ascent()) / 2), textPaint)
         return Icon.createWithBitmap(cachedBitmap)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notif = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Thermal Monitor Active")
-            .setSmallIcon(drawIcon("--"))
-            .setOngoing(true)
-            .setContentIntent(getLaunchIntent())
-            .build()
-
-        startForeground(NOTIF_ID, notif)
+        startForeground(NOTIF_ID, Notification.Builder(this, CHANNEL_ID).setContentTitle("Thermal Monitor Active").setSmallIcon(drawIcon("--")).build())
         return START_STICKY
     }
 
@@ -233,20 +214,11 @@ class TempMonitorService : Service() {
         handlerThread.quitSafely()
         cachedBitmap.recycle()
     }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createChannels() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-            val chan = NotificationChannel(CHANNEL_ID, "Live Monitor", NotificationManager.IMPORTANCE_LOW).apply {
-                setShowBadge(false)
-            }
-            val alertChan = NotificationChannel(ALERT_CHANNEL_ID, "Thermal Emergencies", NotificationManager.IMPORTANCE_HIGH).apply {
-                enableVibration(true)
-            }
-            manager?.createNotificationChannel(chan)
-            manager?.createNotificationChannel(alertChan)
-        }
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        manager?.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Live Monitor", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) })
+        manager?.createNotificationChannel(NotificationChannel(ALERT_CHANNEL_ID, "Thermal Emergencies", NotificationManager.IMPORTANCE_HIGH).apply { enableVibration(true) })
     }
 }
