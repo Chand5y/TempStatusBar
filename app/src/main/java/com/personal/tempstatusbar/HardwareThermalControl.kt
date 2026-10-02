@@ -6,14 +6,10 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 
 object HardwareThermalControl {
-
     private var toneGen: ToneGenerator? = null
-    var isChargingThrottled = false
-        private set
-    var isEmergencyCooldownActive = false
-        private set
+    var isChargingThrottled = false; private set
+    var isEmergencyCooldownActive = false; private set
     private var isMuted = false
-
     private var cachedRootState: Boolean? = null
     private var lastRootCheckTime = 0L
 
@@ -27,47 +23,31 @@ object HardwareThermalControl {
         if (cachedRootState != null && (now - lastRootCheckTime < 60000L)) return cachedRootState!!
         return try {
             val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
-            val reader = BufferedReader(InputStreamReader(p.inputStream))
-            val hasRoot = reader.readLine()?.contains("uid=0") == true
+            val hasRoot = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.contains("uid=0") == true
             p.waitFor()
             cachedRootState = hasRoot
             lastRootCheckTime = now
             hasRoot
-        } catch (e: Exception) {
-            cachedRootState = false
-            false
-        }
+        } catch (e: Exception) { false }
     }
 
-    // --- PMIC POWER MANAGEMENT ---
     fun setChargingEnabled(enable: Boolean) {
         if (!isRootAvailable()) return
-        val value = if (enable) "1" else "0"
-        val suspendVal = if (enable) "0" else "1"
+        val v = if (enable) "1" else "0"
+        val sv = if (enable) "0" else "1"
         try {
-            val cmd = "echo $value > /sys/class/power_supply/battery/charging_enabled; " +
-                      "echo $suspendVal > /sys/class/power_supply/battery/input_suspend"
-            Runtime.getRuntime().exec(arrayOf("su", "-c", cmd)).waitFor()
+            Runtime.getRuntime().exec(arrayOf("su", "-c", "echo $v > /sys/class/power_supply/battery/charging_enabled; echo $sv > /sys/class/power_supply/battery/input_suspend")).waitFor()
             isChargingThrottled = !enable
         } catch (e: Exception) {}
     }
 
-    fun forceEmergencyCooldown() {
-        isEmergencyCooldownActive = true
-        setChargingEnabled(false)
-    }
+    fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
+    fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
 
-    fun clearEmergencyCooldown() {
-        isEmergencyCooldownActive = false
-    }
-
-    // --- CPU CORE & TASK MANAGEMENT ---
     fun setCoreOnline(coreId: Int, online: Boolean) {
         if (!isRootAvailable()) return
         val state = if (online) "1" else "0"
-        try {
-            Runtime.getRuntime().exec(arrayOf("su", "-c", "echo $state > /sys/devices/system/cpu/cpu$coreId/online")).waitFor()
-        } catch (e: Exception) {}
+        try { Runtime.getRuntime().exec(arrayOf("su", "-c", "echo $state > /sys/devices/system/cpu/cpu$coreId/online")).waitFor() } catch (e: Exception) {}
     }
 
     fun killProcess(pid: Int) {
@@ -77,67 +57,64 @@ object HardwareThermalControl {
 
     fun pinProcessToEfficiencyCores(pid: Int) {
         if (!isRootAvailable()) return
-        // Mask 0f targets cores 0-3 (Silver Efficiency cluster)
         try { Runtime.getRuntime().exec(arrayOf("su", "-c", "taskset -p 0f $pid")).waitFor() } catch (e: Exception) {}
     }
 
-    // --- ALERTS ---
     fun playThermalAlert() {
         if (isMuted) return
         try { toneGen?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 1500) } catch (e: Exception) {}
     }
-
-    fun muteAlarm() {
-        isMuted = true
-        try { toneGen?.stopTone() } catch (e: Exception) {}
-    }
-
-    fun resetMute() {
-        isMuted = false
-    }
+    fun muteAlarm() { isMuted = true; try { toneGen?.stopTone() } catch (e: Exception) {} }
+    fun resetMute() { isMuted = false }
 
     fun getKernelProcessSnapshot(): Pair<String, Int> {
         if (!isRootAvailable()) return Pair("", -1)
         return try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "top -b -n 1 -m 5"))
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "top -n 1 -m 8"))
             val reader = BufferedReader(InputStreamReader(p.inputStream))
             val sb = StringBuilder()
             var topPid = -1
-            var line: String?
             var headerPassed = false
             var count = 0
+            var line: String?
 
             while (reader.readLine().also { line = it } != null) {
-                val l = line?.trim() ?: continue
-                if (l.contains("PID") && (l.contains("CPU") || l.contains("ARGS"))) {
-                    headerPassed = true
-                    continue
-                }
+                val l = line!!.trim()
+                if (l.contains("PID") && l.contains("USER")) { headerPassed = true; continue }
                 if (headerPassed && l.isNotEmpty()) {
-                    val tokens = l.split("\\s+".toRegex()).filter { it.isNotEmpty() }
-                    if (tokens.size >= 5) {
+                    val tokens = l.split("\\s+".toRegex())
+                    if (tokens.size >= 8) {
                         val pid = tokens[0].toIntOrNull() ?: -1
-                        var cpuStr = tokens.firstOrNull { it.endsWith("%") } ?: (tokens.getOrNull(4) ?: "0%")
-                        if (!cpuStr.endsWith("%")) cpuStr = "$cpuStr%"
-                        val rawName = tokens.last()
-
-                        if (!rawName.startsWith("[") && !rawName.startsWith("top")) {
+                        val cpu = tokens.firstOrNull { it.contains(".") } ?: "0.0"
+                        val name = tokens.last()
+                        if (!name.startsWith("[") && !name.startsWith("top")) {
                             if (count == 0) topPid = pid
-                            sb.append("• ").append(rawName).append(" — ").append(cpuStr).append(" (PID ").append(pid).append(")\n")
+                            sb.append("• $name — $cpu% CPU (PID $pid)\n")
                             count++
-                            if (count >= 3) break
+                            if (count >= 5) break
                         }
                     }
                 }
             }
             p.waitFor()
             Pair(sb.toString().trim(), topPid)
-        } catch (e: Exception) {
-            Pair("", -1)
-        }
+        } catch (e: Exception) { Pair("", -1) }
     }
 
-    fun destroy() {
-        try { setChargingEnabled(true); toneGen?.release() } catch (e: Exception) {}
+    fun getAppBatteryDrain(): String {
+        if (!isRootAvailable()) return "Root required to parse batterystats."
+        return try {
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys batterystats --charged | grep -E 'Estimated power use|Uid' | head -n 15"))
+            val reader = BufferedReader(InputStreamReader(p.inputStream))
+            val sb = StringBuilder()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                if (line!!.contains("Uid")) sb.append(line!!.trim()).append("\n")
+            }
+            p.waitFor()
+            if (sb.isEmpty()) "Gathering battery statistics (Needs more uptime)..." else sb.toString().trim()
+        } catch (e: Exception) { "Failed to read batterystats." }
     }
+
+    fun destroy() { try { setChargingEnabled(true); toneGen?.release() } catch (e: Exception) {} }
 }
