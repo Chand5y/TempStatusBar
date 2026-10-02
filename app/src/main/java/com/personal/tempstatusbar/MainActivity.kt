@@ -532,4 +532,88 @@ class MainActivity : Activity() {
         val textColor = if (isDark) Color.WHITE else Color.BLACK
 
         if (snapshot.isEmpty()) {
-            pro
+            processListContainer.addView(TextView(this).apply { 
+                text = "Waiting for kernel data... Check root access."
+                setTextColor(Color.GRAY) 
+            })
+            return
+        }
+
+        val lines = snapshot.split("\n")
+        for (line in lines) {
+            val row = LinearLayout(this).apply { 
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 15, 0, 15)
+                gravity = Gravity.CENTER_VERTICAL 
+            }
+            val txt = TextView(this).apply { 
+                text = line
+                textSize = 11f
+                setTextColor(textColor)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) 
+            }
+            row.addView(txt)
+
+            val pidMatch = Regex("\\(PID (\\d+)\\)").find(line)
+            if (pidMatch != null && !line.contains("system_server") && !line.contains("surfaceflinger")) {
+                val pid = pidMatch.groupValues[1].toInt()
+                
+                val restrictBtn = Button(this).apply {
+                    text = "RESTRICT"
+                    textSize = 9f
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.parseColor("#FF9800"))
+                    setPadding(5, 0, 5, 0)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 70).apply { 
+                        rightMargin = 10 
+                    }
+                    setOnClickListener { 
+                        HardwareThermalControl.pinProcessToEfficiencyCores(pid)
+                        Toast.makeText(this@MainActivity, "Task pinned to Efficiency Cores (0-3)", Toast.LENGTH_SHORT).show() 
+                    }
+                }
+                row.addView(restrictBtn)
+
+                val killBtn = Button(this).apply {
+                    text = "KILL"
+                    textSize = 9f
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.parseColor("#D32F2F"))
+                    setPadding(5, 0, 5, 0)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 70)
+                    setOnClickListener { showKillConfirmDialog(pid, line) }
+                }
+                row.addView(killBtn)
+            }
+            processListContainer.addView(row)
+        }
+    }
+
+    private fun showKillConfirmDialog(pid: Int, processDesc: String) {
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Terminate Process?")
+            .setMessage("Are you sure you want to kill PID $pid?\n\n$processDesc")
+            .setPositiveButton("KILL") { _, _ -> 
+                HardwareThermalControl.killProcess(pid)
+                Toast.makeText(this@MainActivity, "Force Stop signal sent to PID $pid", Toast.LENGTH_SHORT).show() 
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun checkPermissionsAndStartService() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+        }
+        startMonitorService()
+    }
+
+    private fun startMonitorService() {
+        val intent = Intent(this, TempMonitorService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+}
