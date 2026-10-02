@@ -12,10 +12,11 @@ data class TempRecord(
     val isCharging: Boolean,
     val chargeType: String,
     val appDetails: String,
-    val isRoot: Boolean
+    val isRoot: Boolean,
+    val screenOn: Boolean
 )
 
-class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "TempTracker.db", null, 1) {
+class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "TempTracker.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -27,7 +28,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "TempTracker.
                 is_charging INTEGER,
                 charge_type TEXT,
                 app_details TEXT,
-                is_root INTEGER
+                is_root INTEGER,
+                screen_on INTEGER DEFAULT 1
             )
             """.trimIndent()
         )
@@ -38,7 +40,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "TempTracker.
         onCreate(db)
     }
 
-    fun insertRecord(temp: Int, isCharging: Boolean, chargeType: String, details: String, isRoot: Boolean) {
+    fun insertRecord(temp: Int, isCharging: Boolean, chargeType: String, details: String, isRoot: Boolean, screenOn: Boolean) {
         val db = writableDatabase
         val cv = ContentValues().apply {
             put("timestamp", System.currentTimeMillis())
@@ -47,10 +49,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "TempTracker.
             put("charge_type", chargeType)
             put("app_details", details)
             put("is_root", if (isRoot) 1 else 0)
+            put("screen_on", if (screenOn) 1 else 0)
         }
         db.insert("records", null, cv)
 
-        // Auto-prune logs older than 72 hours to save storage
         val cutoff = System.currentTimeMillis() - (72 * 60 * 60 * 1000L)
         db.delete("records", "timestamp < ?", arrayOf(cutoff.toString()))
     }
@@ -69,7 +71,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "TempTracker.
                         isCharging = cursor.getInt(3) == 1,
                         chargeType = cursor.getString(4),
                         appDetails = cursor.getString(5),
-                        isRoot = cursor.getInt(6) == 1
+                        isRoot = cursor.getInt(6) == 1,
+                        screenOn = cursor.getInt(7) == 1
                     )
                 )
             } while (cursor.moveToNext())
