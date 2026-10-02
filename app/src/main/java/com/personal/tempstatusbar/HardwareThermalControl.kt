@@ -1,8 +1,11 @@
 package com.personal.tempstatusbar
 
+import android.app.ActivityManager
+import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 
 object HardwareThermalControl {
@@ -67,6 +70,32 @@ object HardwareThermalControl {
     fun muteAlarm() { isMuted = true; try { toneGen?.stopTone() } catch (e: Exception) {} }
     fun resetMute() { isMuted = false }
 
+    // Read hardware frequencies for all 8 Cores directly from sysfs
+    fun getCoreFrequencies(): List<String> {
+        val freqs = mutableListOf<String>()
+        for (i in 0..7) {
+            try {
+                val f = File("/sys/devices/system/cpu/cpu$i/cpufreq/scaling_cur_freq")
+                if (f.exists()) {
+                    val mhz = f.readText().trim().toInt() / 1000
+                    freqs.add("${mhz} MHz")
+                } else { freqs.add("Offline") }
+            } catch (e: Exception) { freqs.add("Offline") }
+        }
+        return freqs
+    }
+
+    fun getRamUsage(context: Context): String {
+        val mi = ActivityManager.MemoryInfo()
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        am.getMemoryInfo(mi)
+        val totalMb = mi.totalMem / 1048576L
+        val availMb = mi.availMem / 1048576L
+        val usedMb = totalMb - availMb
+        val pct = ((usedMb.toDouble() / totalMb.toDouble()) * 100).toInt()
+        return "Used: ${usedMb}MB / Total: ${totalMb}MB ($pct% Load)"
+    }
+
     fun getKernelProcessSnapshot(): Pair<String, Int> {
         if (!isRootAvailable()) return Pair("", -1)
         return try {
@@ -87,9 +116,16 @@ object HardwareThermalControl {
                         val pid = tokens[0].toIntOrNull() ?: -1
                         val cpu = tokens.firstOrNull { it.contains(".") } ?: "0.0"
                         val name = tokens.last()
-                        if (!name.startsWith("[") && !name.startsWith("top")) {
+                        // Strict filter to remove garbage PID -1 and kernel threads
+                        if (pid > 0 && !name.startsWith("[") && !name.startsWith("top") && name.length > 2) {
                             if (count == 0) topPid = pid
-                            sb.append("• $name — $cpu% CPU (PID $pid)\n")
+                            val friendlyName = when {
+                                name.contains("hvdcp_opti") -> "hvdcp (Fast Charge Engine)"
+                                name.contains("system_server") -> "Android Core Engine"
+                                name.contains("surfaceflinger") -> "Display Compositor"
+                                else -> name
+                            }
+                            sb.append("• $friendlyName — $cpu% CPU (PID $pid)\n")
                             count++
                             if (count >= 5) break
                         }
