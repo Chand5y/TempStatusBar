@@ -11,33 +11,65 @@ object HardwareThermalControl {
     private var rootProcess: Process? = null
     private var rootWriter: OutputStreamWriter? = null
     private var rootReader: BufferedReader? = null
-    private var isRootPipeReady = false
+    var isRootPipeReady = false
+        private set
 
     private var toneGen: ToneGenerator? = null
     var isChargingThrottled = false
         private set
 
     fun init() {
-        initRootPipe()
+        ensureRootPipe()
         try {
             toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
         } catch (e: Exception) {}
     }
 
-    private fun initRootPipe() {
-        try {
-            rootProcess = Runtime.getRuntime().exec("su")
-            rootWriter = OutputStreamWriter(rootProcess!!.outputStream)
-            rootReader = BufferedReader(InputStreamReader(rootProcess!!.inputStream))
-            isRootPipeReady = true
+    @Synchronized
+    fun ensureRootPipe(): Boolean {
+        if (isRootPipeReady && isProcessAlive(rootProcess)) {
+            return true
+        }
+        destroy()
+        return try {
+            val p = Runtime.getRuntime().exec("su")
+            val writer = OutputStreamWriter(p.outputStream)
+            val reader = BufferedReader(InputStreamReader(p.inputStream))
+
+            // Verify genuine root privilege via id check
+            writer.write("id\n")
+            writer.flush()
+
+            val line = reader.readLine()
+            if (line != null && line.contains("uid=0")) {
+                rootProcess = p
+                rootWriter = writer
+                rootReader = reader
+                isRootPipeReady = true
+                true
+            } else {
+                p.destroy()
+                isRootPipeReady = false
+                false
+            }
         } catch (e: Exception) {
             isRootPipeReady = false
+            false
         }
     }
 
-    // Direct PMIC Hardware Switch: Cuts electricity at the board level
+    private fun isProcessAlive(p: Process?): Boolean {
+        if (p == null) return false
+        return try {
+            p.exitValue()
+            false
+        } catch (e: IllegalThreadStateException) {
+            true
+        }
+    }
+
     fun setChargingEnabled(enable: Boolean) {
-        if (!isRootPipeReady) return
+        if (!ensureRootPipe()) return
         val value = if (enable) "1" else "0"
         val suspendVal = if (enable) "0" else "1"
 
@@ -52,47 +84,64 @@ object HardwareThermalControl {
             rootWriter?.flush()
             isChargingThrottled = !enable
         } catch (e: Exception) {
-            initRootPipe()
+            destroy()
         }
     }
 
-    // Play instant low-level hardware warning tone without loading media frameworks
     fun playThermalAlert() {
         try {
             toneGen?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 1500)
         } catch (e: Exception) {}
     }
 
-    // Capture top 5 CPU processes through the persistent pipe (Zero fork overhead)
+    // Android 15 / Toybox compliant instant snapshot
     fun getKernelProcessSnapshot(): String {
-        if (!isRootPipeReady) return ""
+        if (!ensureRootPipe()) return ""
         return try {
-            rootWriter?.write("top -b -n 1 -m 5 -s cpu\necho '__END__'\n")
+            rootWriter?.write("top -n 1 -m 6\necho '__END__'\n")
             rootWriter?.flush()
 
             val sb = StringBuilder()
             var line: String?
+            var headerPassed = false
+            var count = 0
+
             while (rootReader?.readLine().also { line = it } != null) {
-                if (line!!.contains("__END__")) break
-                val l = line!!.trim()
-                if (l.isNotEmpty() && !l.startsWith("Tasks:") && !l.startsWith("Mem:")) {
-                    sb.append(l).append("\n")
+                val l = line?.trim() ?: continue
+                if (l.contains("__END__")) break
+
+                if (l.contains("PID") && (l.contains("ARGS") || l.contains("NAME") || l.contains("CMD"))) {
+                    headerPassed = true
+                    continue
+                }
+
+                if (headerPassed && l.isNotEmpty()) {
+                    val parts = l.split("\\s+".toRegex())
+                    val procName = parts.last()
+                    // Filter out kernel worker bracket tasks to highlight real apps
+                    if (!procName.startsWith("[") && !procName.startsWith("top")) {
+                        sb.append("• ").append(procName).append("\n")
+                        count++
+                        if (count >= 5) break
+                    }
                 }
             }
             sb.toString().trim()
         } catch (e: Exception) {
-            initRootPipe()
+            destroy()
             ""
         }
     }
 
     fun destroy() {
         try {
-            setChargingEnabled(true)
             rootWriter?.write("exit\n")
             rootWriter?.flush()
-            rootProcess?.destroy()
-            toneGen?.release()
         } catch (e: Exception) {}
+        try { rootProcess?.destroy() } catch (e: Exception) {}
+        rootProcess = null
+        rootWriter = null
+        rootReader = null
+        isRootPipeReady = false
     }
 }
