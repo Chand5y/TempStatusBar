@@ -30,5 +30,6 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Status bar temperature display" />
         </service>
+        <receiver android:name=".ThermalActionReceiver" android:exported="false" />
     </application>
 </manifest>
