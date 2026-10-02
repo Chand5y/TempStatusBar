@@ -4,88 +4,60 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.io.OutputStreamWriter
 
 object HardwareThermalControl {
-
-    private var rootProcess: Process? = null
-    private var rootWriter: OutputStreamWriter? = null
-    private var rootReader: BufferedReader? = null
-    var isRootPipeReady = false
-        private set
 
     private var toneGen: ToneGenerator? = null
     var isChargingThrottled = false
         private set
 
+    private var cachedRootState: Boolean? = null
+    private var lastRootCheckTime = 0L
+
     fun init() {
-        ensureRootPipe()
         try {
             toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
         } catch (e: Exception) {}
+        isRootAvailable()
     }
 
-    @Synchronized
-    fun ensureRootPipe(): Boolean {
-        if (isRootPipeReady && isProcessAlive(rootProcess)) {
-            return true
+    // Direct, cached root verification that never false-flags APatch
+    fun isRootAvailable(): Boolean {
+        val now = System.currentTimeMillis()
+        if (cachedRootState != null && (now - lastRootCheckTime < 60000L)) {
+            return cachedRootState!!
         }
-        destroy()
+
         return try {
-            val p = Runtime.getRuntime().exec("su")
-            val writer = OutputStreamWriter(p.outputStream)
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
             val reader = BufferedReader(InputStreamReader(p.inputStream))
-
-            // Verify genuine root privilege via id check
-            writer.write("id\n")
-            writer.flush()
-
             val line = reader.readLine()
-            if (line != null && line.contains("uid=0")) {
-                rootProcess = p
-                rootWriter = writer
-                rootReader = reader
-                isRootPipeReady = true
-                true
-            } else {
-                p.destroy()
-                isRootPipeReady = false
-                false
-            }
+            p.waitFor()
+            val hasRoot = line != null && line.contains("uid=0")
+            cachedRootState = hasRoot
+            lastRootCheckTime = now
+            hasRoot
         } catch (e: Exception) {
-            isRootPipeReady = false
+            cachedRootState = false
             false
         }
     }
 
-    private fun isProcessAlive(p: Process?): Boolean {
-        if (p == null) return false
-        return try {
-            p.exitValue()
-            false
-        } catch (e: IllegalThreadStateException) {
-            true
-        }
-    }
-
+    // Direct PMIC Hardware Switch: Cuts current at the motherboard level
     fun setChargingEnabled(enable: Boolean) {
-        if (!ensureRootPipe()) return
+        if (!isRootAvailable()) return
         val value = if (enable) "1" else "0"
         val suspendVal = if (enable) "0" else "1"
 
         try {
-            val cmd = """
-                echo $value > /sys/class/power_supply/battery/charging_enabled 2>/dev/null
-                echo $suspendVal > /sys/class/power_supply/battery/input_suspend 2>/dev/null
-                echo $value > /sys/class/power_supply/bms/charging_enabled 2>/dev/null
-            """.trimIndent()
+            val cmd = "echo $value > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; " +
+                      "echo $suspendVal > /sys/class/power_supply/battery/input_suspend 2>/dev/null; " +
+                      "echo $value > /sys/class/power_supply/bms/charging_enabled 2>/dev/null"
             
-            rootWriter?.write(cmd + "\n")
-            rootWriter?.flush()
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+            p.waitFor()
             isChargingThrottled = !enable
-        } catch (e: Exception) {
-            destroy()
-        }
+        } catch (e: Exception) {}
     }
 
     fun playThermalAlert() {
@@ -94,54 +66,74 @@ object HardwareThermalControl {
         } catch (e: Exception) {}
     }
 
-    // Android 15 / Toybox compliant instant snapshot
+    // High-precision CPU & daemon inspector with exact CPU % extraction
     fun getKernelProcessSnapshot(): String {
-        if (!ensureRootPipe()) return ""
-        return try {
-            rootWriter?.write("top -n 1 -m 6\necho '__END__'\n")
-            rootWriter?.flush()
+        if (!isRootAvailable()) return ""
 
+        return try {
+            // Run one-shot top with batch format: PID, CPU%, and process command
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "top -b -n 1 -m 8"))
+            val reader = BufferedReader(InputStreamReader(p.inputStream))
             val sb = StringBuilder()
             var line: String?
             var headerPassed = false
             var count = 0
 
-            while (rootReader?.readLine().also { line = it } != null) {
+            while (reader.readLine().also { line = it } != null) {
                 val l = line?.trim() ?: continue
-                if (l.contains("__END__")) break
 
-                if (l.contains("PID") && (l.contains("ARGS") || l.contains("NAME") || l.contains("CMD"))) {
+                // Locate the dynamic column header row
+                if (l.contains("PID") && (l.contains("CPU") || l.contains("%CPU") || l.contains("ARGS") || l.contains("CMD") || l.contains("NAME"))) {
                     headerPassed = true
                     continue
                 }
 
                 if (headerPassed && l.isNotEmpty()) {
-                    val parts = l.split("\\s+".toRegex())
-                    val procName = parts.last()
-                    // Filter out kernel worker bracket tasks to highlight real apps
-                    if (!procName.startsWith("[") && !procName.startsWith("top")) {
-                        sb.append("• ").append(procName).append("\n")
-                        count++
-                        if (count >= 5) break
+                    val tokens = l.split("\\s+".toRegex()).filter { it.isNotEmpty() }
+                    if (tokens.size >= 5) {
+                        val pid = tokens[0]
+                        
+                        // Locate the token containing CPU percentage
+                        var cpuStr = tokens.firstOrNull { it.endsWith("%") && it.length <= 5 }
+                        if (cpuStr == null) {
+                            // Fallback index search if '%' sign is omitted by toybox
+                            cpuStr = tokens.getOrNull(4) ?: "0%"
+                        }
+                        if (!cpuStr.endsWith("%")) cpuStr = "$cpuStr%"
+
+                        val rawName = tokens.last()
+
+                        // Filter internal idle worker threads to highlight real tasks
+                        if (!rawName.startsWith("[") && !rawName.startsWith("top") && !rawName.startsWith("sh")) {
+                            val friendlyName = when {
+                                rawName.contains("hvdcp_opti") -> "hvdcp_opti (Qualcomm 67W Turbo Controller)"
+                                rawName.contains("surfaceflinger") -> "surfaceflinger (Display Compositor)"
+                                rawName.contains("system_server") -> "system_server (Android Core Engine)"
+                                rawName.contains("com.miui.home") -> "Xiaomi Launcher"
+                                else -> rawName
+                            }
+
+                            sb.append("• ").append(friendlyName)
+                              .append(" — ").append(cpuStr)
+                              .append(" (PID ").append(pid).append(")\n")
+
+                            count++
+                            if (count >= 5) break
+                        }
                     }
                 }
             }
+            p.waitFor()
             sb.toString().trim()
         } catch (e: Exception) {
-            destroy()
             ""
         }
     }
 
     fun destroy() {
         try {
-            rootWriter?.write("exit\n")
-            rootWriter?.flush()
+            setChargingEnabled(true)
+            toneGen?.release()
         } catch (e: Exception) {}
-        try { rootProcess?.destroy() } catch (e: Exception) {}
-        rootProcess = null
-        rootWriter = null
-        rootReader = null
-        isRootPipeReady = false
     }
 }
