@@ -63,19 +63,7 @@ class TempMonitorService : Service() {
                         lastPlugged = plugged
                         pushNotificationUpdate()
 
-                        backgroundHandler.post {
-                            val chargeType = when (plugged) {
-                                BatteryManager.BATTERY_PLUGGED_AC -> "Fast AC Charger"
-                                BatteryManager.BATTERY_PLUGGED_USB -> "USB Cable"
-                                BatteryManager.BATTERY_PLUGGED_WIRELESS -> "Wireless Dock"
-                                else -> "Discharging (Battery)"
-                            }
-                            val kernelProcesses = HardwareThermalControl.getKernelProcessSnapshot()
-                            val isRoot = kernelProcesses.isNotEmpty()
-                            val details = if (isRoot) kernelProcesses else ProcessInspector.captureNonRootActiveApps(applicationContext)
-
-                            dbHelper.insertRecord(currentTemp, isCharging, chargeType, details, isRoot)
-                        }
+                        triggerDatabaseSnapshot(currentTemp, plugged)
                     }
                 }
                 Intent.ACTION_SCREEN_ON -> {
@@ -107,7 +95,34 @@ class TempMonitorService : Service() {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
         }
-        registerReceiver(receiver, filter)
+        val batteryIntent = registerReceiver(receiver, filter)
+
+        // Immediate snapshot on startup
+        batteryIntent?.let {
+            val initialTemp = it.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
+            val initialPlugged = it.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+            lastTemp = initialTemp
+            lastPlugged = initialPlugged
+            triggerDatabaseSnapshot(initialTemp, initialPlugged)
+        }
+    }
+
+    private fun triggerDatabaseSnapshot(temp: Int, plugged: Int) {
+        backgroundHandler.post {
+            val isCharging = plugged != 0
+            val chargeType = when (plugged) {
+                BatteryManager.BATTERY_PLUGGED_AC -> "Fast AC Charger"
+                BatteryManager.BATTERY_PLUGGED_USB -> "USB Cable"
+                BatteryManager.BATTERY_PLUGGED_WIRELESS -> "Wireless Dock"
+                else -> "Discharging (Battery)"
+            }
+
+            val kernelProcesses = HardwareThermalControl.getKernelProcessSnapshot()
+            val isRoot = kernelProcesses.isNotEmpty()
+            val details = if (isRoot) kernelProcesses else ProcessInspector.captureNonRootActiveApps(applicationContext)
+
+            dbHelper.insertRecord(temp, isCharging, chargeType, details, isRoot)
+        }
     }
 
     private fun handleThermalSafety(temp: Int, isCharging: Boolean) {
