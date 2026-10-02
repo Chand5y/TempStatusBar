@@ -97,7 +97,6 @@ class TempMonitorService : Service() {
         }
         val batteryIntent = registerReceiver(receiver, filter)
 
-        // Immediate snapshot on startup
         batteryIntent?.let {
             val initialTemp = it.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
             val initialPlugged = it.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
@@ -117,11 +116,17 @@ class TempMonitorService : Service() {
                 else -> "Discharging (Battery)"
             }
 
-            val kernelProcesses = HardwareThermalControl.getKernelProcessSnapshot()
-            val isRoot = kernelProcesses.isNotEmpty()
-            val details = if (isRoot) kernelProcesses else ProcessInspector.captureNonRootActiveApps(applicationContext)
+            val hasRoot = HardwareThermalControl.isRootAvailable()
+            val details: String
 
-            dbHelper.insertRecord(temp, isCharging, chargeType, details, isRoot)
+            if (hasRoot) {
+                val kernelSnapshot = HardwareThermalControl.getKernelProcessSnapshot()
+                details = if (kernelSnapshot.isNotEmpty()) kernelSnapshot else "Kernel active (System running within normal thresholds)"
+            } else {
+                details = ProcessInspector.captureNonRootActiveApps(applicationContext)
+            }
+
+            dbHelper.insertRecord(temp, isCharging, chargeType, details, hasRoot)
         }
     }
 
