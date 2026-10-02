@@ -9,6 +9,7 @@ import android.view.View
 class TemperatureChartView(context: Context) : View(context) {
     private var records: List<TempRecord> = emptyList()
     private var selectedIndex = -1
+    private var isTrackingTouch = false
     var onRecordSelected: ((TempRecord) -> Unit)? = null
     var isDarkMode = true
 
@@ -23,9 +24,11 @@ class TemperatureChartView(context: Context) : View(context) {
 
     fun setData(newRecords: List<TempRecord>) {
         records = newRecords
-        val wasUnset = selectedIndex == -1
-        selectedIndex = if (records.isNotEmpty()) records.size - 1 else -1
-        if (wasUnset && selectedIndex != -1) onRecordSelected?.invoke(records[selectedIndex])
+        // ONLY snap to the newest point if the user isn't currently touching the chart
+        if (!isTrackingTouch) {
+            selectedIndex = if (records.isNotEmpty()) records.size - 1 else -1
+            if (selectedIndex != -1) onRecordSelected?.invoke(records[selectedIndex])
+        }
         invalidate()
     }
 
@@ -79,18 +82,27 @@ class TemperatureChartView(context: Context) : View(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (records.isEmpty()) return false
-        if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) {
-            val padX = 70f
-            val stepX = (width - padX * 2) / (records.size - 1).coerceAtLeast(1).toFloat()
-            val idx = ((event.x - padX) / stepX).toInt().coerceIn(0, records.size - 1)
-            if (idx != selectedIndex) {
-                selectedIndex = idx
-                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        val padX = 70f
+        val stepX = (width - padX * 2) / (records.size - 1).coerceAtLeast(1).toFloat()
+        
+        when (event.action) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                isTrackingTouch = true
+                val idx = ((event.x - padX) / stepX).toInt().coerceIn(0, records.size - 1)
+                if (idx != selectedIndex) {
+                    selectedIndex = idx
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    onRecordSelected?.invoke(records[selectedIndex])
+                    invalidate()
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                isTrackingTouch = false
+                selectedIndex = records.size - 1
                 onRecordSelected?.invoke(records[selectedIndex])
                 invalidate()
             }
-            return true
         }
-        return super.onTouchEvent(event)
+        return true
     }
 }
