@@ -37,16 +37,19 @@ class MainActivity : Activity() {
     private lateinit var detailTimeText: TextView
     private lateinit var detailTempText: TextView
     private lateinit var detailAppContent: TextView
+    private lateinit var warnLabel: TextView
+    private lateinit var cutoffLabel: TextView
+    private lateinit var resumeLabel: TextView
 
     // Tab 2 Elements
     private lateinit var pulseView: SubtlePulseView
     private lateinit var livePowerText: TextView
     private lateinit var healthPercentText: TextView
     private lateinit var actualCapacityText: TextView
+    private lateinit var batteryDrainList: TextView
 
     // Tab 3 Elements
     private lateinit var processListContainer: LinearLayout
-    private lateinit var core7StatusText: TextView
     private var isCpuTabActive = false
     private val uiHandler = Handler(Looper.getMainLooper())
 
@@ -82,23 +85,16 @@ class MainActivity : Activity() {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
-        // Title Area
-        val header = TextView(this).apply {
+        rootLayout.addView(TextView(this).apply {
             text = "Hardware Shield"
-            textSize = 22f
-            setTextColor(if (isDark) Color.WHITE else Color.BLACK)
+            textSize = 22f; setTextColor(if (isDark) Color.WHITE else Color.BLACK)
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             setPadding(40, 50, 40, 20)
-        }
-        rootLayout.addView(header)
+        })
 
-        // Content Area (Weight 1)
-        contentFrame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-        }
+        contentFrame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f) }
         rootLayout.addView(contentFrame)
 
-        // Build the 3 Tabs
         tab1Thermal = buildTab1Thermal(isDark)
         tab2Battery = buildTab2Battery(isDark)
         tab3CPU = buildTab3CPU(isDark)
@@ -107,7 +103,6 @@ class MainActivity : Activity() {
         contentFrame.addView(tab2Battery)
         contentFrame.addView(tab3CPU)
 
-        // Bottom Navigation Bar
         val navBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(if (isDark) Color.parseColor("#121212") else Color.WHITE)
@@ -115,23 +110,17 @@ class MainActivity : Activity() {
             setPadding(20, 10, 20, 10)
         }
 
-        tabButtons = listOf(
-            createNavButton("Thermal", 0),
-            createNavButton("Battery", 1),
-            createNavButton("CPU Core", 2)
-        )
+        tabButtons = listOf(createNavButton("Thermal", 0), createNavButton("Battery", 1), createNavButton("CPU Core", 2))
         tabButtons.forEach { navBar.addView(it) }
         rootLayout.addView(navBar)
 
         setContentView(rootLayout)
-        switchTab(0) // Default to Thermal
+        switchTab(0)
     }
 
     private fun createNavButton(title: String, index: Int): TextView {
         return TextView(this).apply {
-            text = title
-            textSize = 14f
-            gravity = Gravity.CENTER
+            text = title; textSize = 14f; gravity = Gravity.CENTER
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
             setOnClickListener { switchTab(index) }
@@ -147,13 +136,12 @@ class MainActivity : Activity() {
         tabButtons.forEachIndexed { i, btn ->
             btn.setTextColor(if (i == index) Color.parseColor("#00E5FF") else (if (isDark) Color.GRAY else Color.DKGRAY))
         }
-
         isCpuTabActive = (index == 2)
         if (isCpuTabActive) startLiveCpuUpdates()
     }
 
     // ==========================================
-    // TAB 1: THERMAL & ACTIVITY
+    // TAB 1: THERMAL & SETTINGS
     // ==========================================
     private fun buildTab1Thermal(isDark: Boolean): View {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
@@ -162,10 +150,7 @@ class MainActivity : Activity() {
 
         // Chart Card
         val chartCard = createCard(cardBg)
-        chartView = TemperatureChartView(this).apply {
-            this.isDarkMode = isDark
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 450)
-        }
+        chartView = TemperatureChartView(this).apply { this.isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 450) }
         chartCard.addView(chartView)
         layout.addView(chartCard)
 
@@ -175,17 +160,13 @@ class MainActivity : Activity() {
         detailCard.addView(detailTimeText)
 
         detailTempText = TextView(this).apply {
-            textSize = 28f
-            setTextColor(Color.parseColor("#FF5722"))
+            textSize = 28f; setTextColor(Color.parseColor("#FF5722"))
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
         detailCard.addView(detailTempText)
 
         detailAppContent = TextView(this).apply {
-            textSize = 12f
-            setPadding(0, 10, 0, 0)
-            setTextColor(if (isDark) Color.parseColor("#CFD8DC") else Color.DKGRAY)
-            typeface = Typeface.MONOSPACE
+            textSize = 12f; setPadding(0, 10, 0, 0); setTextColor(if (isDark) Color.parseColor("#CFD8DC") else Color.DKGRAY); typeface = Typeface.MONOSPACE
         }
         detailCard.addView(detailAppContent)
         layout.addView(detailCard)
@@ -193,10 +174,73 @@ class MainActivity : Activity() {
         chartView.onRecordSelected = { r ->
             val sdf = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault())
             val screenState = if (r.screenOn) "📱 Screen ON" else "💤 Screen OFF"
-            detailTimeText.text = "${sdf.format(Date(r.timestamp))} • $screenState"
+            val rootBadge = if (r.isRoot) "🛡️ Root Trace" else "📱 Non-Root Trace"
+            detailTimeText.text = "${sdf.format(Date(r.timestamp))} • $screenState • $rootBadge"
             detailTempText.text = "${r.temp}°C"
             detailAppContent.text = r.appDetails
         }
+
+        // Sliders Card
+        val controlCard = createCard(cardBg)
+        controlCard.addView(TextView(this).apply { text = "HARDWARE THERMAL PROTECTION"; textSize = 11f; setTextColor(Color.GRAY); setPadding(0, 0, 0, 20) })
+
+        warnLabel = TextView(this).apply { setTextColor(textPrimary); textSize = 13f }
+        controlCard.addView(warnLabel)
+        val warnSeek = SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35 }
+        warnSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, b: Boolean) { val v = 35 + p; settings.warningTemp = v; warnLabel.text = "⚠️ Warning Sound Alert: $v°C" }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        warnLabel.text = "⚠️ Warning Sound Alert: ${settings.warningTemp}°C"
+        controlCard.addView(warnSeek)
+
+        cutoffLabel = TextView(this).apply { setTextColor(textPrimary); textSize = 13f; setPadding(0, 16, 0, 0) }
+        controlCard.addView(cutoffLabel)
+        val cutoffSeek = SeekBar(this)
+
+        resumeLabel = TextView(this).apply { setTextColor(textPrimary); textSize = 13f; setPadding(0, 16, 0, 0) }
+        val resumeSeek = SeekBar(this)
+
+        cutoffSeek.apply {
+            max = 12; progress = settings.cutoffTemp - 38
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, b: Boolean) {
+                    val v = 38 + p; settings.cutoffTemp = v; cutoffLabel.text = "🛑 Cut Off Charging (PMIC): $v°C"
+                    if (settings.resumeTemp >= v - 1) { settings.resumeTemp = v - 2; resumeSeek.progress = (v - 2) - 32; resumeLabel.text = "🔄 Resume Charging: ${v - 2}°C" }
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        cutoffLabel.text = "🛑 Cut Off Charging (PMIC): ${settings.cutoffTemp}°C"
+        controlCard.addView(cutoffSeek)
+
+        resumeSeek.apply {
+            max = 13; progress = settings.resumeTemp - 32
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, b: Boolean) {
+                    var v = 32 + p
+                    if (v > settings.cutoffTemp - 2) { v = settings.cutoffTemp - 2; progress = v - 32 }
+                    settings.resumeTemp = v; resumeLabel.text = "🔄 Resume Charging: $v°C"
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        resumeLabel.text = "🔄 Resume Charging: ${settings.resumeTemp}°C"
+        controlCard.addView(resumeLabel)
+        controlCard.addView(resumeSeek)
+        layout.addView(controlCard)
+
+        // Toggles Card
+        val toggleCard = createCard(cardBg)
+        toggleCard.addView(TextView(this).apply { text = "NOTIFICATION PREFERENCES"; textSize = 11f; setTextColor(Color.GRAY); setPadding(0, 0, 0, 15) })
+        toggleCard.addView(Switch(this).apply { text = "Show Status Bar Notification"; setTextColor(textPrimary); isChecked = settings.showNotification
+            setOnCheckedChangeListener { _, c -> settings.showNotification = c; startService() } })
+        toggleCard.addView(Switch(this).apply { text = "Show Real-Time Wattage / Drain"; setTextColor(textPrimary); isChecked = settings.showPowerMetrics
+            setOnCheckedChangeListener { _, c -> settings.showPowerMetrics = c; startService() } })
+        layout.addView(toggleCard)
         
         return ScrollView(this).apply { addView(layout); isFillViewport = true }
     }
@@ -213,12 +257,7 @@ class MainActivity : Activity() {
         val statusRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         pulseView = SubtlePulseView(this).apply { layoutParams = LinearLayout.LayoutParams(50, 50) }
         statusRow.addView(pulseView)
-        livePowerText = TextView(this).apply {
-            textSize = 15f
-            setTextColor(textPrimary)
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            setPadding(25, 4, 0, 0)
-        }
+        livePowerText = TextView(this).apply { textSize = 15f; setTextColor(textPrimary); typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD); setPadding(25, 4, 0, 0) }
         statusRow.addView(livePowerText)
         statusCard.addView(statusRow)
         layout.addView(statusCard)
@@ -231,6 +270,12 @@ class MainActivity : Activity() {
         healthCard.addView(actualCapacityText)
         layout.addView(healthCard)
 
+        val statsCard = createCard(cardBg)
+        statsCard.addView(TextView(this).apply { text = "PER-APP BATTERY DRAIN (SINCE UNPLUGGED)"; textSize = 11f; setTextColor(Color.GRAY); setPadding(0,0,0,15) })
+        batteryDrainList = TextView(this).apply { textSize = 12f; setTextColor(if (isDark) Color.parseColor("#CFD8DC") else Color.DKGRAY); typeface = Typeface.MONOSPACE }
+        statsCard.addView(batteryDrainList)
+        layout.addView(statsCard)
+
         return ScrollView(this).apply { addView(layout); isFillViewport = true }
     }
 
@@ -240,32 +285,21 @@ class MainActivity : Activity() {
     private fun buildTab3CPU(isDark: Boolean): View {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cardBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
-        val textPrimary = if (isDark) Color.WHITE else Color.BLACK
 
-        // Core Control Card
         val coreCard = createCard(cardBg)
-        coreCard.addView(TextView(this).apply { text = "HARDWARE CORE HOTPLUG"; textSize = 11f; setTextColor(Color.GRAY) })
-        
-        core7StatusText = TextView(this).apply { textSize = 14f; setTextColor(textPrimary); setPadding(0, 10, 0, 15) }
-        coreCard.addView(core7StatusText)
-
+        coreCard.addView(TextView(this).apply { text = "HARDWARE CORE HOTPLUG"; textSize = 11f; setTextColor(Color.GRAY); setPadding(0,0,0,10) })
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnRow.addView(Button(this).apply {
-            text = "Disable Prime Core 7 (Cooling)"
-            textSize = 12f
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { HardwareThermalControl.setCoreOnline(7, false); Toast.makeText(context, "Core 7 Disabled", Toast.LENGTH_SHORT).show() }
+            text = "Disable Prime Core 7"; textSize = 11f; layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { HardwareThermalControl.setCoreOnline(7, false); Toast.makeText(context, "Core 7 Disabled (Cooling Mode)", Toast.LENGTH_SHORT).show() }
         })
         btnRow.addView(Button(this).apply {
-            text = "Enable Core 7"
-            textSize = 12f
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { HardwareThermalControl.setCoreOnline(7, true); Toast.makeText(context, "Core 7 Enabled", Toast.LENGTH_SHORT).show() }
+            text = "Enable Core 7"; textSize = 11f; layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { HardwareThermalControl.setCoreOnline(7, true); Toast.makeText(context, "Core 7 Enabled (Performance Mode)", Toast.LENGTH_SHORT).show() }
         })
         coreCard.addView(btnRow)
         layout.addView(coreCard)
 
-        // Process Manager Card
         val procCard = createCard(cardBg)
         procCard.addView(TextView(this).apply { text = "LIVE CPU STRESS & TERMINATION"; textSize = 11f; setTextColor(Color.GRAY); setPadding(0,0,0,15) })
         processListContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -292,12 +326,17 @@ class MainActivity : Activity() {
         healthPercentText.text = "${health.healthPercent}%"
         actualCapacityText.text = "Actual: ${health.actualCapacityMah} mAh / Design: ${health.designCapacityMah} mAh\nCycles: ${health.cycleCount}"
 
-        val isPlugged = (registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
-        val stats = PowerHardwareHelper.readPowerStats(this, isPlugged)
+        // Correct Charging Detection using Electrical Current
+        val stats = PowerHardwareHelper.readPowerStats(this, false)
         pulseView.setMode(stats.isCharging)
         livePowerText.text = if (stats.isCharging) "⚡ ${stats.wattage}W (+${stats.currentMa} mA)" else "🔋 Discharging (-${stats.wattage}W)"
 
         chartView.setData(dbHelper.getAllRecords())
+        
+        thread {
+            val statsStr = HardwareThermalControl.getAppBatteryDrain()
+            uiHandler.post { batteryDrainList.text = statsStr }
+        }
     }
 
     private fun startLiveCpuUpdates() {
@@ -319,34 +358,36 @@ class MainActivity : Activity() {
         val textColor = if (isDark) Color.WHITE else Color.BLACK
 
         if (snapshot.isEmpty()) {
-            processListContainer.addView(TextView(this).apply { text = "Waiting for kernel data..."; setTextColor(Color.GRAY) })
+            processListContainer.addView(TextView(this).apply { text = "Waiting for kernel data... Check root access."; setTextColor(Color.GRAY) })
             return
         }
 
         val lines = snapshot.split("\n")
         for (line in lines) {
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 10, 0, 10); gravity = Gravity.CENTER_VERTICAL }
-            val txt = TextView(this).apply {
-                text = line
-                textSize = 12f
-                setTextColor(textColor)
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 15, 0, 15); gravity = Gravity.CENTER_VERTICAL }
+            val txt = TextView(this).apply { text = line; textSize = 11f; setTextColor(textColor); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
             row.addView(txt)
 
             val pidMatch = Regex("\\(PID (\\d+)\\)").find(line)
             if (pidMatch != null && !line.contains("system_server") && !line.contains("surfaceflinger")) {
                 val pid = pidMatch.groupValues[1].toInt()
-                val killBtn = Button(this).apply {
-                    text = "KILL"
-                    textSize = 10f
-                    setTextColor(Color.WHITE)
-                    setBackgroundColor(Color.parseColor("#D32F2F"))
-                    setPadding(10, 0, 10, 0)
-                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 80)
+                
+                // RESTRICT Button (Taskset Affinity)
+                row.addView(Button(this).apply {
+                    text = "RESTRICT"; textSize = 9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#FF9800")); setPadding(5, 0, 5, 0)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 70).apply { rightMargin = 10 }
+                    setOnClickListener { 
+                        HardwareThermalControl.pinProcessToEfficiencyCores(pid)
+                        Toast.makeText(context, "Task pinned to Efficiency Cores (0-3)", Toast.LENGTH_SHORT).show() 
+                    }
+                })
+
+                // KILL Button
+                row.addView(Button(this).apply {
+                    text = "KILL"; textSize = 9f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F")); setPadding(5, 0, 5, 0)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 70)
                     setOnClickListener { showKillConfirmDialog(pid, line) }
-                }
-                row.addView(killBtn)
+                })
             }
             processListContainer.addView(row)
         }
@@ -356,19 +397,5 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Terminate Process?")
             .setMessage("Are you sure you want to kill PID $pid?\n\n$processDesc")
-            .setPositiveButton("KILL") { _, _ ->
-                HardwareThermalControl.killProcess(pid)
-                Toast.makeText(this, "Force Stop signal sent to PID $pid", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun checkPermissionsAndStartService() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
-        }
-        val intent = Intent(this, TempMonitorService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
-    }
-}
+            .setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(pid); Toast.makeText(this, "Force Stop signal sent to PID $pid", Toast.LENGTH_SHORT).show() }
+           
