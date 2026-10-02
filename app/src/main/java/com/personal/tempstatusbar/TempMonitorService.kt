@@ -75,7 +75,7 @@ class TempMonitorService : Service() {
         handlerThread = HandlerThread("ThermalWorkerThread", Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
         backgroundHandler = Handler(handlerThread.looper)
 
-        HardwareThermalControl.init()
+        HardwareThermalControl.init(this)
         createChannels()
         registerReceiver(receiver, IntentFilter().apply {
             addAction(Intent.ACTION_BATTERY_CHANGED)
