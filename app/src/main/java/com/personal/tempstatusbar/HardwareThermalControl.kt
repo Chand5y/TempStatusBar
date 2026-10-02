@@ -4,13 +4,16 @@ import android.app.ActivityManager
 import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.util.Locale
 
 data class RamProc(val name: String, val sizeMb: Int, val pid: Int)
+data class ProcessData(val pid: Int, val name: String, val cpu: String)
 
 object HardwareThermalControl {
     private var toneGen: ToneGenerator? = null
@@ -25,6 +28,17 @@ object HardwareThermalControl {
         try { toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100) } catch (e: Exception) {}
         try { vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator } catch (e: Exception) {}
         isRootAvailable()
+    }
+
+    fun getHardwareInfo(): String {
+        return (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(Locale.getDefault())
+    }
+
+    fun getGpuUsage(): String {
+        return try {
+            val f = File("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage")
+            if (f.exists()) "${f.readText().trim()}%" else "--%"
+        } catch (e: Exception) { "--%" }
     }
 
     fun isRootAvailable(): Boolean {
@@ -104,14 +118,16 @@ object HardwareThermalControl {
         return list.sortedByDescending { it.sizeMb }
     }
 
-    fun getKernelProcessSnapshot(): Pair<String, Int> {
-        if (!isRootAvailable()) return Pair("", -1)
-        return try {
+    // Resolves package names to friendly names, hides PID structurally
+    fun getKernelProcessSnapshot(context: Context): List<ProcessData> {
+        val list = mutableListOf<ProcessData>()
+        if (!isRootAvailable()) return list
+        try {
+            val pm = context.packageManager
             val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "top -n 1 -m 8"))
             val reader = BufferedReader(InputStreamReader(p.inputStream))
-            val sb = StringBuilder()
-            var topPid = -1
-            var headerPassed = false; var count = 0
+            var headerPassed = false
+            var count = 0
             var line: String?
 
             while (reader.readLine().also { line = it } != null) {
@@ -122,19 +138,30 @@ object HardwareThermalControl {
                     if (tokens.size >= 8) {
                         val pid = tokens[0].toIntOrNull() ?: -1
                         val cpu = tokens.subList(1, tokens.size).firstOrNull { it.matches(Regex("^\\d+(\\.\\d+)?$")) } ?: "0.0"
-                        val name = tokens.last()
-                        if (pid > 0 && !name.startsWith("[") && !name.startsWith("top") && name.length > 2) {
-                            if (count == 0) topPid = pid
-                            val fn = when { name.contains("hvdcp_opti") -> "hvdcp (Fast Charge Engine)"; name.contains("system_server") -> "Android Core Engine"; name.contains("surfaceflinger") -> "Display Compositor"; else -> name }
-                            sb.append("• $fn — $cpu% CPU (PID $pid)\n")
-                            count++; if (count >= 5) break
+                        val rawName = tokens.last()
+                        
+                        if (pid > 0 && !rawName.startsWith("[") && !rawName.startsWith("top") && rawName.length > 2) {
+                            var friendlyName = rawName
+                            if (rawName.contains(".")) {
+                                try { friendlyName = pm.getApplicationLabel(pm.getApplicationInfo(rawName, 0)).toString() } catch (e: Exception) {}
+                            } else {
+                                friendlyName = when {
+                                    rawName.contains("hvdcp") -> "Fast Charge Controller"
+                                    rawName.contains("system_server") -> "Android System Core"
+                                    rawName.contains("surfaceflinger") -> "Display Compositor"
+                                    else -> rawName
+                                }
+                            }
+                            list.add(ProcessData(pid, friendlyName, cpu))
+                            count++
+                            if (count >= 5) break
                         }
                     }
                 }
             }
             p.waitFor()
-            Pair(sb.toString().trim(), topPid)
-        } catch (e: Exception) { Pair("", -1) }
+        } catch (e: Exception) {}
+        return list
     }
 
     fun getAppBatteryDrain(): String {
