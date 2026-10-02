@@ -13,6 +13,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.*
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import java.text.SimpleDateFormat
@@ -333,7 +334,6 @@ class MainActivity : Activity() {
             }
             row.addView(txt)
 
-            // Extract PID using Regex to create a Kill Button
             val pidMatch = Regex("\\(PID (\\d+)\\)").find(line)
             if (pidMatch != null && !line.contains("system_server") && !line.contains("surfaceflinger")) {
                 val pid = pidMatch.groupValues[1].toInt()
