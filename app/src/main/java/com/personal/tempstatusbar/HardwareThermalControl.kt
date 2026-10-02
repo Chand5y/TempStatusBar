@@ -30,8 +30,18 @@ object HardwareThermalControl {
         isRootAvailable()
     }
 
+    // Translates RAW Qualcomm IDs to human-readable Snapdragon names
     fun getHardwareInfo(): String {
-        return (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(Locale.getDefault())
+        val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(Locale.getDefault())
+        return when {
+            soc.contains("SM8250") -> "Snapdragon 870 (SM8250)"
+            soc.contains("SM8350") -> "Snapdragon 888"
+            soc.contains("SM8450") -> "Snapdragon 8 Gen 1"
+            soc.contains("SM8475") -> "Snapdragon 8+ Gen 1"
+            soc.contains("SM8550") -> "Snapdragon 8 Gen 2"
+            soc.contains("SM8650") -> "Snapdragon 8 Gen 3"
+            else -> soc
+        }
     }
 
     fun getGpuUsage(): String {
@@ -48,8 +58,7 @@ object HardwareThermalControl {
             val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
             val hasRoot = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.contains("uid=0") == true
             p.waitFor()
-            cachedRootState = hasRoot
-            lastRootCheckTime = now
+            cachedRootState = hasRoot; lastRootCheckTime = now
             hasRoot
         } catch (e: Exception) { false }
     }
@@ -66,7 +75,19 @@ object HardwareThermalControl {
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
-    fun setCoreOnline(coreId: Int, online: Boolean) { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "echo ${if (online) "1" else "0"} > /sys/devices/system/cpu/cpu$coreId/online")).waitFor() } catch (e: Exception) {} }
+    
+    // Modern kernels block offlining Core 7. This throttles its max frequency to the absolute minimum instead.
+    fun throttlePrimeCore(throttle: Boolean) {
+        if (!isRootAvailable()) return
+        try {
+            if (throttle) {
+                Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq")).waitFor()
+            } else {
+                Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq")).waitFor()
+            }
+        } catch (e: Exception) {}
+    }
+    
     fun killProcess(pid: Int) { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "kill -9 $pid")).waitFor() } catch (e: Exception) {} }
     fun pinProcessToEfficiencyCores(pid: Int) { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "taskset -p 0f $pid")).waitFor() } catch (e: Exception) {} }
     fun clearRamCaches() { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "echo 3 > /proc/sys/vm/drop_caches")).waitFor() } catch (e: Exception) {} }
@@ -125,8 +146,7 @@ object HardwareThermalControl {
             val pm = context.packageManager
             val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "top -n 1 -m 8"))
             val reader = BufferedReader(InputStreamReader(p.inputStream))
-            var headerPassed = false
-            var count = 0
+            var headerPassed = false; var count = 0
             var line: String?
 
             while (reader.readLine().also { line = it } != null) {
@@ -152,8 +172,7 @@ object HardwareThermalControl {
                                 }
                             }
                             list.add(ProcessData(pid, friendlyName, cpu))
-                            count++
-                            if (count >= 5) break
+                            count++; if (count >= 5) break
                         }
                     }
                 }
