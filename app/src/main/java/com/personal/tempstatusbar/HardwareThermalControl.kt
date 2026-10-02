@@ -70,16 +70,12 @@ object HardwareThermalControl {
     fun muteAlarm() { isMuted = true; try { toneGen?.stopTone() } catch (e: Exception) {} }
     fun resetMute() { isMuted = false }
 
-    // Read hardware frequencies for all 8 Cores directly from sysfs
     fun getCoreFrequencies(): List<String> {
         val freqs = mutableListOf<String>()
         for (i in 0..7) {
             try {
                 val f = File("/sys/devices/system/cpu/cpu$i/cpufreq/scaling_cur_freq")
-                if (f.exists()) {
-                    val mhz = f.readText().trim().toInt() / 1000
-                    freqs.add("${mhz} MHz")
-                } else { freqs.add("Offline") }
+                if (f.exists()) freqs.add("${f.readText().trim().toInt() / 1000} MHz") else freqs.add("Offline")
             } catch (e: Exception) { freqs.add("Offline") }
         }
         return freqs
@@ -87,13 +83,10 @@ object HardwareThermalControl {
 
     fun getRamUsage(context: Context): String {
         val mi = ActivityManager.MemoryInfo()
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        am.getMemoryInfo(mi)
-        val totalMb = mi.totalMem / 1048576L
-        val availMb = mi.availMem / 1048576L
-        val usedMb = totalMb - availMb
-        val pct = ((usedMb.toDouble() / totalMb.toDouble()) * 100).toInt()
-        return "Used: ${usedMb}MB / Total: ${totalMb}MB ($pct% Load)"
+        (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mi)
+        val tMb = mi.totalMem / 1048576L
+        val uMb = tMb - (mi.availMem / 1048576L)
+        return "Used: ${uMb}MB / Total: ${tMb}MB (${((uMb.toDouble()/tMb)*100).toInt()}% Load)"
     }
 
     fun getKernelProcessSnapshot(): Pair<String, Int> {
@@ -114,9 +107,10 @@ object HardwareThermalControl {
                     val tokens = l.split("\\s+".toRegex())
                     if (tokens.size >= 8) {
                         val pid = tokens[0].toIntOrNull() ?: -1
-                        val cpu = tokens.firstOrNull { it.contains(".") } ?: "0.0"
+                        // Strict parsing: find the first pure decimal number, ignore M/G strings
+                        val cpu = tokens.subList(1, tokens.size).firstOrNull { it.matches(Regex("^\\d+(\\.\\d+)?$")) } ?: "0.0"
                         val name = tokens.last()
-                        // Strict filter to remove garbage PID -1 and kernel threads
+                        
                         if (pid > 0 && !name.startsWith("[") && !name.startsWith("top") && name.length > 2) {
                             if (count == 0) topPid = pid
                             val friendlyName = when {
