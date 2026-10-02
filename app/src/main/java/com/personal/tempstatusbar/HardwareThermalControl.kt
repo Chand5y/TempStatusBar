@@ -63,6 +63,12 @@ object HardwareThermalControl {
         try { Runtime.getRuntime().exec(arrayOf("su", "-c", "taskset -p 0f $pid")).waitFor() } catch (e: Exception) {}
     }
 
+    // NEW: Force clear kernel RAM caches
+    fun clearRamCaches() {
+        if (!isRootAvailable()) return
+        try { Runtime.getRuntime().exec(arrayOf("su", "-c", "echo 3 > /proc/sys/vm/drop_caches")).waitFor() } catch (e: Exception) {}
+    }
+
     fun playThermalAlert() {
         if (isMuted) return
         try { toneGen?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 1500) } catch (e: Exception) {}
@@ -107,7 +113,6 @@ object HardwareThermalControl {
                     val tokens = l.split("\\s+".toRegex())
                     if (tokens.size >= 8) {
                         val pid = tokens[0].toIntOrNull() ?: -1
-                        // Strict parsing: find the first pure decimal number, ignore M/G strings
                         val cpu = tokens.subList(1, tokens.size).firstOrNull { it.matches(Regex("^\\d+(\\.\\d+)?$")) } ?: "0.0"
                         val name = tokens.last()
                         
