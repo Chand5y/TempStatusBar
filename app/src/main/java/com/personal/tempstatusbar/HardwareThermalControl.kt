@@ -81,15 +81,20 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-    // This is used for BOTH Thermal Cutoff and Hardware Bypass Charging
+    // Updated for Xiaomi/POCO PMIC Bypass
     fun setChargingEnabled(enable: Boolean) {
         if (!isRootAvailable()) return
         val v = if (enable) "1" else "0"
+        val suspendV = if (enable) "0" else "1"
         try {
-            Runtime.getRuntime().exec(arrayOf("su", "-c", "echo $v > /sys/class/power_supply/battery/charging_enabled")).waitFor()
+            Runtime.getRuntime().exec(arrayOf(
+                "su", "-c", 
+                "echo $v > /sys/class/power_supply/battery/charging_enabled; echo $suspendV > /sys/class/power_supply/battery/input_suspend"
+            )).waitFor()
             isChargingThrottled = !enable
         } catch (e: Exception) {}
     }
+
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
