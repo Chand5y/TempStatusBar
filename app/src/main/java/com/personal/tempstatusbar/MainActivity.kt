@@ -193,7 +193,6 @@ class MainActivity : Activity() {
         val bg = if (isDark) Color.BLACK else Color.parseColor("#F4F4F6")
         
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
-        root.addView(txt("Hardware Shield", 24f, if (isDark) Color.WHITE else Color.BLACK, true).apply { setPadding(45, 60, 45, 30) })
         
         contentFrame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
         root.addView(contentFrame)
@@ -416,7 +415,7 @@ class MainActivity : Activity() {
         cpuArchitectureGrid = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f; layoutParams = LinearLayout.LayoutParams(-1, 380) }
         coreBlocks = Array(8) { TextView(this) }
         
-        fun coreBox(idx: Int): TextView = txt("C$idx", 12f, Color.WHITE, true).apply { 
+                fun coreBox(idx: Int): TextView = txt("C$idx", 12f, Color.WHITE, true).apply { 
             gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(-1, 0, 1f).apply { setMargins(6,6,6,6) }
             background = GradientDrawable().apply { cornerRadius = 20f; setColor(Color.DKGRAY) }
             setOnLongClickListener { 
@@ -428,11 +427,21 @@ class MainActivity : Activity() {
                 } else {
                     val isOff = (this.text.toString().contains("OFF"))
                     HardwareThermalControl.setCoreOnline(idx, isOff)
-                    Toast.makeText(context, "Core $idx ${if(isOff) "Online" else "Offline"}", Toast.LENGTH_SHORT).show()
+                    
+                    // Force UI to reflect state instantly rather than waiting for next background poll
+                    if (isOff) {
+                        (this.background as GradientDrawable).setColor(Color.parseColor("#4CAF50"))
+                        this.text = "C$idx\nONLINE"
+                        Toast.makeText(context, "Core $idx Online", Toast.LENGTH_SHORT).show()
+                    } else {
+                        (this.background as GradientDrawable).setColor(Color.parseColor("#333333"))
+                        this.text = "C$idx\nOFF"
+                        Toast.makeText(context, "Core $idx Offline", Toast.LENGTH_SHORT).show()
+                    }
                 }
                 true
             }
-        }
+          }
 
         val silCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }
         for(i in 0..3) { val b = coreBox(i); coreBlocks[i] = b; silCol.addView(b) }
