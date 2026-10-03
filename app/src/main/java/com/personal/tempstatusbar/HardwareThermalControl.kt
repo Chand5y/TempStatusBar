@@ -30,7 +30,6 @@ object HardwareThermalControl {
         isRootAvailable()
     }
 
-    // Translates RAW Qualcomm IDs to human-readable Snapdragon names
     fun getHardwareInfo(): String {
         val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(Locale.getDefault())
         return when {
@@ -39,16 +38,35 @@ object HardwareThermalControl {
             soc.contains("SM8450") -> "Snapdragon 8 Gen 1"
             soc.contains("SM8475") -> "Snapdragon 8+ Gen 1"
             soc.contains("SM8550") -> "Snapdragon 8 Gen 2"
-            soc.contains("SM8650") -> "Snapdragon 8 Gen 3"
             else -> soc
         }
     }
 
+    // Checks multiple paths for Adreno GPU data in HyperOS
     fun getGpuUsage(): String {
-        return try {
-            val f = File("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage")
-            if (f.exists()) "${f.readText().trim()}%" else "--%"
-        } catch (e: Exception) { "--%" }
+        val paths = listOf(
+            "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
+            "/sys/class/kgsl/kgsl-3d0/devfreq/gpu_load",
+            "/sys/class/kgsl/kgsl-3d0/gpubusy"
+        )
+        for (path in paths) {
+            try {
+                val f = File(path)
+                if (f.exists()) {
+                    val raw = f.readText().trim()
+                    if (raw.contains(" ")) {
+                        val parts = raw.split(" ")
+                        if (parts.size == 2) {
+                            val busy = parts[0].toFloatOrNull() ?: 0f
+                            val total = parts[1].toFloatOrNull() ?: 1f
+                            return "${((busy / total) * 100).toInt()}%"
+                        }
+                    }
+                    return "${raw.replace("%", "")}%"
+                }
+            } catch (e: Exception) {}
+        }
+        return "--%"
     }
 
     fun isRootAvailable(): Boolean {
@@ -63,12 +81,12 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
+    // This is used for BOTH Thermal Cutoff and Hardware Bypass Charging
     fun setChargingEnabled(enable: Boolean) {
         if (!isRootAvailable()) return
         val v = if (enable) "1" else "0"
-        val sv = if (enable) "0" else "1"
         try {
-            Runtime.getRuntime().exec(arrayOf("su", "-c", "echo $v > /sys/class/power_supply/battery/charging_enabled; echo $sv > /sys/class/power_supply/battery/input_suspend")).waitFor()
+            Runtime.getRuntime().exec(arrayOf("su", "-c", "echo $v > /sys/class/power_supply/battery/charging_enabled")).waitFor()
             isChargingThrottled = !enable
         } catch (e: Exception) {}
     }
@@ -76,7 +94,11 @@ object HardwareThermalControl {
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
     
-    // Modern kernels block offlining Core 7. This throttles its max frequency to the absolute minimum instead.
+    fun setCoreOnline(coreId: Int, online: Boolean) {
+        if (!isRootAvailable()) return
+        try { Runtime.getRuntime().exec(arrayOf("su", "-c", "echo ${if (online) "1" else "0"} > /sys/devices/system/cpu/cpu$coreId/online")).waitFor() } catch (e: Exception) {}
+    }
+
     fun throttlePrimeCore(throttle: Boolean) {
         if (!isRootAvailable()) return
         try {
@@ -88,6 +110,19 @@ object HardwareThermalControl {
         } catch (e: Exception) {}
     }
     
+    // SMART THERMAL GOVERNOR LOGIC
+    fun applySmartThermalGovernor(context: Context) {
+        if (!isRootAvailable()) return
+        throttlePrimeCore(true)
+        val procs = getKernelProcessSnapshot(context)
+        procs.forEach { p ->
+            // Pin background apps eating more than 5% CPU to Silver Cores (0-3) to save heat
+            if (p.cpu.toFloatOrNull() ?: 0f > 5.0f && !p.name.contains(context.packageName) && !p.name.contains("Android System") && !p.name.contains("SurfaceFlinger")) {
+                pinProcessToEfficiencyCores(p.pid)
+            }
+        }
+    }
+
     fun killProcess(pid: Int) { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "kill -9 $pid")).waitFor() } catch (e: Exception) {} }
     fun pinProcessToEfficiencyCores(pid: Int) { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "taskset -p 0f $pid")).waitFor() } catch (e: Exception) {} }
     fun clearRamCaches() { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "echo 3 > /proc/sys/vm/drop_caches")).waitFor() } catch (e: Exception) {} }
@@ -172,7 +207,7 @@ object HardwareThermalControl {
                                 }
                             }
                             list.add(ProcessData(pid, friendlyName, cpu))
-                            count++; if (count >= 5) break
+                            count++; if (count >= 7) break
                         }
                     }
                 }
@@ -185,7 +220,7 @@ object HardwareThermalControl {
     fun getAppBatteryDrain(): String {
         if (!isRootAvailable()) return "Root required to parse batterystats."
         return try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys batterystats | grep -iE 'Device battery use:|Estimated power use:' -A 15"))
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys batterystats --charged | grep -iE 'Uid|Estimated power use' -A 10"))
             val reader = BufferedReader(InputStreamReader(p.inputStream))
             val sb = StringBuilder()
             var line: String?
