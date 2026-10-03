@@ -27,13 +27,13 @@ class TempMonitorService : Service() {
     private var lastLoggedWatts = -1.0
     private var lastLoggedMa = -999
     private var isScreenOn = true
+    var isSmartGovernorActive = false
 
     private val iconSize = 64
     private val cachedBitmap = Bitmap.createBitmap(iconSize, iconSize, Bitmap.Config.ARGB_8888)
     private val cachedCanvas = Canvas(cachedBitmap)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 38f; textAlign = Paint.Align.CENTER; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
 
-    // Forces a DB log every 60 seconds so the chart never stays empty
     private val dbLogRunnable = object : Runnable {
         override fun run() {
             val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -66,13 +66,15 @@ class TempMonitorService : Service() {
                     handleThermalSafety(currentTemp, stats.isCharging)
 
                     if (currentTemp != lastTemp || plugged != lastPlugged) {
-                        lastTemp = currentTemp
-                        lastPlugged = plugged
+                        lastTemp = currentTemp; lastPlugged = plugged
                         pushNotificationUpdate()
                     }
                 }
                 Intent.ACTION_SCREEN_ON -> { isScreenOn = true; backgroundHandler.post(powerRunnable) }
                 Intent.ACTION_SCREEN_OFF -> { isScreenOn = false; backgroundHandler.removeCallbacks(powerRunnable) }
+                "ACTION_TOGGLE_SMART_GOVERNOR" -> {
+                    isSmartGovernorActive = intent.getBooleanExtra("state", false)
+                }
             }
         }
     }
@@ -90,15 +92,15 @@ class TempMonitorService : Service() {
             addAction(Intent.ACTION_BATTERY_CHANGED)
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
-        })
+            addAction("ACTION_TOGGLE_SMART_GOVERNOR")
+        }, Context.RECEIVER_NOT_EXPORTED)
         
-        // Start the 60-second database logger
         backgroundHandler.post(dbLogRunnable)
     }
 
     private fun triggerDatabaseSnapshot(temp: Int, isCharging: Boolean, screenOn: Boolean) {
         backgroundHandler.post {
-            val chargeType = if (isCharging) "Charging Connected" else "Discharging (Battery)"
+            val chargeType = if (isCharging) "Charging AC" else "Discharging (Battery)"
             val hasRoot = HardwareThermalControl.isRootAvailable()
             val details = if (hasRoot) {
                 val snapshotList = HardwareThermalControl.getKernelProcessSnapshot(applicationContext)
@@ -114,12 +116,18 @@ class TempMonitorService : Service() {
 
         if (temp >= settings.warningTemp) {
             HardwareThermalControl.playThermalAlert()
+            
+            // SMART GOVERNOR TRIGGER
+            if (isSmartGovernorActive) {
+                backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
+            }
+
             val muteIntent = PendingIntent.getBroadcast(this, 0, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_MUTE" }, PendingIntent.FLAG_IMMUTABLE)
             val coolIntent = PendingIntent.getBroadcast(this, 1, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_COOLDOWN" }, PendingIntent.FLAG_IMMUTABLE)
 
             val alertNotif = Notification.Builder(this, ALERT_CHANNEL_ID)
                 .setContentTitle("⚠️ OVERHEATING: ${temp}°C")
-                .setContentText("Hardware limits exceeded.")
+                .setContentText(if (isSmartGovernorActive) "Smart Governor Actively Throttling..." else "Hardware limits exceeded.")
                 .setSmallIcon(drawIcon("!"))
                 .setColor(Color.RED)
                 .setOngoing(true)
@@ -134,6 +142,9 @@ class TempMonitorService : Service() {
             if (HardwareThermalControl.isEmergencyCooldownActive) {
                 HardwareThermalControl.clearEmergencyCooldown()
                 HardwareThermalControl.setChargingEnabled(true)
+            }
+            if (isSmartGovernorActive) {
+                backgroundHandler.post { HardwareThermalControl.throttlePrimeCore(false) } // Release throttle when cool
             }
         }
 
