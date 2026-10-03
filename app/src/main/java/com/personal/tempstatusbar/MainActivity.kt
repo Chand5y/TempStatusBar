@@ -1,6 +1,7 @@
 package com.personal.tempstatusbar
 
 import android.Manifest
+import android.animation.LayoutTransition
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.AppOpsManager
@@ -118,7 +119,6 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
         }
         
-        // Only ask for Usage Access if ROOT is not available
         if (!HardwareThermalControl.isRootAvailable()) {
             val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
             val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
@@ -221,12 +221,10 @@ class MainActivity : Activity() {
         root.addView(nav)
         
         setContentView(root)
-        // Set initial visibility without animation
         tab1Thermal.visibility = View.VISIBLE; tab2Battery.visibility = View.GONE; tab3CPU.visibility = View.GONE
         tabButtons[0].setTextColor(Color.parseColor("#00E5FF"))
     }
 
-    // STRICT TOUCH HITBOX: Prevents swipe when touching Chart or SeekBars
     private fun isTouchInside(ev: MotionEvent, view: View): Boolean {
         if (view.visibility != View.VISIBLE || !view.isShown) return false
         val loc = IntArray(2)
@@ -237,7 +235,7 @@ class MainActivity : Activity() {
     private var downX = 0f; private var downY = 0f
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS))) {
-            return super.dispatchTouchEvent(ev) // Ignore global swipe
+            return super.dispatchTouchEvent(ev)
         }
         when (ev.action) {
             MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
@@ -252,7 +250,6 @@ class MainActivity : Activity() {
         return super.dispatchTouchEvent(ev)
     }
 
-    // SMOOTH ANIMATED TAB SWITCHING
     private fun switchTab(newIdx: Int) {
         if (newIdx == currentTabIndex) return
         val isDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -274,9 +271,6 @@ class MainActivity : Activity() {
         if (isCpuTabActive) startLiveCpuUpdates()
     }
 
-    // ==========================================
-    // TAB 1: THERMAL
-    // ==========================================
     private fun buildTab1(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
@@ -341,9 +335,6 @@ class MainActivity : Activity() {
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
 
-    // ==========================================
-    // TAB 2: GRAPHICAL BATTERY & BYPASS
-    // ==========================================
     private fun buildTab2(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
@@ -360,10 +351,9 @@ class MainActivity : Activity() {
         r1.addView(pInfo)
         c1.addView(r1)
         
-        // HARDWARE BYPASS CHARGING TOGGLE
-        c1.addView(Switch(this).apply { 
+         c1.addView(Switch(this).apply { 
             text = "Hardware Bypass Charging"; setTextColor(tPri); setPadding(0,30,0,0)
-            isChecked = HardwareThermalControl.isChargingThrottled // Reuses the thermal cutoff logic to enable bypass
+            isChecked = HardwareThermalControl.isChargingThrottled
             setOnCheckedChangeListener { _, c -> haptic(this); HardwareThermalControl.setChargingEnabled(!c); Toast.makeText(context, if(c) "Bypass Enabled: Battery Isolated" else "Bypass Disabled: Charging Restored", Toast.LENGTH_SHORT).show() }
         })
         lay.addView(c1)
@@ -387,9 +377,6 @@ class MainActivity : Activity() {
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
 
-    // ==========================================
-    // TAB 3: CPU ARCHITECTURE & SMART GOVERNOR
-    // ==========================================
     private fun buildTab3(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
@@ -411,7 +398,6 @@ class MainActivity : Activity() {
         })
         rCard.addView(ramRow); lay.addView(rCard)
 
-        // SMART THERMAL GOVERNOR
         val sgCard = card(cBg) { showModal("Smart Thermal Governor", "When your phone hits the Warning Temperature limit (set in Tab 1), this Engine will automatically:\n1. Throttle the Prime Core to minimum frequency.\n2. Force heavy background processes to the efficiency cores to save heat.\nIt releases the locks once the phone cools down.") }
         sgCard.addView(Switch(this).apply { 
             text = "Auto-Thermal Smart Governor"; setTextColor(tPri)
@@ -433,7 +419,6 @@ class MainActivity : Activity() {
         fun coreBox(idx: Int): TextView = txt("C$idx", 12f, Color.WHITE, true).apply { 
             gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(-1, 0, 1f).apply { setMargins(6,6,6,6) }
             background = GradientDrawable().apply { cornerRadius = 20f; setColor(Color.DKGRAY) }
-            // CORE LONG-PRESS TOGGLES
             setOnLongClickListener { 
                 haptic(this)
                 if (idx == 7) {
