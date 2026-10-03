@@ -81,19 +81,23 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-    // Updated for Xiaomi/POCO PMIC Bypass
+    // Updated for Xiaomi/POCO: Uses charge_disable instead of USB input_suspend
     fun setChargingEnabled(enable: Boolean) {
         if (!isRootAvailable()) return
-        val v = if (enable) "1" else "0"
-        val suspendV = if (enable) "0" else "1"
+        
+        val enableV = if (enable) "1" else "0"
+        val disableV = if (enable) "0" else "1" // Xiaomi uses an inverted disable node
+        
         try {
             Runtime.getRuntime().exec(arrayOf(
                 "su", "-c", 
-                "echo $v > /sys/class/power_supply/battery/charging_enabled; echo $suspendV > /sys/class/power_supply/battery/input_suspend"
+                "echo $enableV > /sys/class/power_supply/battery/charging_enabled; " +
+                "echo $disableV > /sys/class/power_supply/battery/charge_disable"
             )).waitFor()
             isChargingThrottled = !enable
         } catch (e: Exception) {}
     }
+
 
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
