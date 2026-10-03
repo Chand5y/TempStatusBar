@@ -24,7 +24,7 @@ class TemperatureChartView(context: Context) : View(context) {
 
     fun setData(newRecords: List<TempRecord>) {
         records = newRecords
-        // ONLY snap to the newest point if the user isn't currently touching the chart
+        // ONLY update the selected index if the user is NOT actively touching the screen
         if (!isTrackingTouch) {
             selectedIndex = if (records.isNotEmpty()) records.size - 1 else -1
             if (selectedIndex != -1) onRecordSelected?.invoke(records[selectedIndex])
@@ -86,23 +86,30 @@ class TemperatureChartView(context: Context) : View(context) {
         val stepX = (width - padX * 2) / (records.size - 1).coerceAtLeast(1).toFloat()
         
         when (event.action) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+            MotionEvent.ACTION_DOWN -> {
                 isTrackingTouch = true
-                val idx = ((event.x - padX) / stepX).toInt().coerceIn(0, records.size - 1)
-                if (idx != selectedIndex) {
-                    selectedIndex = idx
-                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    onRecordSelected?.invoke(records[selectedIndex])
-                    invalidate()
-                }
+                parent?.requestDisallowInterceptTouchEvent(true) // Prevents the ScrollView/Tabs from stealing the swipe
+                updateSelection(event.x, padX, stepX)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                isTrackingTouch = true
+                updateSelection(event.x, padX, stepX)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 isTrackingTouch = false
-                selectedIndex = records.size - 1
-                onRecordSelected?.invoke(records[selectedIndex])
-                invalidate()
+                parent?.requestDisallowInterceptTouchEvent(false)
             }
         }
         return true
+    }
+
+    private fun updateSelection(x: Float, padX: Float, stepX: Float) {
+        val idx = ((x - padX) / stepX).toInt().coerceIn(0, records.size - 1)
+        if (idx != selectedIndex) {
+            selectedIndex = idx
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            onRecordSelected?.invoke(records[selectedIndex])
+            invalidate()
+        }
     }
 }
