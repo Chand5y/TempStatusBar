@@ -46,7 +46,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ThermalMonit
                 list.add(TempRecord(c.getInt(0), c.getLong(1), c.getInt(2), c.getInt(3) == 1, c.getString(4), c.getString(5), c.getInt(6) == 1, c.getInt(7) == 1))
             }
             c.close()
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            // Failsafe to prevent crash if table is missing
+        }
         return list
     }
 
@@ -58,7 +60,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ThermalMonit
                 list.add(FpsSession(c.getInt(0), c.getLong(1), c.getString(2), c.getInt(3), c.getInt(4), c.getInt(5), c.getInt(6)))
             }
             c.close()
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            // Failsafe to prevent crash if table is missing
+        }
         return list
     }
 }
