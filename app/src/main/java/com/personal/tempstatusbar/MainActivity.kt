@@ -334,7 +334,7 @@ class MainActivity : Activity() {
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
 
-    private fun buildTab2(isDark: Boolean): View {
+        private fun buildTab2(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val tPri = if (isDark) Color.WHITE else Color.BLACK
@@ -350,7 +350,7 @@ class MainActivity : Activity() {
         r1.addView(pInfo)
         c1.addView(r1)
         
-         c1.addView(Switch(this).apply { 
+        c1.addView(Switch(this).apply { 
             text = "Hardware Bypass Charging"; setTextColor(tPri); setPadding(0,30,0,0)
             isChecked = HardwareThermalControl.isChargingThrottled
             setOnCheckedChangeListener { _, c -> haptic(this); HardwareThermalControl.setChargingEnabled(!c); Toast.makeText(context, if(c) "Bypass Enabled: Battery Isolated" else "Bypass Disabled: Charging Restored", Toast.LENGTH_SHORT).show() }
@@ -368,13 +368,47 @@ class MainActivity : Activity() {
         actualCapacityText = txt("Loading metrics...", 15f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(actualCapacityText)
         lay.addView(c3)
 
+        // NEW LOG EXPORTER CARD
+        val logCard = card(cBg) {
+            val logFile = java.io.File(cacheDir, "HardwareShield_Log.txt")
+            val content = if (logFile.exists()) logFile.readText() else "No logs recorded yet. Try toggling features."
+            
+            val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
+            sv.addView(txt(content, 12f, Color.GRAY).apply { typeface = Typeface.MONOSPACE })
+            
+            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Root Execution Logs")
+                .setView(sv)
+                .setPositiveButton("CLOSE", null)
+                .setNeutralButton("SAVE TO DOWNLOADS") { _, _ ->
+                    if (logFile.exists()) {
+                        try {
+                            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                            val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                            val destFile = java.io.File(destDir, "HardwareShield_Log_$timestamp.txt")
+                            logFile.copyTo(destFile)
+                            Toast.makeText(this, "Saved to Downloads folder!", Toast.LENGTH_LONG).show()
+                        } catch(e: Exception) {
+                            Toast.makeText(this, "Failed to save file.", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(this, "No logs exist to save.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .show()
+        }
+        logCard.addView(txt("VIEW / EXPORT ROOT LOGS", 12f, Color.GRAY).apply { setPadding(0,0,0,10) })
+        logCard.addView(txt("Tap to view execution traces", 14f, tPri, true))
+        lay.addView(logCard)
+
         val c4 = card(cBg)
         c4.addView(txt("PER-APP DRAIN (SINCE UNPLUGGED)", 12f, Color.GRAY).apply{setPadding(0,0,0,20)})
         batteryDrainList = txt("Gathering battery statistics...", 13f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { typeface = Typeface.MONOSPACE }; c4.addView(batteryDrainList)
         lay.addView(c4)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
-    }
+        }
+        
 
     private fun buildTab3(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
