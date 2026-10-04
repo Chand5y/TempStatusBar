@@ -112,7 +112,6 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-    // Target the native Xiaomi hardware nodes discovered in recon scan
     fun setChargingEnabled(enable: Boolean, isManualToggle: Boolean = false) {
         if (isManualToggle) {
             isManualBypassActive = !enable
@@ -163,7 +162,8 @@ object HardwareThermalControl {
         throttlePrimeCore(true)
         val procs = getKernelProcessSnapshot(context)
         procs.forEach { p ->
-            if (p.cpu.toFloatOrNull() ?: 0f > 5.0f && !p.name.contains(context.packageName) && !p.name.contains("Android System") && !p.name.contains("SurfaceFlinger")) {
+            val cpuVal = p.cpu.toFloatOrNull() ?: 0f
+            if (cpuVal > 5.0f && !p.name.contains(context.packageName) && !p.name.contains("Android System") && !p.name.contains("SurfaceFlinger")) {
                 pinProcessToEfficiencyCores(p.pid)
             }
         }
