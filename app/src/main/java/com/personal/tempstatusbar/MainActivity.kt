@@ -338,7 +338,7 @@ class MainActivity : Activity() {
         val c1 = card(cBg)
         val headerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f }
         headerRow.addView(txt("📈 THERMAL HISTORY", 12f, Color.GRAY).apply { layoutParams = LinearLayout.LayoutParams(0,-2,1f); setPadding(0,0,0,15) })
-        headerRow.addView(txt("VIEW RAW LOGS", 12f, Color.parseColor("#00E5FF"), true).apply { 
+        headerRow.addView(txt("📋 VIEW LOGS", 12f, Color.parseColor("#00E5FF"), true).apply { 
             layoutParams = LinearLayout.LayoutParams(0,-2,1f); gravity = Gravity.END; setPadding(0,0,0,15)
             setOnClickListener {
                 haptic(this)
@@ -539,8 +539,11 @@ class MainActivity : Activity() {
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     haptic(this)
-                    thread { Runtime.getRuntime().exec(arrayOf("su", "-c", "settings put system min_refresh_rate $r; settings put system peak_refresh_rate $r; settings put system user_refresh_rate $r")) }
-                    Toast.makeText(this@MainActivity, "Forced ${r}Hz (Turn screen OFF and ON to apply)", Toast.LENGTH_LONG).show()
+                    thread { 
+                        val cmd = "settings put system peak_refresh_rate $r; settings put system min_refresh_rate $r; settings put system user_refresh_rate $r; settings put secure miui_refresh_rate $r; settings put system miui_refresh_rate $r"
+                        Runtime.getRuntime().exec(arrayOf("su", "-c", cmd)) 
+                    }
+                    Toast.makeText(this@MainActivity, "Forced ${r}Hz (Lock & Unlock screen to apply)", Toast.LENGTH_LONG).show()
                 }
             })
         }
