@@ -64,6 +64,60 @@ class BatteryGraphicView(context: Context) : View(context) {
     }
 }
 
+class FpsChartView(context: Context) : View(context) {
+    private var sessions: List<FpsSession> = emptyList()
+    var onSessionSelected: ((FpsSession) -> Unit)? = null
+    var isDarkMode = true
+    private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 24f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
+
+    fun setData(data: List<FpsSession>) {
+        sessions = data
+        invalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (sessions.isEmpty()) {
+            textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
+            canvas.drawText("No FPS data recorded yet.", width / 2f - 140, height / 2f, textPaint)
+            return
+        }
+        val padX = 40f; val padY = 40f
+        val w = width - padX * 2; val h = height - padY * 2
+        val stepX = w / sessions.size.toFloat()
+        val maxFpsVal = (sessions.maxOf { it.maxFps } + 10).coerceAtLeast(60).toFloat()
+
+        for (i in sessions.indices) {
+            val s = sessions[i]
+            val left = padX + (i * stepX) + 4f
+            val right = padX + ((i + 1) * stepX) - 4f
+            val top = padY + h - ((s.avgFps.toFloat() / maxFpsVal) * h)
+            val bottom = padY + h
+
+            barPaint.color = when {
+                s.avgFps >= 55 -> Color.parseColor("#4CAF50")
+                s.avgFps >= 30 -> Color.parseColor("#FF9800")
+                else -> Color.parseColor("#F44336")
+            }
+            canvas.drawRoundRect(left, top, right, bottom, 8f, 8f, barPaint)
+        }
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (sessions.isEmpty()) return false
+        if (event.action == MotionEvent.ACTION_DOWN) {
+            val padX = 40f
+            val stepX = (width - padX * 2) / sessions.size.toFloat()
+            val idx = ((event.x - padX) / stepX).toInt().coerceIn(0, sessions.size - 1)
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            onSessionSelected?.invoke(sessions[idx])
+            return true
+        }
+        return super.onTouchEvent(event)
+    }
+}
+
 class MainActivity : Activity() {
     private lateinit var dbHelper: DatabaseHelper
     private lateinit var settings: SettingsManager
@@ -71,9 +125,12 @@ class MainActivity : Activity() {
     private lateinit var tab1Thermal: View
     private lateinit var tab2Battery: View
     private lateinit var tab3CPU: View
+    private lateinit var tab4Display: View
     private lateinit var tabButtons: List<TextView>
     
     private lateinit var chartView: TemperatureChartView
+    private lateinit var fpsChartView: FpsChartView
+    private lateinit var fpsDetailText: TextView
     private lateinit var warnS: SeekBar
     private lateinit var cutS: SeekBar
     private lateinit var resS: SeekBar
@@ -196,22 +253,22 @@ class MainActivity : Activity() {
         contentFrame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
         root.addView(contentFrame)
 
-        tab1Thermal = buildTab1(isDark); tab2Battery = buildTab2(isDark); tab3CPU = buildTab3(isDark)
-        contentFrame.addView(tab1Thermal); contentFrame.addView(tab2Battery); contentFrame.addView(tab3CPU)
+        tab1Thermal = buildTab1(isDark); tab2Battery = buildTab2(isDark); tab3CPU = buildTab3(isDark); tab4Display = buildTab4(isDark)
+        contentFrame.addView(tab1Thermal); contentFrame.addView(tab2Battery); contentFrame.addView(tab3CPU); contentFrame.addView(tab4Display)
 
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; setBackgroundColor(if (isDark) Color.parseColor("#121212") else Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(-1, 180); setPadding(20, 10, 20, 10)
             setOnTouchListener { v, event ->
                 if (event.action == MotionEvent.ACTION_MOVE || event.action == MotionEvent.ACTION_DOWN) {
-                    val idx = (event.x / (v.width / 3)).toInt().coerceIn(0, 2)
+                    val idx = (event.x / (v.width / 4)).toInt().coerceIn(0, 3)
                     if (currentTabIndex != idx) { haptic(v); switchTab(idx) }
                 }
                 true
             }
         }
-        tabButtons = listOf("Thermal", "Battery", "CPU Core").mapIndexed { i, t ->
-            txt(t, 14f, Color.GRAY, true).apply { gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+        tabButtons = listOf("Thermal", "Battery", "CPU", "Display").mapIndexed { i, t ->
+            txt(t, 13f, Color.GRAY, true).apply { gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
                 setOnClickListener { haptic(this); switchTab(i) } 
             }
         }
@@ -219,7 +276,7 @@ class MainActivity : Activity() {
         root.addView(nav)
         
         setContentView(root)
-        tab1Thermal.visibility = View.VISIBLE; tab2Battery.visibility = View.GONE; tab3CPU.visibility = View.GONE
+        tab1Thermal.visibility = View.VISIBLE; tab2Battery.visibility = View.GONE; tab3CPU.visibility = View.GONE; tab4Display.visibility = View.GONE
         tabButtons[0].setTextColor(Color.parseColor("#00E5FF"))
     }
 
@@ -235,13 +292,16 @@ class MainActivity : Activity() {
         if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS))) {
             return super.dispatchTouchEvent(ev)
         }
+        if (currentTabIndex == 3 && isTouchInside(ev, fpsChartView)) {
+            return super.dispatchTouchEvent(ev)
+        }
         when (ev.action) {
             MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
             MotionEvent.ACTION_UP -> {
                 val dx = ev.x - downX; val dy = ev.y - downY
                 if (abs(dx) > 150 && abs(dx) > abs(dy) * 2) {
                     if (dx > 0 && currentTabIndex > 0) { haptic(contentFrame); switchTab(currentTabIndex - 1) }
-                    else if (dx < 0 && currentTabIndex < 2) { haptic(contentFrame); switchTab(currentTabIndex + 1) }
+                    else if (dx < 0 && currentTabIndex < 3) { haptic(contentFrame); switchTab(currentTabIndex + 1) }
                 }
             }
         }
@@ -252,8 +312,9 @@ class MainActivity : Activity() {
         if (newIdx == currentTabIndex) return
         val isDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         val movingLeft = newIdx > currentTabIndex
-        val oldTab = if (currentTabIndex == 0) tab1Thermal else if (currentTabIndex == 1) tab2Battery else tab3CPU
-        val newTab = if (newIdx == 0) tab1Thermal else if (newIdx == 1) tab2Battery else tab3CPU
+        
+        val oldTab = when(currentTabIndex) { 0 -> tab1Thermal; 1 -> tab2Battery; 2 -> tab3CPU; else -> tab4Display }
+        val newTab = when(newIdx) { 0 -> tab1Thermal; 1 -> tab2Battery; 2 -> tab3CPU; else -> tab4Display }
         
         val sw = contentFrame.width.toFloat()
         oldTab.animate().translationX(if (movingLeft) -sw else sw).alpha(0f).setDuration(250).withEndAction { oldTab.visibility = View.GONE }.start()
@@ -302,7 +363,7 @@ class MainActivity : Activity() {
         val c3 = card(cBg) { showModal("PMIC Safety Engine", "Cut Off (🛑): Instantly breaks the circuit from the charger to the battery when this temp is hit.\nResume (🔄): Restores the circuit once the battery has cooled down.") }
         c3.addView(txt("HARDWARE THERMAL PROTECTION (TAP FOR INFO)", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
         
-        warnLabel = txt("⚠ Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
+        warnLabel = txt("⚠️ Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
         warnS = SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=35+p; settings.warningTemp=v; warnLabel.text="⚠️ Warning Sound Alert: $v°C" }
             override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
@@ -348,16 +409,6 @@ class MainActivity : Activity() {
         livePowerText = txt("Calculating...", 13f, Color.GRAY); pInfo.addView(livePowerText)
         r1.addView(pInfo)
         c1.addView(r1)
-        
-        c1.addView(Switch(this).apply { 
-            text = "Hardware Bypass Charging"; setTextColor(tPri); setPadding(0,30,0,0)
-            isChecked = HardwareThermalControl.isManualBypassActive
-            setOnCheckedChangeListener { _, c -> 
-                haptic(this)
-                HardwareThermalControl.setChargingEnabled(!c, isManualToggle = true)
-                Toast.makeText(context, if(c) "Bypass Enabled: Battery Isolated" else "Bypass Disabled: Charging Restored", Toast.LENGTH_SHORT).show() 
-            }
-        })
         lay.addView(c1)
 
         val c3 = card(cBg) {
@@ -411,7 +462,6 @@ class MainActivity : Activity() {
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
-
     private fun buildTab3(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
@@ -496,6 +546,64 @@ class MainActivity : Activity() {
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
 
+    private fun buildTab4(isDark: Boolean): View {
+        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
+        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
+        val tPri = if (isDark) Color.WHITE else Color.BLACK
+
+        val c1 = card(cBg)
+        c1.addView(txt("DISPLAY REFRESH RATE", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 20) })
+        val rrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f }
+        listOf(60, 90, 120).forEach { r ->
+            rrRow.addView(Button(this).apply {
+                text = "${r}Hz"
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10, 0, 10, 0) }
+                setBackgroundColor(Color.parseColor("#333333"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    haptic(this)
+                    thread { Runtime.getRuntime().exec(arrayOf("su", "-c", "settings put system min_refresh_rate $r; settings put system peak_refresh_rate $r; settings put system user_refresh_rate $r")) }
+                    Toast.makeText(this@MainActivity, "Forced ${r}Hz", Toast.LENGTH_SHORT).show()
+                }
+            })
+        }
+        c1.addView(rrRow); lay.addView(c1)
+
+        val c2 = card(cBg)
+        c2.addView(txt("LIVE FPS METRE OVERLAY", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 10) })
+        c2.addView(txt("Tap the floating pill to start/pause counting. Long-press to save the session data and close the overlay.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
+        c2.addView(Button(this).apply {
+            text = "LAUNCH FPS OVERLAY"
+            setBackgroundColor(Color.parseColor("#2196F3"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                haptic(this)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
+                    Toast.makeText(this@MainActivity, "Please grant Draw Overlays permission first", Toast.LENGTH_LONG).show()
+                } else {
+                    startService(Intent(this@MainActivity, FpsOverlayService::class.java))
+                }
+            }
+        })
+        lay.addView(c2)
+
+        val c3 = card(cBg)
+        c3.addView(txt("GAMING FPS HISTORY", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 20) })
+        fpsDetailText = txt("Tap a bar to view session details", 13f, tPri).apply { setPadding(0, 20, 0, 0) }
+        fpsChartView = FpsChartView(this).apply {
+            isDarkMode = isDark
+            layoutParams = LinearLayout.LayoutParams(-1, 400)
+            onSessionSelected = { s ->
+                val date = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(s.timestamp))
+                fpsDetailText.text = "Session: $date\nApp: ${s.appName}\nDuration: ${s.durationSec}s\nAverage: ${s.avgFps} FPS  |  Min: ${s.minFps}  |  Max: ${s.maxFps}"
+            }
+        }
+        c3.addView(fpsChartView); c3.addView(fpsDetailText); lay.addView(c3)
+
+        return ScrollView(this).apply { addView(lay); isFillViewport = true }
+    }
+
     private fun refreshLiveHardware() {
         try {
             val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -507,8 +615,8 @@ class MainActivity : Activity() {
             val stats = PowerHardwareHelper.readPowerStats(this, isPlugged)
             currentLevelText.text = "$pct%"
             batteryGraphic.update(pct, stats.isCharging)
-            val bypassStr = if (HardwareThermalControl.isManualBypassActive && isPlugged) "\n🛡️ BYPASS MODE ACTIVE" else ""
-            livePowerText.text = if (stats.isCharging) "Charging AC\n⚡ ${stats.wattage}W (+${stats.currentMa} mA)$bypassStr" else "Discharging\n🔋 -${stats.wattage}W (${stats.currentMa} mA)$bypassStr"
+            
+            livePowerText.text = if (stats.isCharging) "Charging AC\n⚡ ${stats.wattage}W (+${stats.currentMa} mA)" else "Discharging\n🔋 -${stats.wattage}W (${stats.currentMa} mA)"
         } catch (e: Exception) {
             livePowerText.text = "Hardware parsing error"
         }
@@ -523,6 +631,7 @@ class MainActivity : Activity() {
         } catch(e: Exception) { healthPercentText.text = "--%"; actualCapacityText.text = "Error reading health" }
         
         try { chartView.setData(dbHelper.getAllRecords()) } catch(e: Exception) {}
+        try { fpsChartView.setData(dbHelper.getFpsSessions().reversed()) } catch (e: Exception) {}
     }
 
     private fun startLiveCpuUpdates() {
