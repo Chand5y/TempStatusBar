@@ -116,25 +116,28 @@ object HardwareThermalControl {
     }
 
     fun setChargingEnabled(enable: Boolean) {
+        fun setChargingEnabled(enable: Boolean) {
         val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
-        // Uses SELinux setenforce 0 to bypass "Permission Denied" errors and targets qcom-battery
+        
+        // Target idle_mode and constant_charge_current_max to avoid USB port resets
         val cmd = if (enable) {
             "setenforce 0; " +
-            "echo 0 > /sys/class/qcom-battery/input_suspend; " +
-            "echo 0 > /sys/class/power_supply/battery/input_suspend; " +
-            "echo 1 > /sys/class/power_supply/battery/step_charging_enabled; " +
+            "echo 0 > /sys/class/power_supply/battery/idle_mode; " +
+            "echo 0 > /sys/class/power_supply/battery/restricted_charging; " +
+            "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current_max; " +
             "setenforce 1"
         } else {
             "setenforce 0; " +
-            "echo 1 > /sys/class/qcom-battery/input_suspend; " +
-            "echo 1 > /sys/class/power_supply/battery/input_suspend; " +
-            "echo 0 > /sys/class/power_supply/battery/step_charging_enabled; " +
+            "echo 1 > /sys/class/power_supply/battery/idle_mode; " +
+            "echo 1 > /sys/class/power_supply/battery/restricted_charging; " +
+            "echo 0 > /sys/class/power_supply/battery/constant_charge_current_max; " +
             "setenforce 1"
         }
+        
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
-    }
-
+        }
+        
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
     
