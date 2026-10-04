@@ -116,7 +116,6 @@ object HardwareThermalControl {
     }
 
     fun setChargingEnabled(enable: Boolean) {
-        fun setChargingEnabled(enable: Boolean) {
         val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
         
         // Target idle_mode and constant_charge_current_max to avoid USB port resets
@@ -136,8 +135,8 @@ object HardwareThermalControl {
         
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
-        }
-        
+    }
+
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
     
