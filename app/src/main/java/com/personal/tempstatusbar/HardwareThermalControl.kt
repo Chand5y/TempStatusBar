@@ -98,8 +98,6 @@ object HardwareThermalControl {
         } catch (e: Exception) {}
     }
 
-
-
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
     
