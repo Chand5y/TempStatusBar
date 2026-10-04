@@ -118,10 +118,17 @@ object HardwareThermalControl {
         }
 
         val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
+        
+        // Includes chmod 444 padlocks to block Xiaomi daemons, and hits both Master/Slave charge pumps
         val cmd = if (enable) {
             "setenforce 0; " +
+            "chmod 644 /sys/class/power_supply/battery/battery_charging_enabled; " +
+            "chmod 644 /sys/class/power_supply/battery/constant_charge_current; " +
+            "chmod 644 /sys/class/power_supply/bq2597x-master/charging_enabled; " +
+            "chmod 644 /sys/class/power_supply/bq2597x-slave/charging_enabled; " +
             "echo 0 > /sys/class/power_supply/usb/enable_bypass_mode 2>/dev/null; " +
             "echo 1 > /sys/class/power_supply/bq2597x-master/charging_enabled 2>/dev/null; " +
+            "echo 1 > /sys/class/power_supply/bq2597x-slave/charging_enabled 2>/dev/null; " +
             "echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
             "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
             "setenforce 1"
@@ -129,8 +136,13 @@ object HardwareThermalControl {
             "setenforce 0; " +
             "echo 1 > /sys/class/power_supply/usb/enable_bypass_mode 2>/dev/null; " +
             "echo 0 > /sys/class/power_supply/bq2597x-master/charging_enabled 2>/dev/null; " +
+            "echo 0 > /sys/class/power_supply/bq2597x-slave/charging_enabled 2>/dev/null; " +
             "echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
             "echo 0 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
+            "chmod 444 /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
+            "chmod 444 /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
+            "chmod 444 /sys/class/power_supply/bq2597x-master/charging_enabled 2>/dev/null; " +
+            "chmod 444 /sys/class/power_supply/bq2597x-slave/charging_enabled 2>/dev/null; " +
             "setenforce 1"
         }
         
