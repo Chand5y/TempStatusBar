@@ -111,29 +111,30 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-         fun setChargingEnabled(enable: Boolean) {
+        fun setChargingEnabled(enable: Boolean) {
         val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
         
-        // Targets the precise POCO F4 (pm8150b/bq2597x) nodes discovered in the recon scan
+        // Targets the fully writable 'constant_charge_current' node and locks it with chmod 444
         val cmd = if (enable) {
             "setenforce 0; " +
+            "chmod 644 /sys/class/power_supply/battery/battery_charging_enabled; " +
+            "chmod 644 /sys/class/power_supply/battery/constant_charge_current; " +
             "echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
-            "echo 0 > /sys/class/power_supply/battery/input_current_limited 2>/dev/null; " +
-            "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current_max 2>/dev/null; " +
+            "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
             "setenforce 1"
         } else {
             "setenforce 0; " +
             "echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
-            "echo 1 > /sys/class/power_supply/battery/input_current_limited 2>/dev/null; " +
-            "echo 0 > /sys/class/power_supply/battery/constant_charge_current_max 2>/dev/null; " +
+            "echo 0 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
+            "chmod 444 /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
+            "chmod 444 /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
             "setenforce 1"
         }
         
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
-         }
-         
-     
+        }
+        
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
