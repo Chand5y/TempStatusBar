@@ -113,19 +113,28 @@ object HardwareThermalControl {
 
     fun setChargingEnabled(enable: Boolean) {
         val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
+        
+        // SHOTGUN LOOP: Iterates through EVERY power supply folder (battery, main, dc, bms, etc.)
         val cmd = if (enable) {
             "setenforce 0; " +
-            "echo 1 > /sys/class/power_supply/battery/charging_enabled; " +
-            "echo 1 > /sys/class/power_supply/battery/battery_charging_enabled; " +
-            "echo 1 > /sys/class/power_supply/battery/step_charging_enabled; " +
+            "for d in /sys/class/power_supply/*; do " +
+            "echo 1 > \$d/charging_enabled 2>/dev/null; " +
+            "echo 1 > \$d/battery_charging_enabled 2>/dev/null; " +
+            "echo 0 > \$d/charge_disable 2>/dev/null; " +
+            "echo 0 > \$d/restricted_charging 2>/dev/null; " +
+            "done; " +
             "setenforce 1"
         } else {
             "setenforce 0; " +
-            "echo 0 > /sys/class/power_supply/battery/charging_enabled; " +
-            "echo 0 > /sys/class/power_supply/battery/battery_charging_enabled; " +
-            "echo 0 > /sys/class/power_supply/battery/step_charging_enabled; " +
+            "for d in /sys/class/power_supply/*; do " +
+            "echo 0 > \$d/charging_enabled 2>/dev/null; " +
+            "echo 0 > \$d/battery_charging_enabled 2>/dev/null; " +
+            "echo 1 > \$d/charge_disable 2>/dev/null; " +
+            "echo 1 > \$d/restricted_charging 2>/dev/null; " +
+            "done; " +
             "setenforce 1"
         }
+        
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
     }
