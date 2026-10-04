@@ -368,10 +368,10 @@ class MainActivity : Activity() {
         actualCapacityText = txt("Loading metrics...", 15f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(actualCapacityText)
         lay.addView(c3)
 
-        // NEW LOG EXPORTER CARD
+                // NEW LOG EXPORTER CARD
         val logCard = card(cBg) {
             val logFile = java.io.File(cacheDir, "HardwareShield_Log.txt")
-            val content = if (logFile.exists()) logFile.readText() else "No logs recorded yet. Try toggling features."
+            val content = if (logFile.exists() && logFile.length() > 0) logFile.readText() else "No logs recorded yet. Try toggling features."
             
             val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
             sv.addView(txt(content, 12f, Color.GRAY).apply { typeface = Typeface.MONOSPACE })
@@ -381,7 +381,7 @@ class MainActivity : Activity() {
                 .setView(sv)
                 .setPositiveButton("CLOSE", null)
                 .setNeutralButton("SAVE TO DOWNLOADS") { _, _ ->
-                    if (logFile.exists()) {
+                    if (logFile.exists() && logFile.length() > 0) {
                         try {
                             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
                             val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -395,11 +395,18 @@ class MainActivity : Activity() {
                         Toast.makeText(this, "No logs exist to save.", Toast.LENGTH_SHORT).show()
                     }
                 }
+                .setNegativeButton("CLEAR LOGS") { _, _ ->
+                    if (logFile.exists()) {
+                        logFile.writeText("")
+                        Toast.makeText(this, "Logs Cleared Successfully", Toast.LENGTH_SHORT).show()
+                    }
+                }
                 .show()
         }
         logCard.addView(txt("VIEW / EXPORT ROOT LOGS", 12f, Color.GRAY).apply { setPadding(0,0,0,10) })
         logCard.addView(txt("Tap to view execution traces", 14f, tPri, true))
         lay.addView(logCard)
+        
 
         val c4 = card(cBg)
         c4.addView(txt("PER-APP DRAIN (SINCE UNPLUGGED)", 12f, Color.GRAY).apply{setPadding(0,0,0,20)})
