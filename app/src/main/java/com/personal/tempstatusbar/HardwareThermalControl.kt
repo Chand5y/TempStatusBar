@@ -35,9 +35,6 @@ object HardwareThermalControl {
         isRootAvailable()
     }
 
-    // ==========================================
-    // ROOT DEBUG LOGGER ENGINE (INTERNAL CACHE)
-    // ==========================================
     private fun logDebugTrace(action: String, cmd: String, exitCode: Int, stdout: String, stderr: String) {
         try {
             val cacheDir = appContext?.cacheDir
@@ -67,7 +64,6 @@ object HardwareThermalControl {
             return false
         }
     }
-    // ==========================================
 
     fun getHardwareInfo(): String {
         val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(Locale.getDefault())
@@ -116,10 +112,7 @@ object HardwareThermalControl {
     }
 
     fun setChargingEnabled(enable: Boolean) {
-        fun setChargingEnabled(enable: Boolean) {
         val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
-        
-        // Cascade: Tries the 3 most common Xiaomi nodes. Semicolons ensure execution continues even if one node is missing.
         val cmd = if (enable) {
             "setenforce 0; " +
             "echo 1 > /sys/class/power_supply/battery/charging_enabled; " +
@@ -133,10 +126,9 @@ object HardwareThermalControl {
             "echo 0 > /sys/class/power_supply/battery/step_charging_enabled; " +
             "setenforce 1"
         }
-        
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
-        }
+    }
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
