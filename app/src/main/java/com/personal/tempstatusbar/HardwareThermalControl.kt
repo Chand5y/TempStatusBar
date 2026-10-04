@@ -111,20 +111,28 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-     fun setChargingEnabled(enable: Boolean) {
-        val action = "Hardware Reconnaissance Scan - PMIC Nodes"
+         fun setChargingEnabled(enable: Boolean) {
+        val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
         
-        // Dumps the exact file structure of the battery, main, and dual charge pumps
-        val cmd = "ls -la /sys/class/power_supply/battery/ " +
-                  "/sys/class/power_supply/main/ " +
-                  "/sys/class/power_supply/bq2597x-master/ " +
-                  "/sys/class/power_supply/usb/"
+        // Targets the precise POCO F4 (pm8150b/bq2597x) nodes discovered in the recon scan
+        val cmd = if (enable) {
+            "setenforce 0; " +
+            "echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
+            "echo 0 > /sys/class/power_supply/battery/input_current_limited 2>/dev/null; " +
+            "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current_max 2>/dev/null; " +
+            "setenforce 1"
+        } else {
+            "setenforce 0; " +
+            "echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
+            "echo 1 > /sys/class/power_supply/battery/input_current_limited 2>/dev/null; " +
+            "echo 0 > /sys/class/power_supply/battery/constant_charge_current_max 2>/dev/null; " +
+            "setenforce 1"
+        }
         
         executeRootCommand(action, cmd)
-        
-        // Force the toggle to snap back since this is just a scan
-        isChargingThrottled = false 
-     }
+        isChargingThrottled = !enable
+         }
+         
      
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
