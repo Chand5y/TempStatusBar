@@ -350,12 +350,16 @@ class MainActivity : Activity() {
         r1.addView(pInfo)
         c1.addView(r1)
         
-        c1.addView(Switch(this).apply { 
+                c1.addView(Switch(this).apply { 
             text = "Hardware Bypass Charging"; setTextColor(tPri); setPadding(0,30,0,0)
-            isChecked = HardwareThermalControl.isChargingThrottled
-            setOnCheckedChangeListener { _, c -> haptic(this); HardwareThermalControl.setChargingEnabled(!c); Toast.makeText(context, if(c) "Bypass Enabled: Battery Isolated" else "Bypass Disabled: Charging Restored", Toast.LENGTH_SHORT).show() }
+            isChecked = HardwareThermalControl.isManualBypassActive
+            setOnCheckedChangeListener { _, c -> 
+                haptic(this)
+                HardwareThermalControl.setChargingEnabled(!c, isManualToggle = true)
+                Toast.makeText(context, if(c) "Bypass Enabled: Battery Isolated" else "Bypass Disabled: Charging Restored", Toast.LENGTH_SHORT).show() 
+            }
         })
-        lay.addView(c1)
+                
 
         val c3 = card(cBg) {
             try {
