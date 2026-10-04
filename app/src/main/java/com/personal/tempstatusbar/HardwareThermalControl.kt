@@ -81,22 +81,34 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-    // Updated for Xiaomi/POCO: Uses charge_disable instead of USB input_suspend
+        // Heavy-Duty Bypass for Xiaomi/HyperOS (Defeats Joyose / mi_thermald)
     fun setChargingEnabled(enable: Boolean) {
         if (!isRootAvailable()) return
         
-        val enableV = if (enable) "1" else "0"
-        val disableV = if (enable) "0" else "1" // Xiaomi uses an inverted disable node
-        
         try {
-            Runtime.getRuntime().exec(arrayOf(
-                "su", "-c", 
-                "echo $enableV > /sys/class/power_supply/battery/charging_enabled; " +
-                "echo $disableV > /sys/class/power_supply/battery/charge_disable"
-            )).waitFor()
+            if (enable) {
+                // Unlock the file and restore all charging parameters
+                Runtime.getRuntime().exec(arrayOf("su", "-c", 
+                    "chmod 644 /sys/class/power_supply/battery/charging_enabled; " +
+                    "echo 1 > /sys/class/power_supply/battery/charging_enabled; " +
+                    "echo 0 > /sys/class/power_supply/battery/restricted_charging; " +
+                    "echo 1 > /sys/class/power_supply/battery/step_charging_enabled; " +
+                    "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current_max"
+                )).waitFor()
+            } else {
+                // Force bypass, lock the file from the OS, and clamp current to 0mA
+                Runtime.getRuntime().exec(arrayOf("su", "-c", 
+                    "echo 0 > /sys/class/power_supply/battery/charging_enabled; " +
+                    "chmod 444 /sys/class/power_supply/battery/charging_enabled; " +
+                    "echo 1 > /sys/class/power_supply/battery/restricted_charging; " +
+                    "echo 0 > /sys/class/power_supply/battery/step_charging_enabled; " +
+                    "echo 0 > /sys/class/power_supply/battery/constant_charge_current_max"
+                )).waitFor()
+            }
             isChargingThrottled = !enable
         } catch (e: Exception) {}
     }
+    
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
