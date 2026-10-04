@@ -5,7 +5,6 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
-import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
 import java.io.BufferedReader
@@ -37,14 +36,13 @@ object HardwareThermalControl {
     }
 
     // ==========================================
-    // ROOT DEBUG LOGGER ENGINE
+    // ROOT DEBUG LOGGER ENGINE (INTERNAL CACHE)
     // ==========================================
     private fun logDebugTrace(action: String, cmd: String, exitCode: Int, stdout: String, stderr: String) {
         try {
-            val dir = appContext?.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-            if (dir != null) {
-                if (!dir.exists()) dir.mkdirs()
-                val logFile = File(dir, "HardwareShield_Log.txt")
+            val cacheDir = appContext?.cacheDir
+            if (cacheDir != null) {
+                val logFile = File(cacheDir, "HardwareShield_Log.txt")
                 val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
                 val logMessage = "[$time] ACTION: $action\nCMD: $cmd\nEXIT_CODE: $exitCode\nSTDOUT: ${stdout.ifEmpty { "None" }}\nSTDERR: ${stderr.ifEmpty { "None" }}\n---------------------------\n"
                 logFile.appendText(logMessage)
@@ -119,16 +117,19 @@ object HardwareThermalControl {
 
     fun setChargingEnabled(enable: Boolean) {
         val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
+        // Uses SELinux setenforce 0 to bypass "Permission Denied" errors and targets qcom-battery
         val cmd = if (enable) {
-            "chmod 644 /sys/class/power_supply/battery/charging_enabled; " +
-            "echo 1 > /sys/class/power_supply/battery/charging_enabled; " +
-            "echo 0 > /sys/class/power_supply/battery/charge_disable; " +
-            "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current_max"
+            "setenforce 0; " +
+            "echo 0 > /sys/class/qcom-battery/input_suspend; " +
+            "echo 0 > /sys/class/power_supply/battery/input_suspend; " +
+            "echo 1 > /sys/class/power_supply/battery/step_charging_enabled; " +
+            "setenforce 1"
         } else {
-            "echo 0 > /sys/class/power_supply/battery/charging_enabled; " +
-            "chmod 444 /sys/class/power_supply/battery/charging_enabled; " +
-            "echo 1 > /sys/class/power_supply/battery/charge_disable; " +
-            "echo 0 > /sys/class/power_supply/battery/constant_charge_current_max"
+            "setenforce 0; " +
+            "echo 1 > /sys/class/qcom-battery/input_suspend; " +
+            "echo 1 > /sys/class/power_supply/battery/input_suspend; " +
+            "echo 0 > /sys/class/power_supply/battery/step_charging_enabled; " +
+            "setenforce 1"
         }
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
