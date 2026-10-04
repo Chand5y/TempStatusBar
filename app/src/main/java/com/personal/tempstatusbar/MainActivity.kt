@@ -335,37 +335,51 @@ class MainActivity : Activity() {
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
-        val c1 = card(cBg) {
-            try {
-                val validRecords = dbHelper.getAllRecords().filter { !it.appDetails.contains("TempRecord(") }
-                val records = validRecords.takeLast(50).joinToString("\n\n") { "[$it.chargeType] ${it.temp}°C\n${it.appDetails}" }
-                showModal("Raw Thermal Database", if (records.isEmpty()) "No logs yet." else records)
-            } catch (e: Exception) { showModal("Error", "Could not read database") }
-        }
-        c1.addView(txt("TAP CHART TO VIEW RAW LOGS", 11f, Color.GRAY).apply{ gravity=Gravity.CENTER; setPadding(0,0,0,15) })
-        chartView = TemperatureChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 500) }
-        c1.addView(chartView); lay.addView(c1)
+        val c1 = card(cBg)
+        val headerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f }
+        headerRow.addView(txt("📈 THERMAL HISTORY", 12f, Color.GRAY).apply { layoutParams = LinearLayout.LayoutParams(0,-2,1f); setPadding(0,0,0,15) })
+        headerRow.addView(txt("VIEW RAW LOGS", 12f, Color.parseColor("#00E5FF"), true).apply { 
+            layoutParams = LinearLayout.LayoutParams(0,-2,1f); gravity = Gravity.END; setPadding(0,0,0,15)
+            setOnClickListener {
+                haptic(this)
+                try {
+                    val validRecords = dbHelper.getAllRecords().filter { !it.appDetails.contains("TempRecord(") }
+                    val records = validRecords.takeLast(50).joinToString("\n\n") { "[$it.chargeType] ${it.temp}°C\n${it.appDetails}" }
+                    showModal("Raw Thermal Database", if (records.isEmpty()) "No logs yet." else records)
+                } catch (e: Exception) { showModal("Error", "Could not read database") }
+            }
+        })
+        c1.addView(headerRow)
+        
+        chartView = TemperatureChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
+        c1.addView(chartView)
 
-        val c2 = card(cBg)
-        detailTimeText = txt("Select a point on the chart", 13f, Color.GRAY); c2.addView(detailTimeText)
-        detailTempText = txt("--°C", 32f, Color.parseColor("#FF5722"), true); c2.addView(detailTempText)
-        detailAppContent = txt("", 13f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { typeface = Typeface.MONOSPACE; setPadding(0,15,0,0) }
-        c2.addView(detailAppContent); lay.addView(c2)
+        val detailRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,25,0,0); gravity = Gravity.CENTER_VERTICAL }
+        detailTempText = txt("--°C", 38f, Color.parseColor("#FF3B30"), true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
+        detailRow.addView(detailTempText)
+        
+        val infoCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 2f) }
+        detailTimeText = txt("Tap chart to inspect", 13f, tPri, true); infoCol.addView(detailTimeText)
+        detailAppContent = txt("Awaiting selection...", 12f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { typeface = Typeface.MONOSPACE }
+        infoCol.addView(detailAppContent)
+        detailRow.addView(infoCol)
+        c1.addView(detailRow)
+        lay.addView(c1)
 
         chartView.onRecordSelected = { r ->
             val rootStr = if (r.isRoot) "🛡️ Root Trace" else "📱 Non-Root Trace"
             val screenStr = if (r.screenOn) "Screen ON" else "Screen OFF"
-            detailTimeText.text = "${SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))} • $screenStr\n[$rootStr | ${r.chargeType}]"
+            detailTimeText.text = "${SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))} • $screenStr"
             detailTempText.text = "${r.temp}°C"
-            detailAppContent.text = r.appDetails
+            detailAppContent.text = "[$rootStr | ${r.chargeType}]\n${r.appDetails}"
         }
 
         val c3 = card(cBg) { showModal("PMIC Safety Engine", "Cut Off (🛑): Instantly breaks the circuit from the charger to the battery when this temp is hit.\nResume (🔄): Restores the circuit once the battery has cooled down.") }
-        c3.addView(txt("HARDWARE THERMAL PROTECTION (TAP FOR INFO)", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
+        c3.addView(txt("🛡️ HARDWARE THERMAL PROTECTION", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
         
-        warnLabel = txt("⚠️ Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
+        warnLabel = txt("🔔 Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
         warnS = SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=35+p; settings.warningTemp=v; warnLabel.text="⚠️ Warning Sound Alert: $v°C" }
+            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=35+p; settings.warningTemp=v; warnLabel.text="🔔 Warning Sound Alert: $v°C" }
             override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
         })}
         c3.addView(warnS)
@@ -386,9 +400,9 @@ class MainActivity : Activity() {
         c3.addView(resS); lay.addView(c3)
 
         val c4 = card(cBg)
-        c4.addView(txt("NOTIFICATION PREFERENCES", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
-        c4.addView(Switch(this).apply { text = "Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; setOnCheckedChangeListener { _, c -> haptic(this); settings.showNotification = c; startMonitorService() } })
-        c4.addView(Switch(this).apply { text = "Show Real-Time Wattage / Drain"; setTextColor(tPri); isChecked = settings.showPowerMetrics; setOnCheckedChangeListener { _, c -> haptic(this); settings.showPowerMetrics = c; startMonitorService() } })
+        c4.addView(txt("⚙️ NOTIFICATION PREFERENCES", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
+        c4.addView(Switch(this).apply { text = "📱 Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; setOnCheckedChangeListener { _, c -> haptic(this); settings.showNotification = c; startMonitorService() } })
+        c4.addView(Switch(this).apply { text = "⚡ Show Real-Time Wattage View"; setTextColor(tPri); isChecked = settings.showPowerMetrics; setOnCheckedChangeListener { _, c -> haptic(this); settings.showPowerMetrics = c; startMonitorService() } })
         lay.addView(c4)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
@@ -422,46 +436,9 @@ class MainActivity : Activity() {
         actualCapacityText = txt("Loading metrics...", 15f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(actualCapacityText)
         lay.addView(c3)
 
-        val logCard = card(cBg) {
-            val logFile = java.io.File(cacheDir, "HardwareShield_Log.txt")
-            val content = if (logFile.exists() && logFile.length() > 0) logFile.readText() else "No logs recorded yet. Try toggling features."
-            
-            val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
-            sv.addView(txt(content, 12f, Color.GRAY).apply { typeface = Typeface.MONOSPACE })
-            
-            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("Root Execution Logs")
-                .setView(sv)
-                .setPositiveButton("CLOSE", null)
-                .setNeutralButton("SAVE TO DOWNLOADS") { _, _ ->
-                    if (logFile.exists() && logFile.length() > 0) {
-                        try {
-                            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-                            val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                            val destFile = java.io.File(destDir, "HardwareShield_Log_$timestamp.txt")
-                            logFile.copyTo(destFile)
-                            Toast.makeText(this, "Saved to Downloads folder!", Toast.LENGTH_LONG).show()
-                        } catch(e: Exception) {
-                            Toast.makeText(this, "Failed to save file.", Toast.LENGTH_SHORT).show()
-                        }
-                    } else {
-                        Toast.makeText(this, "No logs exist to save.", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                .setNegativeButton("CLEAR LOGS") { _, _ ->
-                    if (logFile.exists()) {
-                        logFile.writeText("")
-                        Toast.makeText(this, "Logs Cleared Successfully", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                .show()
-        }
-        logCard.addView(txt("VIEW / EXPORT ROOT LOGS", 12f, Color.GRAY).apply { setPadding(0,0,0,10) })
-        logCard.addView(txt("Tap to view execution traces", 14f, tPri, true))
-        lay.addView(logCard)
-
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
     }
+
     private fun buildTab3(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
@@ -563,7 +540,7 @@ class MainActivity : Activity() {
                 setOnClickListener {
                     haptic(this)
                     thread { Runtime.getRuntime().exec(arrayOf("su", "-c", "settings put system min_refresh_rate $r; settings put system peak_refresh_rate $r; settings put system user_refresh_rate $r")) }
-                    Toast.makeText(this@MainActivity, "Forced ${r}Hz", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Forced ${r}Hz (Turn screen OFF and ON to apply)", Toast.LENGTH_LONG).show()
                 }
             })
         }
