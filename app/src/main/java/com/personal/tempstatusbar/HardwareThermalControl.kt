@@ -111,33 +111,21 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-    fun setChargingEnabled(enable: Boolean) {
-        val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
+     fun setChargingEnabled(enable: Boolean) {
+        val action = "Hardware Reconnaissance Scan - PMIC Nodes"
         
-        // SHOTGUN LOOP: Iterates through EVERY power supply folder (battery, main, dc, bms, etc.)
-        val cmd = if (enable) {
-            "setenforce 0; " +
-            "for d in /sys/class/power_supply/*; do " +
-            "echo 1 > \$d/charging_enabled 2>/dev/null; " +
-            "echo 1 > \$d/battery_charging_enabled 2>/dev/null; " +
-            "echo 0 > \$d/charge_disable 2>/dev/null; " +
-            "echo 0 > \$d/restricted_charging 2>/dev/null; " +
-            "done; " +
-            "setenforce 1"
-        } else {
-            "setenforce 0; " +
-            "for d in /sys/class/power_supply/*; do " +
-            "echo 0 > \$d/charging_enabled 2>/dev/null; " +
-            "echo 0 > \$d/battery_charging_enabled 2>/dev/null; " +
-            "echo 1 > \$d/charge_disable 2>/dev/null; " +
-            "echo 1 > \$d/restricted_charging 2>/dev/null; " +
-            "done; " +
-            "setenforce 1"
-        }
+        // Dumps the exact file structure of the battery, main, and dual charge pumps
+        val cmd = "ls -la /sys/class/power_supply/battery/ " +
+                  "/sys/class/power_supply/main/ " +
+                  "/sys/class/power_supply/bq2597x-master/ " +
+                  "/sys/class/power_supply/usb/"
         
         executeRootCommand(action, cmd)
-        isChargingThrottled = !enable
-    }
+        
+        // Force the toggle to snap back since this is just a scan
+        isChargingThrottled = false 
+     }
+     
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
