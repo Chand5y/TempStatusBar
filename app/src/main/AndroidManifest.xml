@@ -11,7 +11,6 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@android:drawable/sym_def_app_icon"
         android:label="Temp Monitor"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
