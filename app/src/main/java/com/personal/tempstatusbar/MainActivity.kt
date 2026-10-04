@@ -302,7 +302,7 @@ class MainActivity : Activity() {
         val c3 = card(cBg) { showModal("PMIC Safety Engine", "Cut Off (🛑): Instantly breaks the circuit from the charger to the battery when this temp is hit.\nResume (🔄): Restores the circuit once the battery has cooled down.") }
         c3.addView(txt("HARDWARE THERMAL PROTECTION (TAP FOR INFO)", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
         
-        warnLabel = txt("⚠️️ Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
+        warnLabel = txt("⚠ Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
         warnS = SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=35+p; settings.warningTemp=v; warnLabel.text="⚠️ Warning Sound Alert: $v°C" }
             override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
@@ -338,7 +338,6 @@ class MainActivity : Activity() {
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
-        // The properly restored Battery and Bypass card
         val c1 = card(cBg)
         val r1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         batteryGraphic = BatteryGraphicView(this).apply { layoutParams = LinearLayout.LayoutParams(220, 120).apply{ rightMargin = 40 } }
@@ -358,4 +357,226 @@ class MainActivity : Activity() {
                 HardwareThermalControl.setChargingEnabled(!c, isManualToggle = true)
                 Toast.makeText(context, if(c) "Bypass Enabled: Battery Isolated" else "Bypass Disabled: Charging Restored", Toast.LENGTH_SHORT).show() 
             }
-    
+        })
+        lay.addView(c1)
+
+        val c3 = card(cBg) {
+            try {
+                val h = BatteryHealthHelper.getHealthData(this@MainActivity)
+                showModal("Battery Diagnostic", "Design Capacity: ${h.designCapacityMah} mAh\nActual Capacity: ${h.actualCapacityMah} mAh\nTotal Charge Cycles: ${h.cycleCount}\n\nWear Level: ${100 - h.healthPercent}%\nStatus: ${h.statusText}")
+            } catch (e: Exception) { showModal("Error", "Could not parse health data.") }
+        }
+        c3.addView(txt("BATTERY DEGRADATION HEALTH (TAP FOR DETAILS)", 12f, Color.GRAY))
+        healthPercentText = txt("--%", 32f, tPri, true); c3.addView(healthPercentText)
+        actualCapacityText = txt("Loading metrics...", 15f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(actualCapacityText)
+        lay.addView(c3)
+
+        val logCard = card(cBg) {
+            val logFile = java.io.File(cacheDir, "HardwareShield_Log.txt")
+            val content = if (logFile.exists() && logFile.length() > 0) logFile.readText() else "No logs recorded yet. Try toggling features."
+            
+            val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
+            sv.addView(txt(content, 12f, Color.GRAY).apply { typeface = Typeface.MONOSPACE })
+            
+            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Root Execution Logs")
+                .setView(sv)
+                .setPositiveButton("CLOSE", null)
+                .setNeutralButton("SAVE TO DOWNLOADS") { _, _ ->
+                    if (logFile.exists() && logFile.length() > 0) {
+                        try {
+                            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                            val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                            val destFile = java.io.File(destDir, "HardwareShield_Log_$timestamp.txt")
+                            logFile.copyTo(destFile)
+                            Toast.makeText(this, "Saved to Downloads folder!", Toast.LENGTH_LONG).show()
+                        } catch(e: Exception) {
+                            Toast.makeText(this, "Failed to save file.", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(this, "No logs exist to save.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .setNegativeButton("CLEAR LOGS") { _, _ ->
+                    if (logFile.exists()) {
+                        logFile.writeText("")
+                        Toast.makeText(this, "Logs Cleared Successfully", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .show()
+        }
+        logCard.addView(txt("VIEW / EXPORT ROOT LOGS", 12f, Color.GRAY).apply { setPadding(0,0,0,10) })
+        logCard.addView(txt("Tap to view execution traces", 14f, tPri, true))
+        lay.addView(logCard)
+
+        return ScrollView(this).apply { addView(lay); isFillViewport = true }
+    }
+
+    private fun buildTab3(isDark: Boolean): View {
+        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
+        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
+        val tPri = if (isDark) Color.WHITE else Color.BLACK
+
+        val rCard = card(cBg) { showRamDetailsModal() }
+        val hdRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        hdRow.addView(txt("SoC: ${HardwareThermalControl.getHardwareInfo()}", 14f, tPri, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
+        gpuText = txt("GPU: --%", 14f, Color.parseColor("#00E5FF"), true); hdRow.addView(gpuText)
+        rCard.addView(hdRow)
+        rCard.addView(txt("LIVE MEMORY (RAM) - TAP FOR APP DETAILS", 12f, Color.GRAY).apply{setPadding(0,25,0,15)})
+        
+        val ramRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        ramUsageText = txt("Loading...", 15f, tPri, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
+        ramRow.addView(ramUsageText)
+        ramRow.addView(Button(this).apply {
+            text = "CLEAN RAM"; textSize = 11f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#2196F3")); layoutParams = LinearLayout.LayoutParams(-2, -2); setPadding(20, 10, 20, 10)
+            setOnClickListener { haptic(this); HardwareThermalControl.clearRamCaches(); Toast.makeText(this@MainActivity, "Kernel RAM caches dropped.", Toast.LENGTH_SHORT).show() }
+        })
+        rCard.addView(ramRow); lay.addView(rCard)
+
+        val sgCard = card(cBg) { showModal("Smart Thermal Governor", "When your phone hits the Warning Temperature limit (set in Tab 1), this Engine will automatically:\n1. Throttle the Prime Core to minimum frequency.\n2. Force heavy background processes to the efficiency cores to save heat.\nIt releases the locks once the phone cools down.") }
+        sgCard.addView(Switch(this).apply { 
+            text = "Auto-Thermal Smart Governor"; setTextColor(tPri)
+            isChecked = isSmartGovernorEnabled
+            setOnCheckedChangeListener { _, c -> 
+                haptic(this); isSmartGovernorEnabled = c
+                sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply { putExtra("state", c); setPackage(packageName) })
+                Toast.makeText(context, if(c) "Smart Governor Engine Armed" else "Smart Governor Disabled", Toast.LENGTH_SHORT).show()
+            }
+        })
+        lay.addView(sgCard)
+
+        val cCard = card(cBg) { showModal("Android Core Hotplugging", "Long-Press any Silver or Gold core to completely force it Offline/Online.\n\nBecause the Snapdragon 870 kernel crashes if the Prime Core (C7) is offlined, Long-Pressing C7 will Throttle/Restore its frequency instead.") }
+        cCard.addView(txt("CPU ARCHITECTURE MAP (LONG-PRESS TO TOGGLE)", 11f, Color.GRAY).apply{setPadding(0,0,0,20)})
+        
+        cpuArchitectureGrid = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f; layoutParams = LinearLayout.LayoutParams(-1, 380) }
+        coreBlocks = Array(8) { TextView(this) }
+        
+        fun coreBox(idx: Int): TextView = txt("C$idx", 12f, Color.WHITE, true).apply { 
+            gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(-1, 0, 1f).apply { setMargins(6,6,6,6) }
+            background = GradientDrawable().apply { cornerRadius = 20f; setColor(Color.DKGRAY) }
+            setOnLongClickListener { 
+                haptic(this)
+                if (idx == 7) {
+                    val throttled = (this.text.toString().contains("THROTTLED"))
+                    HardwareThermalControl.throttlePrimeCore(!throttled)
+                    Toast.makeText(context, if(!throttled) "Core 7 Throttled" else "Core 7 Restored", Toast.LENGTH_SHORT).show()
+                } else {
+                    val isOff = (this.text.toString().contains("OFF"))
+                    HardwareThermalControl.setCoreOnline(idx, isOff)
+                    if (isOff) {
+                        (this.background as GradientDrawable).setColor(Color.parseColor("#4CAF50"))
+                        this.text = "C$idx\nONLINE"
+                        Toast.makeText(context, "Core $idx Online", Toast.LENGTH_SHORT).show()
+                    } else {
+                        (this.background as GradientDrawable).setColor(Color.parseColor("#333333"))
+                        this.text = "C$idx\nOFF"
+                        Toast.makeText(context, "Core $idx Offline", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                true
+            }
+        }
+
+        val silCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }
+        for(i in 0..3) { val b = coreBox(i); coreBlocks[i] = b; silCol.addView(b) }
+        val gldCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }
+        for(i in 4..6) { val b = coreBox(i); coreBlocks[i] = b; gldCol.addView(b) }
+        val prmCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }
+        val c7 = coreBox(7); coreBlocks[7] = c7; prmCol.addView(c7)
+
+        cpuArchitectureGrid.addView(silCol); cpuArchitectureGrid.addView(gldCol); cpuArchitectureGrid.addView(prmCol)
+        cCard.addView(cpuArchitectureGrid)
+        lay.addView(cCard)
+
+        val pCard = card(cBg)
+        pCard.addView(txt("LIVE CPU STRESS & TERMINATION", 12f, Color.GRAY).apply{setPadding(0,0,0,20)})
+        processListContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutTransition = LayoutTransition() }
+        pCard.addView(processListContainer); lay.addView(pCard)
+
+        return ScrollView(this).apply { addView(lay); isFillViewport = true }
+    }
+
+    private fun refreshLiveHardware() {
+        try {
+            val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val isPlugged = (intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+            val lvl = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: 0
+            val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: 100
+            val pct = if (scale > 0) (lvl * 100 / scale.toFloat()).toInt() else 0
+
+            val stats = PowerHardwareHelper.readPowerStats(this, isPlugged)
+            currentLevelText.text = "$pct%"
+            batteryGraphic.update(pct, stats.isCharging)
+            val bypassStr = if (HardwareThermalControl.isManualBypassActive && isPlugged) "\n🛡️ BYPASS MODE ACTIVE" else ""
+            livePowerText.text = if (stats.isCharging) "Charging AC\n⚡ ${stats.wattage}W (+${stats.currentMa} mA)$bypassStr" else "Discharging\n🔋 -${stats.wattage}W (${stats.currentMa} mA)$bypassStr"
+        } catch (e: Exception) {
+            livePowerText.text = "Hardware parsing error"
+        }
+    }
+
+    private fun refreshDashboardData() {
+        refreshLiveHardware()
+        try {
+            val h = BatteryHealthHelper.getHealthData(this)
+            healthPercentText.text = "${h.healthPercent}%"
+            actualCapacityText.text = "Actual: ${h.actualCapacityMah} mAh\nDesign: ${h.designCapacityMah} mAh\nCycles: ${h.cycleCount}"
+        } catch(e: Exception) { healthPercentText.text = "--%"; actualCapacityText.text = "Error reading health" }
+        
+        try { chartView.setData(dbHelper.getAllRecords()) } catch(e: Exception) {}
+    }
+
+    private fun startLiveCpuUpdates() {
+        thread {
+            while (isCpuTabActive) {
+                val ram = HardwareThermalControl.getRamUsage(this@MainActivity)
+                val gpu = HardwareThermalControl.getGpuUsage()
+                val freqs = HardwareThermalControl.getCoreFrequencies()
+                val procs = HardwareThermalControl.getKernelProcessSnapshot(this@MainActivity)
+                
+                uiHandler.post {
+                    if (!isCpuTabActive) return@post
+                    ramUsageText.text = ram
+                    gpuText.text = "GPU: $gpu"
+                    
+                    for (i in 0..7) {
+                        val blk = coreBlocks[i]
+                        if (i < freqs.size) {
+                            val fStr = freqs[i]
+                            val mhz = fStr.replace(" MHz", "").toIntOrNull() ?: 0
+                            
+                            if (fStr == "Offline" || (i == 7 && mhz <= 844 && mhz > 0)) {
+                                (blk.background as GradientDrawable).setColor(Color.parseColor("#333333"))
+                                blk.text = "C$i\n${if(fStr == "Offline") "OFF" else "THROTTLED"}"
+                            } else {
+                                val col = when {
+                                    mhz < 1000 -> Color.parseColor("#4CAF50")
+                                    mhz < 2000 -> Color.parseColor("#FF9800")
+                                    else -> Color.parseColor("#F44336")
+                                }
+                                (blk.background as GradientDrawable).setColor(col)
+                                blk.text = "C$i\n$fStr"
+                            }
+                        }
+                    }
+                    processListContainer.removeAllViews()
+                    if (procs.isEmpty()) { processListContainer.addView(txt("Waiting for kernel data...", 13f, Color.GRAY)); return@post }
+                    procs.forEach { p ->
+                        val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 15, 0, 15); gravity = Gravity.CENTER_VERTICAL }
+                        val procTxt = txt("${p.name} — ${p.cpu}%", 12f, if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES) Color.WHITE else Color.BLACK).apply { 
+                            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 15 }; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                        }
+                        row.addView(procTxt)
+                        row.addView(Button(this@MainActivity).apply { text="RESTRICT"; textSize=10f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#FF9800")); setPadding(10,0,10,0); layoutParams=LinearLayout.LayoutParams(-2, 80).apply{rightMargin=15}; setOnClickListener { haptic(this); HardwareThermalControl.pinProcessToEfficiencyCores(p.pid); Toast.makeText(this@MainActivity, "Pinned to Cores 0-3", Toast.LENGTH_SHORT).show() } })
+                        row.addView(Button(this@MainActivity).apply { text="KILL"; textSize=10f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F")); setPadding(10,0,10,0); layoutParams=LinearLayout.LayoutParams(-2, 80); setOnClickListener { haptic(this); showKillConfirmDialog(p.pid, p.name) } })
+                        processListContainer.addView(row)
+                    }
+                }
+                Thread.sleep(2000)
+            }
+        }
+    }
+
+    private fun showKillConfirmDialog(pid: Int, name: String) {
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Terminate Process?").setMessage("Kill $name?").setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(pid); Toast.makeText(this, "Signal sent to $name", Toast.LENGTH_SHORT).show() }.setNegativeButton("Cancel", null).show()
+    }
+}
