@@ -116,26 +116,27 @@ object HardwareThermalControl {
     }
 
     fun setChargingEnabled(enable: Boolean) {
+        fun setChargingEnabled(enable: Boolean) {
         val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
         
-        // Target idle_mode and constant_charge_current_max to avoid USB port resets
+        // Cascade: Tries the 3 most common Xiaomi nodes. Semicolons ensure execution continues even if one node is missing.
         val cmd = if (enable) {
             "setenforce 0; " +
-            "echo 0 > /sys/class/power_supply/battery/idle_mode; " +
-            "echo 0 > /sys/class/power_supply/battery/restricted_charging; " +
-            "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current_max; " +
+            "echo 1 > /sys/class/power_supply/battery/charging_enabled; " +
+            "echo 1 > /sys/class/power_supply/battery/battery_charging_enabled; " +
+            "echo 1 > /sys/class/power_supply/battery/step_charging_enabled; " +
             "setenforce 1"
         } else {
             "setenforce 0; " +
-            "echo 1 > /sys/class/power_supply/battery/idle_mode; " +
-            "echo 1 > /sys/class/power_supply/battery/restricted_charging; " +
-            "echo 0 > /sys/class/power_supply/battery/constant_charge_current_max; " +
+            "echo 0 > /sys/class/power_supply/battery/charging_enabled; " +
+            "echo 0 > /sys/class/power_supply/battery/battery_charging_enabled; " +
+            "echo 0 > /sys/class/power_supply/battery/step_charging_enabled; " +
             "setenforce 1"
         }
         
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
-    }
+        }
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
