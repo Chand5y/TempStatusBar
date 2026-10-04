@@ -23,6 +23,7 @@ object HardwareThermalControl {
     private var appContext: Context? = null
     
     var isChargingThrottled = false; private set
+    var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
     private var isMuted = false
     private var cachedRootState: Boolean? = null
@@ -111,30 +112,32 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-        fun setChargingEnabled(enable: Boolean) {
+    // Target the native Xiaomi hardware nodes discovered in recon scan
+    fun setChargingEnabled(enable: Boolean, isManualToggle: Boolean = false) {
+        if (isManualToggle) {
+            isManualBypassActive = !enable
+        }
+
         val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
-        
-        // Targets the fully writable 'constant_charge_current' node and locks it with chmod 444
         val cmd = if (enable) {
             "setenforce 0; " +
-            "chmod 644 /sys/class/power_supply/battery/battery_charging_enabled; " +
-            "chmod 644 /sys/class/power_supply/battery/constant_charge_current; " +
+            "echo 0 > /sys/class/power_supply/usb/enable_bypass_mode 2>/dev/null; " +
+            "echo 1 > /sys/class/power_supply/bq2597x-master/charging_enabled 2>/dev/null; " +
             "echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
             "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
             "setenforce 1"
         } else {
             "setenforce 0; " +
+            "echo 1 > /sys/class/power_supply/usb/enable_bypass_mode 2>/dev/null; " +
+            "echo 0 > /sys/class/power_supply/bq2597x-master/charging_enabled 2>/dev/null; " +
             "echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
             "echo 0 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
-            "chmod 444 /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
-            "chmod 444 /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
             "setenforce 1"
         }
         
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
-        }
-        
+    }
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
