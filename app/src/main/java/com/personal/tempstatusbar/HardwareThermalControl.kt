@@ -5,11 +5,14 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
+import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 data class RamProc(val name: String, val sizeMb: Int, val pid: Int)
@@ -18,6 +21,8 @@ data class ProcessData(val pid: Int, val name: String, val cpu: String)
 object HardwareThermalControl {
     private var toneGen: ToneGenerator? = null
     private var vibrator: Vibrator? = null
+    private var appContext: Context? = null
+    
     var isChargingThrottled = false; private set
     var isEmergencyCooldownActive = false; private set
     private var isMuted = false
@@ -25,10 +30,46 @@ object HardwareThermalControl {
     private var lastRootCheckTime = 0L
 
     fun init(context: Context) {
+        appContext = context.applicationContext
         try { toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100) } catch (e: Exception) {}
         try { vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator } catch (e: Exception) {}
         isRootAvailable()
     }
+
+    // ==========================================
+    // ROOT DEBUG LOGGER ENGINE
+    // ==========================================
+    private fun logDebugTrace(action: String, cmd: String, exitCode: Int, stdout: String, stderr: String) {
+        try {
+            val dir = appContext?.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+            if (dir != null) {
+                if (!dir.exists()) dir.mkdirs()
+                val logFile = File(dir, "HardwareShield_Log.txt")
+                val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+                val logMessage = "[$time] ACTION: $action\nCMD: $cmd\nEXIT_CODE: $exitCode\nSTDOUT: ${stdout.ifEmpty { "None" }}\nSTDERR: ${stderr.ifEmpty { "None" }}\n---------------------------\n"
+                logFile.appendText(logMessage)
+            }
+        } catch (e: Exception) {}
+    }
+
+    private fun executeRootCommand(action: String, command: String): Boolean {
+        if (!isRootAvailable()) return false
+        var exitCode = -1
+        var stdout = ""
+        var stderr = ""
+        try {
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
+            stdout = process.inputStream.bufferedReader().readText().trim()
+            stderr = process.errorStream.bufferedReader().readText().trim()
+            exitCode = process.waitFor()
+            logDebugTrace(action, command, exitCode, stdout, stderr)
+            return exitCode == 0
+        } catch (e: Exception) {
+            logDebugTrace(action, command, -1, "", e.message ?: "CRASH: Unknown Java Execution Error")
+            return false
+        }
+    }
+    // ==========================================
 
     fun getHardwareInfo(): String {
         val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(Locale.getDefault())
@@ -42,13 +83,8 @@ object HardwareThermalControl {
         }
     }
 
-    // Checks multiple paths for Adreno GPU data in HyperOS
     fun getGpuUsage(): String {
-        val paths = listOf(
-            "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
-            "/sys/class/kgsl/kgsl-3d0/devfreq/gpu_load",
-            "/sys/class/kgsl/kgsl-3d0/gpubusy"
-        )
+        val paths = listOf("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage", "/sys/class/kgsl/kgsl-3d0/devfreq/gpu_load", "/sys/class/kgsl/kgsl-3d0/gpubusy")
         for (path in paths) {
             try {
                 val f = File(path)
@@ -81,70 +117,56 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-        // Heavy-Duty Bypass for Xiaomi/HyperOS (Defeats Joyose / mi_thermald)
     fun setChargingEnabled(enable: Boolean) {
-        if (!isRootAvailable()) return
-        
-        try {
-            if (enable) {
-                // Unlock the file and restore all charging parameters
-                Runtime.getRuntime().exec(arrayOf("su", "-c", 
-                    "chmod 644 /sys/class/power_supply/battery/charging_enabled; " +
-                    "echo 1 > /sys/class/power_supply/battery/charging_enabled; " +
-                    "echo 0 > /sys/class/power_supply/battery/restricted_charging; " +
-                    "echo 1 > /sys/class/power_supply/battery/step_charging_enabled; " +
-                    "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current_max"
-                )).waitFor()
-            } else {
-                // Force bypass, lock the file from the OS, and clamp current to 0mA
-                Runtime.getRuntime().exec(arrayOf("su", "-c", 
-                    "echo 0 > /sys/class/power_supply/battery/charging_enabled; " +
-                    "chmod 444 /sys/class/power_supply/battery/charging_enabled; " +
-                    "echo 1 > /sys/class/power_supply/battery/restricted_charging; " +
-                    "echo 0 > /sys/class/power_supply/battery/step_charging_enabled; " +
-                    "echo 0 > /sys/class/power_supply/battery/constant_charge_current_max"
-                )).waitFor()
-            }
-            isChargingThrottled = !enable
-        } catch (e: Exception) {}
+        val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
+        val cmd = if (enable) {
+            "chmod 644 /sys/class/power_supply/battery/charging_enabled; " +
+            "echo 1 > /sys/class/power_supply/battery/charging_enabled; " +
+            "echo 0 > /sys/class/power_supply/battery/charge_disable; " +
+            "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current_max"
+        } else {
+            "echo 0 > /sys/class/power_supply/battery/charging_enabled; " +
+            "chmod 444 /sys/class/power_supply/battery/charging_enabled; " +
+            "echo 1 > /sys/class/power_supply/battery/charge_disable; " +
+            "echo 0 > /sys/class/power_supply/battery/constant_charge_current_max"
+        }
+        executeRootCommand(action, cmd)
+        isChargingThrottled = !enable
     }
-    
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
     
     fun setCoreOnline(coreId: Int, online: Boolean) {
-        if (!isRootAvailable()) return
-        try { Runtime.getRuntime().exec(arrayOf("su", "-c", "echo ${if (online) "1" else "0"} > /sys/devices/system/cpu/cpu$coreId/online")).waitFor() } catch (e: Exception) {}
+        val action = if (online) "Enable Core $coreId" else "Disable Core $coreId"
+        val cmd = "echo ${if (online) "1" else "0"} > /sys/devices/system/cpu/cpu$coreId/online"
+        executeRootCommand(action, cmd)
     }
 
     fun throttlePrimeCore(throttle: Boolean) {
-        if (!isRootAvailable()) return
-        try {
-            if (throttle) {
-                Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq")).waitFor()
-            } else {
-                Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq")).waitFor()
-            }
-        } catch (e: Exception) {}
+        val action = if (throttle) "Throttle Prime Core (C7)" else "Restore Prime Core (C7)"
+        val cmd = if (throttle) {
+            "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
+        } else {
+            "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
+        }
+        executeRootCommand(action, cmd)
     }
     
-    // SMART THERMAL GOVERNOR LOGIC
     fun applySmartThermalGovernor(context: Context) {
         if (!isRootAvailable()) return
         throttlePrimeCore(true)
         val procs = getKernelProcessSnapshot(context)
         procs.forEach { p ->
-            // Pin background apps eating more than 5% CPU to Silver Cores (0-3) to save heat
             if (p.cpu.toFloatOrNull() ?: 0f > 5.0f && !p.name.contains(context.packageName) && !p.name.contains("Android System") && !p.name.contains("SurfaceFlinger")) {
                 pinProcessToEfficiencyCores(p.pid)
             }
         }
     }
 
-    fun killProcess(pid: Int) { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "kill -9 $pid")).waitFor() } catch (e: Exception) {} }
-    fun pinProcessToEfficiencyCores(pid: Int) { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "taskset -p 0f $pid")).waitFor() } catch (e: Exception) {} }
-    fun clearRamCaches() { if (!isRootAvailable()) return; try { Runtime.getRuntime().exec(arrayOf("su", "-c", "echo 3 > /proc/sys/vm/drop_caches")).waitFor() } catch (e: Exception) {} }
+    fun killProcess(pid: Int) { executeRootCommand("Kill Process PID: $pid", "kill -9 $pid") }
+    fun pinProcessToEfficiencyCores(pid: Int) { executeRootCommand("Pin Process to Silver Cores PID: $pid", "taskset -p 0f $pid") }
+    fun clearRamCaches() { executeRootCommand("Clear RAM Caches", "echo 3 > /proc/sys/vm/drop_caches") }
 
     fun playThermalAlert() {
         if (isMuted) return
