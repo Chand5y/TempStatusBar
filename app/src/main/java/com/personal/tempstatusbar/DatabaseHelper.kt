@@ -6,18 +6,16 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 data class TempRecord(val id: Int, val timestamp: Long, val temp: Int, val isCharging: Boolean, val chargeType: String, val appDetails: String, val isRoot: Boolean, val screenOn: Boolean)
-data class FpsSession(val id: Int, val timestamp: Long, val appName: String, val durationSec: Int, val minFps: Int, val maxFps: Int, val avgFps: Int)
+data class FpsSession(val id: Int, val timestamp: Long, val appName: String, val durationSec: Int, val minFps: Int, val maxFps: Int, val avgFps: Int, val avgTemp: Int)
 
-class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ThermalMonitor.db", null, 4) {
+class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ThermalMonitor.db", null, 5) {
     
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS temp_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER, temp INTEGER, isCharging INTEGER, chargeType TEXT, appDetails TEXT, isRoot INTEGER, screenOn INTEGER)")
-        db.execSQL("CREATE TABLE IF NOT EXISTS fps_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER, appName TEXT, durationSec INTEGER, minFps INTEGER, maxFps INTEGER, avgFps INTEGER)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS fps_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER, appName TEXT, durationSec INTEGER, minFps INTEGER, maxFps INTEGER, avgFps INTEGER, avgTemp INTEGER)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Automatically destroys corrupted legacy tables missing the new columns to prevent immediate crashes
-        db.execSQL("DROP TABLE IF EXISTS temp_logs")
         db.execSQL("DROP TABLE IF EXISTS fps_sessions")
         onCreate(db)
     }
@@ -34,12 +32,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ThermalMonit
         } catch (e: Exception) {}
     }
 
-    fun saveFpsSession(appName: String, durationSec: Int, minFps: Int, maxFps: Int, avgFps: Int) {
+    fun saveFpsSession(appName: String, durationSec: Int, minFps: Int, maxFps: Int, avgFps: Int, avgTemp: Int) {
         try {
             val db = writableDatabase
             val v = ContentValues().apply {
                 put("timestamp", System.currentTimeMillis()); put("appName", appName)
-                put("durationSec", durationSec); put("minFps", minFps); put("maxFps", maxFps); put("avgFps", avgFps)
+                put("durationSec", durationSec); put("minFps", minFps); put("maxFps", maxFps); put("avgFps", avgFps); put("avgTemp", avgTemp)
             }
             db.insert("fps_sessions", null, v)
         } catch (e: Exception) {}
@@ -62,7 +60,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ThermalMonit
         try {
             val c = readableDatabase.rawQuery("SELECT * FROM fps_sessions ORDER BY timestamp DESC", null)
             while (c.moveToNext()) {
-                list.add(FpsSession(c.getInt(0), c.getLong(1), c.getString(2) ?: "Unknown", c.getInt(3), c.getInt(4), c.getInt(5), c.getInt(6)))
+                list.add(FpsSession(c.getInt(0), c.getLong(1), c.getString(2) ?: "Unknown", c.getInt(3), c.getInt(4), c.getInt(5), c.getInt(6), c.getInt(7)))
             }
             c.close()
         } catch (e: Exception) {}
