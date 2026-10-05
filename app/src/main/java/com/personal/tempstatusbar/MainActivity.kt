@@ -165,7 +165,31 @@ class MainActivity : Activity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // --- THE BLACK BOX CRASH INTERCEPTOR ---
+        val crashFile = java.io.File(cacheDir, "crash_log.txt")
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, exception ->
+            try { crashFile.writeText("FATAL CRASH on ${thread.name}:\n${exception.message}\n\n${exception.stackTraceToString()}") } catch (e: Exception) {}
+            defaultHandler?.uncaughtException(thread, exception)
+        }
+
         super.onCreate(savedInstanceState)
+
+        if (crashFile.exists() && crashFile.length() > 0) {
+            val log = crashFile.readText()
+            crashFile.delete()
+            val sv = ScrollView(this).apply { setPadding(40, 40, 40, 40) }
+            sv.addView(TextView(this).apply { text = log; textSize = 11f; setTextColor(Color.parseColor("#FF3B30")); typeface = Typeface.MONOSPACE })
+            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("FATAL CRASH INTERCEPTED")
+                .setView(sv)
+                .setPositiveButton("EXIT APP") { _, _ -> finish() }
+                .setCancelable(false)
+                .show()
+            return // Kills the UI thread so the app cannot crash again while displaying the log
+        }
+        // ---------------------------------------
+
         HardwareThermalControl.init(this)
         dbHelper = DatabaseHelper(this)
         settings = SettingsManager(this)
@@ -177,14 +201,18 @@ class MainActivity : Activity() {
         
         if (!HardwareThermalControl.isRootAvailable()) {
             val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-            val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
+            val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName)
             if (mode != AppOpsManager.MODE_ALLOWED) {
                 startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
                 Toast.makeText(this, "Please enable Usage Access for Non-Root tracking.", Toast.LENGTH_LONG).show()
             }
         }
         
-        startMonitorService()
+        try {
+            startMonitorService()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Service Blocked: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onResume() {
