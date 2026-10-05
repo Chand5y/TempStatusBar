@@ -58,6 +58,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ThermalMonit
     fun getFpsSessions(): List<FpsSession> {
         val list = mutableListOf<FpsSession>()
         try {
+            // Scrub corrupted test data caused by the nanosecond parsing bug
+            writableDatabase.execSQL("DELETE FROM fps_sessions WHERE maxFps > 500 OR avgFps > 500")
+            
             val c = readableDatabase.rawQuery("SELECT * FROM fps_sessions ORDER BY timestamp DESC", null)
             while (c.moveToNext()) {
                 list.add(FpsSession(c.getInt(0), c.getLong(1), c.getString(2) ?: "Unknown", c.getInt(3), c.getInt(4), c.getInt(5), c.getInt(6), c.getInt(7)))
