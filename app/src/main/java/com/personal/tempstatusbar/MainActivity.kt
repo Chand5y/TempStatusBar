@@ -5,6 +5,7 @@ import android.animation.LayoutTransition
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.AppOpsManager
+import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -26,6 +27,9 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.widget.*
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.thread
@@ -66,24 +70,23 @@ class BatteryGraphicView(context: Context) : View(context) {
     }
 }
 
+// Interactive Dual-Axis FPS & Thermal Chart
 class FpsChartView(context: Context) : View(context) {
     private var activeSession: FpsSession? = null
+    var onScrub: ((Int, Int) -> Unit)? = null
     var isDarkMode = true
+    private var scrubIndex = -1
 
-    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00E676")
-        strokeWidth = 5f
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-    }
+    private val fpsLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#00E676"); strokeWidth = 5f; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val tempLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FF9800"); strokeWidth = 6f; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.5f; style = Paint.Style.STROKE }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
+    private val scrubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; strokeWidth = 2f; style = Paint.Style.STROKE }
+    private val scrubDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Color.WHITE }
 
     fun setSession(session: FpsSession?) {
-        activeSession = session
-        invalidate()
+        activeSession = session; scrubIndex = -1; invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -99,58 +102,79 @@ class FpsChartView(context: Context) : View(context) {
             return
         }
 
-        // Parse timeline samples
-        val rawPoints = s.fpsSamples.split(",")
-            .mapNotNull { it.trim().toIntOrNull() }
-            .filter { it in 1..240 }
-
-        val points = if (rawPoints.size >= 2) rawPoints else listOf(s.minFps, s.avgFps, s.maxFps, s.avgFps)
+        val fpsPoints = s.fpsSamples.split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it in 1..240 }
+        val tempPoints = s.tempSamples.split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it in 20..60 }
+        if (fpsPoints.isEmpty()) return
 
         val padL = 70f; val padR = 40f; val padT = 30f; val padB = 40f
         val plotW = w - padL - padR; val plotH = h - padT - padB
 
-        val maxScale = 120f
+        val maxFpsScale = 120f
         gridPaint.color = if (isDarkMode) Color.parseColor("#2C2C2E") else Color.parseColor("#E5E5EA")
         textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
         textPaint.textAlign = Paint.Align.RIGHT
 
-        // Draw benchmark lines (30, 60, 90, 120 FPS)
-        val gridLevels = listOf(30, 60, 90, 120)
-        for (lvl in gridLevels) {
-            val y = padT + plotH - ((lvl / maxScale) * plotH)
+        listOf(30, 60, 90, 120).forEach { lvl ->
+            val y = padT + plotH - ((lvl / maxFpsScale) * plotH)
             canvas.drawLine(padL, y, w - padR, y, gridPaint)
             canvas.drawText("${lvl}", padL - 12f, y + 8f, textPaint)
         }
 
-        val path = Path(); val fillPath = Path()
-        val stepX = plotW / (points.size - 1).toFloat()
+        val fpsPath = Path(); val fpsFill = Path()
+        val tempPath = Path()
+        val stepX = plotW / (fpsPoints.size - 1).coerceAtLeast(1).toFloat()
 
-        for (i in points.indices) {
+        for (i in fpsPoints.indices) {
             val x = padL + i * stepX
-            val clampedFps = points[i].coerceIn(0, 120)
-            val y = padT + plotH - ((clampedFps / maxScale) * plotH)
-
-            if (i == 0) {
-                path.moveTo(x, y)
-                fillPath.moveTo(x, padT + plotH)
-                fillPath.lineTo(x, y)
-            } else {
-                path.lineTo(x, y)
-                fillPath.lineTo(x, y)
+            val yFps = padT + plotH - ((fpsPoints[i].coerceIn(0, 120) / maxFpsScale) * plotH)
+            if (i == 0) { fpsPath.moveTo(x, yFps); fpsFill.moveTo(x, padT + plotH); fpsFill.lineTo(x, yFps) } else { fpsPath.lineTo(x, yFps); fpsFill.lineTo(x, yFps) }
+            
+            if (i < tempPoints.size) {
+                // Map Temp 30C-50C directly to the middle UI height
+                val yTemp = padT + plotH - (((tempPoints[i] - 30f) / 20f).coerceIn(0f, 1f) * plotH)
+                if (i == 0) tempPath.moveTo(x, yTemp) else tempPath.lineTo(x, yTemp)
             }
         }
+        
+        fpsFill.lineTo(padL + (fpsPoints.size - 1) * stepX, padT + plotH); fpsFill.close()
+        fillPaint.shader = LinearGradient(0f, padT, 0f, padT + plotH, Color.parseColor("#5500E676"), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        canvas.drawPath(fpsFill, fillPaint)
+        canvas.drawPath(fpsPath, fpsLinePaint)
+        if (tempPoints.isNotEmpty()) canvas.drawPath(tempPath, tempLinePaint)
 
-        val lastX = padL + (points.size - 1) * stepX
-        fillPath.lineTo(lastX, padT + plotH)
-        fillPath.close()
+        if (scrubIndex in fpsPoints.indices) {
+            val x = padL + scrubIndex * stepX
+            canvas.drawLine(x, padT, x, padT + plotH, scrubPaint)
+            val yFps = padT + plotH - ((fpsPoints[scrubIndex].coerceIn(0, 120) / maxFpsScale) * plotH)
+            canvas.drawCircle(x, yFps, 8f, scrubDotPaint)
+            if (scrubIndex < tempPoints.size) {
+                val yTemp = padT + plotH - (((tempPoints[scrubIndex] - 30f) / 20f).coerceIn(0f, 1f) * plotH)
+                canvas.drawCircle(x, yTemp, 8f, scrubDotPaint)
+            }
+        }
+    }
 
-        fillPaint.shader = LinearGradient(
-            0f, padT, 0f, padT + plotH,
-            Color.parseColor("#5500E676"), Color.TRANSPARENT,
-            Shader.TileMode.CLAMP
-        )
-        canvas.drawPath(fillPath, fillPaint)
-        canvas.drawPath(path, linePaint)
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val s = activeSession ?: return false
+        val fpsPoints = s.fpsSamples.split(",").mapNotNull { it.trim().toIntOrNull() }
+        if (fpsPoints.isEmpty()) return false
+
+        if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) {
+            val padL = 70f; val plotW = width.toFloat() - padL - 40f
+            val stepX = plotW / (fpsPoints.size - 1).coerceAtLeast(1).toFloat()
+            val idx = ((event.x - padL) / stepX).toInt().coerceIn(0, fpsPoints.size - 1)
+            
+            if (idx != scrubIndex) {
+                scrubIndex = idx
+                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                val tempPoints = s.tempSamples.split(",").mapNotNull { it.trim().toIntOrNull() }
+                val tempVal = if (idx < tempPoints.size) tempPoints[idx] else s.avgTemp
+                onScrub?.invoke(fpsPoints[idx], tempVal)
+                invalidate()
+            }
+            return true
+        }
+        return super.onTouchEvent(event)
     }
 }
 
@@ -169,6 +193,9 @@ class MainActivity : Activity() {
     private lateinit var fpsChartView: FpsChartView
     private lateinit var fpsDetailText: TextView
     private lateinit var fpsSessionButtonContainer: LinearLayout
+    private lateinit var refreshRateButtons: List<Button>
+    private lateinit var screenTimeText: TextView
+    private lateinit var batteryEstText: TextView
     private lateinit var warnS: SeekBar
     private lateinit var cutS: SeekBar
     private lateinit var resS: SeekBar
@@ -205,34 +232,33 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLogger.init(cacheDir)
-
-        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
-            AppLogger.handleFatalCrash(throwable)
-            System.exit(1)
-        }
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable -> AppLogger.handleFatalCrash(throwable); System.exit(1) }
 
         try {
             HardwareThermalControl.init(this)
             dbHelper = DatabaseHelper(this)
             settings = SettingsManager(this)
             sharedPrefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
+            
             buildBaseLayout()
+            checkAndRequestUsageAccess()
 
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
             }
-
-            if (!HardwareThermalControl.isRootAvailable()) {
-                val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-                val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
-                if (mode != AppOpsManager.MODE_ALLOWED) {
-                    startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                    Toast.makeText(this, "Please enable Usage Access for tracking.", Toast.LENGTH_LONG).show()
-                }
-            }
             startMonitorService()
-        } catch (t: Throwable) {
-            AppLogger.handleFatalCrash(t)
+        } catch (t: Throwable) { AppLogger.handleFatalCrash(t) }
+    }
+
+    private fun checkAndRequestUsageAccess() {
+        val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
+        if (mode != AppOpsManager.MODE_ALLOWED) {
+            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Usage Access Required")
+                .setMessage("To track app screen time and background limits, Temp Monitor requires Usage Access.")
+                .setPositiveButton("GRANT") { _, _ -> startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+                .setCancelable(false).show()
         }
     }
 
@@ -241,6 +267,7 @@ class MainActivity : Activity() {
         isPaused = false
         uiHandler.post(liveHardwarePoller)
         refreshDashboardData()
+        if (currentTabIndex == 3) updateActiveRefreshRateUI()
         if (isCpuTabActive) startLiveCpuUpdates()
     }
 
@@ -266,48 +293,20 @@ class MainActivity : Activity() {
 
     private fun showTrackerModal() {
         val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
-        val logText = txt(AppLogger.getLogs(), 11f, Color.GRAY).apply { typeface = Typeface.MONOSPACE }
-        sv.addView(logText)
-
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Global Action Tracker")
-            .setView(sv)
+        sv.addView(txt(AppLogger.getLogs(), 11f, Color.GRAY).apply { typeface = Typeface.MONOSPACE })
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Global Action Tracker").setView(sv)
             .setPositiveButton("CLOSE", null)
-            .setNeutralButton("SAVE LOG") { _, _ ->
-                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-                val success = AppLogger.exportLogsToDownloads("ActionLog_$timestamp.txt", AppLogger.getLogs())
-                Toast.makeText(this, if(success) "Saved to Downloads/TempMonitorLog" else "Failed to save", Toast.LENGTH_LONG).show()
-            }
-            .setNegativeButton("CLEAR") { _, _ ->
-                AppLogger.clearLogs()
-                Toast.makeText(this, "Logs Cleared", Toast.LENGTH_SHORT).show()
-            }
-            .show()
+            .setNeutralButton("SAVE LOG") { _, _ -> AppLogger.exportLogsToDownloads("ActionLog_${System.currentTimeMillis()}.txt", AppLogger.getLogs()); Toast.makeText(this, "Saved to Downloads", Toast.LENGTH_SHORT).show() }
+            .setNegativeButton("CLEAR") { _, _ -> AppLogger.clearLogs(); Toast.makeText(this, "Logs Cleared", Toast.LENGTH_SHORT).show() }.show()
     }
 
-    private fun showRamDetailsModal() {
-        val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        sv.addView(list)
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Detailed RAM Usage").setView(sv).setPositiveButton("Close", null).show()
-        thread {
-            val procs = HardwareThermalControl.getDetailedRam()
-            uiHandler.post {
-                if (procs.isEmpty()) { list.addView(txt("Failed to read RAM via Root.", 12f, Color.GRAY)); return@post }
-                procs.forEach { p ->
-                    val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,15,0,15); gravity=Gravity.CENTER_VERTICAL }
-                    row.addView(txt("${p.name}\n${p.sizeMb} MB", 12f, Color.WHITE).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
-                    row.addView(Button(this@MainActivity).apply { text="KILL"; textSize=10f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F")); setPadding(10,0,10,0); layoutParams=LinearLayout.LayoutParams(-2, -2)
-                        setOnClickListener {
-                            haptic(this)
-                            HardwareThermalControl.killProcess(p.pid)
-                            list.removeView(row)
-                            Toast.makeText(this@MainActivity, "Killed ${p.name}", Toast.LENGTH_SHORT).show()
-                        }
-                    })
-                    list.addView(row)
-                }
-            }
+    // Modern Rounded Button Factory
+    private fun createBtn(t: String, bgCol: Int, onClick: () -> Unit): Button {
+        return Button(this).apply {
+            text = t; textSize = 11f; setTextColor(Color.WHITE); isAllCaps = false
+            background = GradientDrawable().apply { cornerRadius = 40f; setColor(bgCol) }
+            setPadding(40, 20, 40, 20); layoutParams = LinearLayout.LayoutParams(-2, -2)
+            setOnClickListener { haptic(this); onClick() }
         }
     }
 
@@ -330,11 +329,7 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(-1, 160); setPadding(50, 0, 50, 0); gravity = Gravity.CENTER_VERTICAL; elevation = 8f
         }
         topBar.addView(txt("Temp Monitor", 22f, if (isDark) Color.WHITE else Color.BLACK, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
-        topBar.addView(Button(this).apply {
-            text = "TRACKER"; textSize = 11f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#4CAF50"))
-            setPadding(20,0,20,0); layoutParams = LinearLayout.LayoutParams(-2, 90)
-            setOnClickListener { haptic(this); showTrackerModal() }
-        })
+        topBar.addView(createBtn("TRACKER", Color.parseColor("#4CAF50")) { showTrackerModal() })
         root.addView(topBar)
 
         contentFrame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
@@ -375,12 +370,8 @@ class MainActivity : Activity() {
 
     private var downX = 0f; private var downY = 0f
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS))) {
-            return super.dispatchTouchEvent(ev)
-        }
-        if (currentTabIndex == 3 && isTouchInside(ev, fpsChartView)) {
-            return super.dispatchTouchEvent(ev)
-        }
+        if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS))) return super.dispatchTouchEvent(ev)
+        if (currentTabIndex == 3 && isTouchInside(ev, fpsChartView)) return super.dispatchTouchEvent(ev)
         when (ev.action) {
             MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
             MotionEvent.ACTION_UP -> {
@@ -404,16 +395,14 @@ class MainActivity : Activity() {
 
         val sw = contentFrame.width.toFloat()
         oldTab.animate().translationX(if (movingLeft) -sw else sw).alpha(0f).setDuration(250).withEndAction { oldTab.visibility = View.GONE }.start()
-
-        newTab.translationX = if (movingLeft) sw else -sw
-        newTab.alpha = 0f
-        newTab.visibility = View.VISIBLE
+        newTab.translationX = if (movingLeft) sw else -sw; newTab.alpha = 0f; newTab.visibility = View.VISIBLE
         newTab.animate().translationX(0f).alpha(1f).setDuration(250).start()
 
         tabButtons.forEachIndexed { i, b -> b.setTextColor(if (i == newIdx) Color.parseColor("#00E5FF") else (if (isDark) Color.GRAY else Color.DKGRAY)) }
         currentTabIndex = newIdx
         isCpuTabActive = (newIdx == 2)
         if (isCpuTabActive) startLiveCpuUpdates()
+        if (newIdx == 3) updateActiveRefreshRateUI()
     }
 
     private fun buildTab1(isDark: Boolean): View {
@@ -422,19 +411,15 @@ class MainActivity : Activity() {
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
         val c1 = card(cBg)
-        val headerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f }
-        headerRow.addView(txt("📈 THERMAL HISTORY", 12f, Color.GRAY).apply { layoutParams = LinearLayout.LayoutParams(0,-2,1f); setPadding(0,0,0,15) })
-        headerRow.addView(txt("📋 VIEW LOGS", 12f, Color.parseColor("#00E5FF"), true).apply {
-            layoutParams = LinearLayout.LayoutParams(0,-2,1f); gravity = Gravity.END; setPadding(0,0,0,15)
-            setOnClickListener {
-                haptic(this)
-                try {
-                    val validRecords = dbHelper.getAllRecords().filter { it.appDetails.isNotEmpty() && !it.appDetails.contains("TempRecord(") }
-                    val records = validRecords.takeLast(50).joinToString("\n\n") { "[$it.chargeType] ${it.temp}°C\n${it.appDetails}" }
-                    showModal("Raw Thermal Database", if (records.isEmpty()) "No logs yet." else records)
-                } catch (e: Exception) { showModal("Error", "Could not read database") }
-            }
-        })
+        val headerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f; setPadding(0,0,0,15); gravity = Gravity.CENTER_VERTICAL }
+        headerRow.addView(txt("📈 THERMAL HISTORY", 12f, Color.GRAY).apply { layoutParams = LinearLayout.LayoutParams(0,-2,1f) })
+        headerRow.addView(createBtn("VIEW LOGS", Color.parseColor("#333333")) {
+            try {
+                val validRecords = dbHelper.getAllRecords().filter { it.appDetails.isNotEmpty() && !it.appDetails.contains("TempRecord(") }
+                val records = validRecords.takeLast(50).joinToString("\n\n") { "[$it.chargeType] ${it.temp}°C\n${it.appDetails}" }
+                showModal("Raw Thermal Database", if (records.isEmpty()) "No logs yet." else records)
+            } catch (e: Exception) {}
+        }.apply { layoutParams = LinearLayout.LayoutParams(0, 80, 1f) })
         c1.addView(headerRow)
 
         chartView = TemperatureChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
@@ -445,33 +430,29 @@ class MainActivity : Activity() {
         detailRow.addView(detailTempText)
 
         val infoCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 2.5f) }
-        detailTimeText = txt("Tap chart point to inspect", 12f, tPri, true); infoCol.addView(detailTimeText)
+        detailTimeText = txt("Tap chart to inspect", 12f, tPri, true); infoCol.addView(detailTimeText)
         detailAppContent = txt("Awaiting selection...", 11f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { setPadding(0, 8, 0, 0) }
         infoCol.addView(detailAppContent)
         detailRow.addView(infoCol)
         c1.addView(detailRow)
         lay.addView(c1)
 
-        // Clean, Minimalistic Thermal Badges using Symbols
+        // Clean Icon Matrix Fix
         chartView.onRecordSelected = { r ->
             val time = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))
-            val screenIcon = if (r.screenOn) "🔆 Screen On" else "🌙 Standby"
-            val powerIcon = if (r.isCharging) "⚡ Charging" else "🔋 Discharging"
+            val screenIcon = if (r.screenOn) "🔆 On" else "🌙 Off"
+            val powerIcon = if (r.isCharging) "⚡ Chg" else "🔋 Dis"
             val traceIcon = if (r.isRoot) "🛡️ Root" else "📱 User"
 
             detailTimeText.text = "$time\n$screenIcon  •  $powerIcon  •  $traceIcon"
             detailTempText.text = "${r.temp}°C"
 
-            val formattedApps = r.appDetails.lines().joinToString("\n") { line ->
+            detailAppContent.text = r.appDetails.lines().joinToString("\n") { line ->
                 if (line.startsWith("• ")) {
-                    val raw = line.removePrefix("• ")
-                    val parts = raw.split(" — ")
-                    val appFriendly = AppLabelHelper.getAppName(this@MainActivity, parts.getOrNull(0) ?: "")
-                    val usage = parts.getOrNull(1) ?: ""
-                    "• $appFriendly — $usage"
+                    val raw = line.removePrefix("• "); val parts = raw.split(" — ")
+                    "• ${AppLabelHelper.getAppName(this, parts.getOrNull(0) ?: "")} — ${parts.getOrNull(1) ?: ""}"
                 } else line
             }
-            detailAppContent.text = formattedApps
         }
 
         val c3 = card(cBg) { showModal("PMIC Safety Engine", "Cut Off (🛑): Breaks circuit when limit is reached.\nResume (🔄): Restores circuit when cooled.") }
@@ -525,15 +506,20 @@ class MainActivity : Activity() {
         c1.addView(r1)
         lay.addView(c1)
 
+        val cEst = card(cBg)
+        cEst.addView(txt("ESTIMATED TIME REMAINING", 12f, Color.GRAY).apply { setPadding(0,0,0,15) })
+        batteryEstText = txt("Calculating based on live drain...", 18f, Color.parseColor("#00E676"), true)
+        cEst.addView(batteryEstText); lay.addView(cEst)
+
         val c3 = card(cBg) {
             try {
                 val h = BatteryHealthHelper.getHealthData(this@MainActivity)
                 showModal("Battery Diagnostic", "Design: ${h.designCapacityMah} mAh\nActual: ${h.actualCapacityMah} mAh\nCycles: ${h.cycleCount}\nWear: ${100 - h.healthPercent}%\nStatus: ${h.statusText}")
-            } catch (e: Exception) { showModal("Error", "Could not parse health data.") }
+            } catch (e: Exception) {}
         }
-        c3.addView(txt("BATTERY DEGRADATION HEALTH (TAP FOR DETAILS)", 12f, Color.GRAY))
+        c3.addView(txt("BATTERY DEGRADATION HEALTH (TAP DETAILS)", 12f, Color.GRAY))
         healthPercentText = txt("--%", 32f, tPri, true); c3.addView(healthPercentText)
-        actualCapacityText = txt("Loading metrics...", 15f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(actualCapacityText)
+        actualCapacityText = txt("Loading metrics...", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(actualCapacityText)
         lay.addView(c3)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
@@ -554,63 +540,37 @@ class MainActivity : Activity() {
         val ramRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         ramUsageText = txt("Loading...", 15f, tPri, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         ramRow.addView(ramUsageText)
-        ramRow.addView(Button(this).apply {
-            text = "CLEAN RAM"; textSize = 11f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#2196F3")); layoutParams = LinearLayout.LayoutParams(-2, -2); setPadding(20, 10, 20, 10)
-            setOnClickListener { haptic(this); HardwareThermalControl.clearRamCaches(); Toast.makeText(this@MainActivity, "Kernel RAM caches dropped.", Toast.LENGTH_SHORT).show() }
-        })
+        ramRow.addView(createBtn("CLEAN RAM", Color.parseColor("#2196F3")) { HardwareThermalControl.clearRamCaches(); Toast.makeText(this@MainActivity, "RAM dropped.", Toast.LENGTH_SHORT).show() })
         rCard.addView(ramRow); lay.addView(rCard)
 
         val sgCard = card(cBg) { showModal("Smart Thermal Governor", "Throttles Prime Core (C7) and pins background apps to silver cores when Warning Temp is hit.") }
         sgCard.addView(Switch(this).apply {
-            text = "Auto-Thermal Smart Governor"; setTextColor(tPri)
-            isChecked = isSmartGovernorEnabled
-            setOnCheckedChangeListener { _, c ->
-                haptic(this); isSmartGovernorEnabled = c
-                sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply { putExtra("state", c); setPackage(packageName) })
-                Toast.makeText(context, if(c) "Smart Governor Armed" else "Smart Governor Disabled", Toast.LENGTH_SHORT).show()
-            }
+            text = "Auto-Thermal Smart Governor"; setTextColor(tPri); isChecked = isSmartGovernorEnabled
+            setOnCheckedChangeListener { _, c -> haptic(this); isSmartGovernorEnabled = c; sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply { putExtra("state", c); setPackage(packageName) }) }
         })
         lay.addView(sgCard)
 
         val cCard = card(cBg)
-        cCard.addView(txt("CPU ARCHITECTURE MAP (LONG-PRESS TO TOGGLE)", 11f, Color.GRAY).apply{setPadding(0,0,0,20)})
+        cCard.addView(txt("CPU ARCHITECTURE MAP (LONG-PRESS)", 11f, Color.GRAY).apply{setPadding(0,0,0,20)})
         cpuArchitectureGrid = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f; layoutParams = LinearLayout.LayoutParams(-1, 380) }
         coreBlocks = Array(8) { TextView(this) }
 
         fun coreBox(idx: Int): TextView = txt("C$idx", 12f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(-1, 0, 1f).apply { setMargins(6,6,6,6) }
-            background = GradientDrawable().apply { cornerRadius = 20f; setColor(Color.DKGRAY) }
+            background = GradientDrawable().apply { cornerRadius = 30f; setColor(Color.DKGRAY) }
             setOnLongClickListener {
                 haptic(this)
-                if (idx == 7) {
-                    val throttled = (this.text.toString().contains("THROTTLED"))
-                    HardwareThermalControl.throttlePrimeCore(!throttled)
-                    Toast.makeText(context, if(!throttled) "Core 7 Throttled" else "Core 7 Restored", Toast.LENGTH_SHORT).show()
-                } else {
-                    val isOff = (this.text.toString().contains("OFF"))
-                    HardwareThermalControl.setCoreOnline(idx, isOff)
-                    if (isOff) {
-                        (this.background as GradientDrawable).setColor(Color.parseColor("#4CAF50"))
-                        this.text = "C$idx\nONLINE"
-                    } else {
-                        (this.background as GradientDrawable).setColor(Color.parseColor("#333333"))
-                        this.text = "C$idx\nOFF"
-                    }
-                }
+                if (idx == 7) { HardwareThermalControl.throttlePrimeCore(!text.toString().contains("THROTTLED")) } 
+                else { HardwareThermalControl.setCoreOnline(idx, text.toString().contains("OFF")) }
                 true
             }
         }
 
-        val silCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }
-        for(i in 0..3) { val b = coreBox(i); coreBlocks[i] = b; silCol.addView(b) }
-        val gldCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }
-        for(i in 4..6) { val b = coreBox(i); coreBlocks[i] = b; gldCol.addView(b) }
-        val prmCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }
-        val c7 = coreBox(7); coreBlocks[7] = c7; prmCol.addView(c7)
-
+        val silCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }; for(i in 0..3) { val b = coreBox(i); coreBlocks[i] = b; silCol.addView(b) }
+        val gldCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }; for(i in 4..6) { val b = coreBox(i); coreBlocks[i] = b; gldCol.addView(b) }
+        val prmCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }; val c7 = coreBox(7); coreBlocks[7] = c7; prmCol.addView(c7)
         cpuArchitectureGrid.addView(silCol); cpuArchitectureGrid.addView(gldCol); cpuArchitectureGrid.addView(prmCol)
-        cCard.addView(cpuArchitectureGrid)
-        lay.addView(cCard)
+        cCard.addView(cpuArchitectureGrid); lay.addView(cCard)
 
         val pCard = card(cBg)
         pCard.addView(txt("LIVE CPU STRESS & TERMINATION", 12f, Color.GRAY).apply{setPadding(0,0,0,20)})
@@ -628,22 +588,15 @@ class MainActivity : Activity() {
         val c1 = card(cBg)
         c1.addView(txt("DISPLAY REFRESH RATE", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 20) })
         val rrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f }
-        listOf(60, 90, 120).forEach { r ->
-            rrRow.addView(Button(this).apply {
-                text = "${r}Hz"
-                layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10, 0, 10, 0) }
-                setBackgroundColor(Color.parseColor("#333333"))
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    haptic(this)
-                    thread {
-                        val cmd = "settings put system peak_refresh_rate $r; settings put system min_refresh_rate $r; settings put system user_refresh_rate $r; settings put secure miui_refresh_rate $r; settings put system miui_refresh_rate $r"
-                        Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-                    }
-                    Toast.makeText(this@MainActivity, "Forced ${r}Hz (Lock & Unlock screen to apply)", Toast.LENGTH_LONG).show()
-                }
-            })
+        
+        refreshRateButtons = listOf(60, 90, 120).map { r ->
+            createBtn("${r}Hz", Color.parseColor("#333333")) {
+                thread { Runtime.getRuntime().exec(arrayOf("su", "-c", "settings put system peak_refresh_rate $r; settings put system user_refresh_rate $r; settings put secure miui_refresh_rate $r")) }
+                Toast.makeText(this@MainActivity, "Forced ${r}Hz (Lock/Unlock screen to apply)", Toast.LENGTH_SHORT).show()
+                uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 2000)
+            }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } }
         }
+        refreshRateButtons.forEach { rrRow.addView(it) }
         c1.addView(rrRow); lay.addView(c1)
 
         val c2 = card(cBg)
@@ -653,43 +606,64 @@ class MainActivity : Activity() {
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
             setOnCheckedChangeListener { _, c -> haptic(this); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
         })
-        c2.addView(txt("Tap pill to start/pause counting. Long-press to save session & close.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
-        c2.addView(Button(this).apply {
-            text = "LAUNCH FPS OVERLAY"
-            setBackgroundColor(Color.parseColor("#2196F3"))
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                haptic(this)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
-                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
-                    Toast.makeText(this@MainActivity, "Please grant Overlay permission first", Toast.LENGTH_LONG).show()
-                } else {
-                    startService(Intent(this@MainActivity, FpsOverlayService::class.java))
-                }
-            }
-        })
+        c2.addView(txt("Tap pill to toggle Recording (🔴). Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
+        c2.addView(createBtn("LAUNCH FPS OVERLAY", Color.parseColor("#2196F3")) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
+            } else { startService(Intent(this@MainActivity, FpsOverlayService::class.java)) }
+        }.apply { layoutParams = LinearLayout.LayoutParams(-1, -2) })
         lay.addView(c2)
 
-        // True Interactive Time-Series FPS Graph Card
         val c3 = card(cBg)
-        c3.addView(txt("GAMING FPS TIMELINE GRAPH", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 15) })
-
-        fpsChartView = FpsChartView(this).apply {
-            isDarkMode = isDark
-            layoutParams = LinearLayout.LayoutParams(-1, 450)
-        }
+        c3.addView(txt("GAMING FPS & THERMAL TIMELINE", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 15) })
+        fpsChartView = FpsChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
         c3.addView(fpsChartView)
 
         val hScroll = HorizontalScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 20 } }
         fpsSessionButtonContainer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        hScroll.addView(fpsSessionButtonContainer)
-        c3.addView(hScroll)
+        hScroll.addView(fpsSessionButtonContainer); c3.addView(hScroll)
 
-        fpsDetailText = txt("Select a session button above to view timeline", 12f, tPri).apply { setPadding(0, 20, 0, 0) }
-        c3.addView(fpsDetailText)
-        lay.addView(c3)
+        fpsDetailText = txt("Select a session below to view timeline", 12f, tPri).apply { setPadding(0, 20, 0, 0) }
+        fpsChartView.onScrub = { fps, temp -> fpsDetailText.text = "📍 Scrub: $fps FPS  |  $temp°C" }
+        c3.addView(fpsDetailText); lay.addView(c3)
+
+        val c4 = card(cBg)
+        c4.addView(txt("TODAY'S SCREEN TIME", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 15) })
+        screenTimeText = txt("Loading usage stats...", 13f, tPri)
+        c4.addView(screenTimeText); lay.addView(c4)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
+    }
+
+    private fun updateActiveRefreshRateUI() {
+        try {
+            val activeHz = Settings.System.getInt(contentResolver, "user_refresh_rate", 120)
+            refreshRateButtons.forEachIndexed { i, btn ->
+                val targetHz = listOf(60, 90, 120)[i]
+                (btn.background as GradientDrawable).setColor(if (targetHz == activeHz) Color.parseColor("#2196F3") else Color.parseColor("#333333"))
+            }
+        } catch (e: Exception) {}
+        
+        thread {
+            try {
+                val usage = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+                val cal = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0) }
+                val stats = usage.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, cal.timeInMillis, System.currentTimeMillis())
+                val sorted = stats.filter { it.totalTimeInForeground > 60000L }.sortedByDescending { it.totalTimeInForeground }.take(5)
+                
+                var totalTime = 0L
+                val sb = StringBuilder()
+                sorted.forEach { s ->
+                    totalTime += s.totalTimeInForeground
+                    val mins = (s.totalTimeInForeground / 1000) / 60
+                    val friendlyName = AppLabelHelper.getAppName(this, s.packageName)
+                    sb.append("• $friendlyName: ${mins/60}h ${mins%60}m\n")
+                }
+                
+                val totalMins = (totalTime / 1000) / 60
+                uiHandler.post { screenTimeText.text = "Total Active: ${totalMins/60}h ${totalMins%60}m\n\n${sb.toString()}" }
+            } catch (e: Exception) {}
+        }
     }
 
     private fun refreshLiveHardware() {
@@ -703,8 +677,15 @@ class MainActivity : Activity() {
             val stats = PowerHardwareHelper.readPowerStats(this, isPlugged)
             currentLevelText.text = "$pct%"
             batteryGraphic.update(pct, stats.isCharging)
-
             livePowerText.text = if (stats.isCharging) "Charging AC\n⚡ ${stats.wattage}W (+${stats.currentMa} mA)" else "Discharging\n🔋 -${stats.wattage}W (${stats.currentMa} mA)"
+
+            if (!stats.isCharging && stats.currentMa > 0) {
+                val capacity = BatteryHealthHelper.getHealthData(this).actualCapacityMah
+                val hoursLeft = (capacity * (pct / 100f)) / stats.currentMa
+                val hrs = hoursLeft.toInt(); val mins = ((hoursLeft - hrs) * 60).toInt()
+                batteryEstText.text = "~$hrs hrs $mins mins remaining"
+                batteryEstText.setTextColor(if (hoursLeft > 3) Color.parseColor("#00E676") else Color.parseColor("#FF9800"))
+            } else if (stats.isCharging) { batteryEstText.text = "Charging in progress..."; batteryEstText.setTextColor(Color.parseColor("#2196F3")) }
         } catch (e: Exception) {}
     }
 
@@ -715,42 +696,22 @@ class MainActivity : Activity() {
             healthPercentText.text = "${h.healthPercent}%"
             actualCapacityText.text = "Actual: ${h.actualCapacityMah} mAh\nDesign: ${h.designCapacityMah} mAh\nCycles: ${h.cycleCount}"
         } catch(e: Exception) {}
-
         try { chartView.setData(dbHelper.getAllRecords()) } catch(e: Exception) {}
 
-        // Populate FPS Sessions & Timeline Graph
         try {
             val sessions = dbHelper.getFpsSessions()
             fpsSessionButtonContainer.removeAllViews()
-
             if (sessions.isNotEmpty()) {
                 val latest = sessions.first()
-                fpsChartView.setSession(latest)
-                displaySessionDetails(latest)
-
+                fpsChartView.setSession(latest); displaySessionDetails(latest)
                 sessions.forEachIndexed { idx, s ->
-                    val btn = Button(this).apply {
-                        text = "${s.appName} (${s.avgFps} FPS)"
-                        textSize = 11f
-                        setTextColor(Color.WHITE)
-                        setBackgroundColor(if (idx == 0) Color.parseColor("#00E676") else Color.parseColor("#333333"))
-                        layoutParams = LinearLayout.LayoutParams(-2, 90).apply { setMargins(6, 0, 6, 0) }
-                        setOnClickListener {
-                            haptic(this)
-                            fpsChartView.setSession(s)
-                            displaySessionDetails(s)
-                            for (j in 0 until fpsSessionButtonContainer.childCount) {
-                                (fpsSessionButtonContainer.getChildAt(j) as? Button)?.setBackgroundColor(Color.parseColor("#333333"))
-                            }
-                            setBackgroundColor(Color.parseColor("#00E676"))
-                        }
-                    }
-                    fpsSessionButtonContainer.addView(btn)
+                    val btn = createBtn("${s.appName} (${s.avgFps})", if (idx==0) Color.parseColor("#00E676") else Color.parseColor("#333333")) {
+                        fpsChartView.setSession(s); displaySessionDetails(s)
+                        for (j in 0 until fpsSessionButtonContainer.childCount) { ((fpsSessionButtonContainer.getChildAt(j) as? LinearLayout)?.getChildAt(0) as? Button)?.background?.setTint(Color.parseColor("#333333")) }
+                    }.apply { layoutParams = LinearLayout.LayoutParams(-2, -2).apply { setMargins(6,0,6,0) } }
+                    fpsSessionButtonContainer.addView(LinearLayout(this).apply{addView(btn)})
                 }
-            } else {
-                fpsChartView.setSession(null)
-                fpsDetailText.text = "No gaming FPS recordings yet."
-            }
+            } else { fpsChartView.setSession(null); fpsDetailText.text = "No gaming FPS recordings yet." }
         } catch (e: Exception) {}
     }
 
@@ -770,40 +731,22 @@ class MainActivity : Activity() {
 
                 uiHandler.post {
                     if (!isCpuTabActive) return@post
-                    ramUsageText.text = ram
-                    gpuText.text = "GPU: $gpu"
-
+                    ramUsageText.text = ram; gpuText.text = "GPU: $gpu"
                     for (i in 0..7) {
                         val blk = coreBlocks[i]
                         if (i < freqs.size) {
-                            val fStr = freqs[i]
-                            val mhz = fStr.replace(" MHz", "").toIntOrNull() ?: 0
-
-                            if (fStr == "Offline" || (i == 7 && mhz <= 844 && mhz > 0)) {
-                                (blk.background as GradientDrawable).setColor(Color.parseColor("#333333"))
-                                blk.text = "C$i\n${if(fStr == "Offline") "OFF" else "THROTTLED"}"
-                            } else {
-                                val col = when {
-                                    mhz < 1000 -> Color.parseColor("#4CAF50")
-                                    mhz < 2000 -> Color.parseColor("#FF9800")
-                                    else -> Color.parseColor("#F44336")
-                                }
-                                (blk.background as GradientDrawable).setColor(col)
-                                blk.text = "C$i\n$fStr"
-                            }
+                            val fStr = freqs[i]; val mhz = fStr.replace(" MHz", "").toIntOrNull() ?: 0
+                            if (fStr == "Offline" || (i == 7 && mhz <= 844 && mhz > 0)) { (blk.background as GradientDrawable).setColor(Color.parseColor("#333333")); blk.text = "C$i\n${if(fStr == "Offline") "OFF" else "THROTTLED"}" } 
+                            else { (blk.background as GradientDrawable).setColor(when { mhz < 1000 -> Color.parseColor("#4CAF50"); mhz < 2000 -> Color.parseColor("#FF9800"); else -> Color.parseColor("#F44336") }); blk.text = "C$i\n$fStr" }
                         }
                     }
-
                     processListContainer.removeAllViews()
                     if (procs.isEmpty()) { processListContainer.addView(txt("Waiting for kernel data...", 13f, Color.GRAY)); return@post }
                     procs.forEach { p ->
                         val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 15, 0, 15); gravity = Gravity.CENTER_VERTICAL }
-                        val procTxt = txt("${p.name} — ${p.cpu}%", 12f, if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES) Color.WHITE else Color.BLACK).apply {
-                            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 15 }; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-                        }
-                        row.addView(procTxt)
-                        row.addView(Button(this@MainActivity).apply { text="RESTRICT"; textSize=10f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#FF9800")); setPadding(10,0,10,0); layoutParams=LinearLayout.LayoutParams(-2, 80).apply{rightMargin=15}; setOnClickListener { haptic(this); HardwareThermalControl.pinProcessToEfficiencyCores(p.pid); Toast.makeText(this@MainActivity, "Pinned to Cores 0-3", Toast.LENGTH_SHORT).show() } })
-                        row.addView(Button(this@MainActivity).apply { text="KILL"; textSize=10f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F")); setPadding(10,0,10,0); layoutParams=LinearLayout.LayoutParams(-2, 80); setOnClickListener { haptic(this); HardwareThermalControl.killProcess(p.pid); Toast.makeText(this@MainActivity, "Signal sent to ${p.name}", Toast.LENGTH_SHORT).show() } })
+                        row.addView(txt("${p.name} — ${p.cpu}%", 12f, if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES) Color.WHITE else Color.BLACK).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 15 }; maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+                        row.addView(createBtn("RESTRICT", Color.parseColor("#FF9800")) { HardwareThermalControl.pinProcessToEfficiencyCores(p.pid); Toast.makeText(this@MainActivity, "Pinned to Cores 0-3", Toast.LENGTH_SHORT).show() }.apply { layoutParams = LinearLayout.LayoutParams(-2, 80).apply { rightMargin = 15 } })
+                        row.addView(createBtn("KILL", Color.parseColor("#D32F2F")) { AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Terminate Process?").setMessage("Kill ${p.name}?").setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(p.pid); Toast.makeText(this@MainActivity, "Signal sent", Toast.LENGTH_SHORT).show() }.setNegativeButton("Cancel", null).show() }.apply { layoutParams = LinearLayout.LayoutParams(-2, 80) })
                         processListContainer.addView(row)
                     }
                 }
