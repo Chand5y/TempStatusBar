@@ -329,7 +329,7 @@ class MainActivity : Activity() {
             text = t; textSize = 11f; setTextColor(Color.WHITE); isAllCaps = false
             background = GradientDrawable().apply { cornerRadius = 40f; setColor(bgCol) }
             setPadding(40, 20, 40, 20); layoutParams = LinearLayout.LayoutParams(-2, -2)
-            setOnClickListener { haptic(this); onClick() }
+            setOnClickListener { haptic(it); onClick() }
         }
     }
 
@@ -338,7 +338,7 @@ class MainActivity : Activity() {
     private fun card(bg: Int, onClick: (() -> Unit)? = null): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(45, 40, 45, 40); background = GradientDrawable().apply { cornerRadius = 40f; setColor(bg) }
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 30 }
-        if (onClick != null) { isClickable = true; isFocusable = true; setOnClickListener { haptic(this); onClick() } }
+        if (onClick != null) { isClickable = true; isFocusable = true; setOnClickListener { haptic(it); onClick() } }
     }
 
     private fun buildBaseLayout() {
@@ -374,7 +374,7 @@ class MainActivity : Activity() {
         }
         tabButtons = listOf("Thermal", "Battery", "CPU", "Display").mapIndexed { i, t ->
             txt(t, 13f, Color.GRAY, true).apply { gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
-                setOnClickListener { haptic(this); switchTab(i) }
+                setOnClickListener { haptic(it); switchTab(i) }
             }
         }
         tabButtons.forEach { nav.addView(it) }
@@ -484,7 +484,7 @@ class MainActivity : Activity() {
         warnLabel = txt("🔔 Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
         warnS = SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=35+p; settings.warningTemp=v; warnLabel.text="🔔 Warning Sound Alert: $v°C" }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
+            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
         })}
         c3.addView(warnS)
 
@@ -492,21 +492,21 @@ class MainActivity : Activity() {
         cutS = SeekBar(this).apply { max = 12; progress = settings.cutoffTemp - 38; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=38+p; settings.cutoffTemp=v; cutoffLabel.text="🛑 Cut Off Charging (PMIC): $v°C"
                 if (settings.resumeTemp >= v-1) { settings.resumeTemp = v-2; resS.progress = (v-2)-32; resumeLabel.text="🔄 Resume Charging: ${v-2}°C" } }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
+            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
         })}
         c3.addView(cutS)
 
         resumeLabel = txt("🔄 Resume Charging: ${settings.resumeTemp}°C", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(resumeLabel)
         resS = SeekBar(this).apply { max = 13; progress = settings.resumeTemp - 32; setPadding(0,10,0,10); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { var v=32+p; if(v>settings.cutoffTemp-2){v=settings.cutoffTemp-2; progress=v-32}; settings.resumeTemp=v; resumeLabel.text="🔄 Resume Charging: $v°C" }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
+            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
         })}
         c3.addView(resS); lay.addView(c3)
 
         val c4 = card(cBg)
         c4.addView(txt("⚙️ NOTIFICATION PREFERENCES", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
-        c4.addView(Switch(this).apply { text = "📱 Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; setOnCheckedChangeListener { _, c -> haptic(this); settings.showNotification = c; startMonitorService() } })
-        c4.addView(Switch(this).apply { text = "⚡ Show Real-Time Wattage View"; setTextColor(tPri); isChecked = settings.showPowerMetrics; setOnCheckedChangeListener { _, c -> haptic(this); settings.showPowerMetrics = c; startMonitorService() } })
+        c4.addView(Switch(this).apply { text = "📱 Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; setOnCheckedChangeListener { v, c -> haptic(v); settings.showNotification = c; startMonitorService() } })
+        c4.addView(Switch(this).apply { text = "⚡ Show Real-Time Wattage View"; setTextColor(tPri); isChecked = settings.showPowerMetrics; setOnCheckedChangeListener { v, c -> haptic(v); settings.showPowerMetrics = c; startMonitorService() } })
         lay.addView(c4)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
@@ -569,7 +569,7 @@ class MainActivity : Activity() {
         val sgCard = card(cBg) { showModal("Smart Thermal Governor", "Throttles Prime Core (C7) and pins background apps to silver cores when Warning Temp is hit.") }
         sgCard.addView(Switch(this).apply {
             text = "Auto-Thermal Smart Governor"; setTextColor(tPri); isChecked = isSmartGovernorEnabled
-            setOnCheckedChangeListener { _, c -> haptic(this); isSmartGovernorEnabled = c; sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply { putExtra("state", c); setPackage(packageName) }) }
+            setOnCheckedChangeListener { v, c -> haptic(v); isSmartGovernorEnabled = c; sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply { putExtra("state", c); setPackage(packageName) }) }
         })
         lay.addView(sgCard)
 
@@ -581,8 +581,8 @@ class MainActivity : Activity() {
         fun coreBox(idx: Int): TextView = txt("C$idx", 12f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(-1, 0, 1f).apply { setMargins(6,6,6,6) }
             background = GradientDrawable().apply { cornerRadius = 30f; setColor(Color.DKGRAY) }
-            setOnLongClickListener {
-                haptic(this)
+            setOnLongClickListener { v ->
+                haptic(v)
                 if (idx == 7) { HardwareThermalControl.throttlePrimeCore(!text.toString().contains("THROTTLED")) } 
                 else { HardwareThermalControl.setCoreOnline(idx, text.toString().contains("OFF")) }
                 true
@@ -627,7 +627,7 @@ class MainActivity : Activity() {
         c2.addView(Switch(this).apply {
             text = "Show Temperature on Pill"; setTextColor(tPri); setPadding(0,0,0,20)
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
-            setOnCheckedChangeListener { _, c -> haptic(this); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
+            setOnCheckedChangeListener { v, c -> haptic(v); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
         })
         c2.addView(txt("Tap pill to toggle Recording (🔴). Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
         c2.addView(createBtn("LAUNCH FPS OVERLAY", Color.parseColor("#2196F3")) {
