@@ -15,12 +15,15 @@ import java.io.InputStreamReader
 import kotlin.concurrent.thread
 
 class FpsOverlayService : Service() {
+    companion object { var isRunning = false }
+    
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: TextView
     private lateinit var dbHelper: DatabaseHelper
     private var isCounting = false
     private var sessionStartTime = 0L
     private var fpsReadings = mutableListOf<Int>()
+    private var tempReadings = mutableListOf<Int>()
     private var foregroundApp = "Unknown App"
     private val handler = Handler(Looper.getMainLooper())
 
@@ -28,21 +31,21 @@ class FpsOverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         dbHelper = DatabaseHelper(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         overlayView = TextView(this).apply {
-            text = "FPS"
+            text = "TAP TO START"
             setTextColor(Color.WHITE)
             textSize = 14f
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding(30, 15, 30, 15)
-            // Minimalist Glassmorphism Pill
+            setPadding(35, 15, 35, 15)
             background = GradientDrawable().apply {
                 cornerRadius = 50f
-                setColor(Color.parseColor("#991C1C1E")) // Translucent dark charcoal
-                setStroke(2, Color.parseColor("#33FFFFFF"))
+                setColor(Color.parseColor("#E61C1C1E"))
+                setStroke(3, Color.parseColor("#55FFFFFF"))
             }
         }
 
@@ -111,17 +114,20 @@ class FpsOverlayService : Service() {
         isCounting = !isCounting
         if (isCounting) {
             fpsReadings.clear()
+            tempReadings.clear()
             sessionStartTime = System.currentTimeMillis()
             fetchForegroundApp()
             startFpsPoller()
             overlayView.background = GradientDrawable().apply {
-                cornerRadius = 50f; setColor(Color.parseColor("#9900E676")); setStroke(2, Color.parseColor("#55FFFFFF"))
+                cornerRadius = 50f; setColor(Color.parseColor("#E600E676")); setStroke(3, Color.parseColor("#88FFFFFF"))
             }
+            overlayView.setTextColor(Color.BLACK)
         } else {
             overlayView.text = "PAUSED"
             overlayView.background = GradientDrawable().apply {
-                cornerRadius = 50f; setColor(Color.parseColor("#991C1C1E")); setStroke(2, Color.parseColor("#33FFFFFF"))
+                cornerRadius = 50f; setColor(Color.parseColor("#E61C1C1E")); setStroke(3, Color.parseColor("#55FFFFFF"))
             }
+            overlayView.setTextColor(Color.WHITE)
         }
     }
 
@@ -141,23 +147,38 @@ class FpsOverlayService : Service() {
     }
 
     private fun startFpsPoller() {
+        val prefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
+        
         thread {
             while (isCounting) {
+                val showTemp = prefs.getBoolean("showTempInFpsOverlay", false)
                 try {
-                    // Xiaomi specific DRM node for actual measured screen FPS
-                    val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/class/drm/sde-crtc-0/measured_fps"))
-                    val reader = BufferedReader(InputStreamReader(p.inputStream))
-                    val fpsRaw = reader.readLine()?.trim()?.substringBefore(" ")?.toIntOrNull()
-                    p.waitFor()
+                    // Strict Regex parse to fix the CALC... string extraction crash
+                    val fpsProc = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/class/drm/sde-crtc-0/measured_fps"))
+                    val rawFpsString = BufferedReader(InputStreamReader(fpsProc.inputStream)).readLine()
+                    fpsProc.waitFor()
+                    
+                    val fpsRaw = rawFpsString?.replace(Regex("[^0-9]"), "")?.toIntOrNull()
+                    
+                    val tempProc = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys battery | grep temperature"))
+                    val rawTempString = BufferedReader(InputStreamReader(tempProc.inputStream)).readLine()
+                    tempProc.waitFor()
+                    
+                    val tempRaw = rawTempString?.replace(Regex("[^0-9]"), "")?.toIntOrNull()?.div(10)
 
-                    if (fpsRaw != null && fpsRaw > 0) {
-                        fpsReadings.add(fpsRaw)
-                        handler.post { if (isCounting) overlayView.text = "$fpsRaw FPS" }
-                    } else {
-                        // Fallback parsing if node is temporarily unavailable
-                        handler.post { if (isCounting) overlayView.text = "CALC..." }
+                    if (fpsRaw != null && fpsRaw > 0) { fpsReadings.add(fpsRaw) }
+                    if (tempRaw != null && tempRaw > 0) { tempReadings.add(tempRaw) }
+
+                    handler.post { 
+                        if (isCounting) {
+                            val f = fpsRaw ?: "--"
+                            val t = tempRaw ?: "--"
+                            overlayView.text = if (showTemp) "$f FPS  |  $t°C" else "$f FPS"
+                        }
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                    handler.post { if (isCounting) overlayView.text = "ERROR" }
+                }
                 Thread.sleep(1000)
             }
         }
@@ -170,7 +191,8 @@ class FpsOverlayService : Service() {
             val min = fpsReadings.minOrNull() ?: 0
             val max = fpsReadings.maxOrNull() ?: 0
             val avg = fpsReadings.average().toInt()
-            dbHelper.saveFpsSession(foregroundApp, duration, min, max, avg)
+            val avgT = if (tempReadings.isNotEmpty()) tempReadings.average().toInt() else 0
+            dbHelper.saveFpsSession(foregroundApp, duration, min, max, avg, avgT)
         }
         windowManager.removeView(overlayView)
     }
@@ -178,5 +200,6 @@ class FpsOverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isCounting = false
+        isRunning = false
     }
 }
