@@ -153,12 +153,14 @@ class FpsOverlayService : Service() {
             while (isCounting) {
                 val showTemp = prefs.getBoolean("showTempInFpsOverlay", false)
                 try {
-                    // Strict Regex parse to fix the CALC... string extraction crash
+                    // Strict Array Slicing: Splits all garbage/timing strings, grabs ONLY the first valid FPS number (1-240)
                     val fpsProc = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/class/drm/sde-crtc-0/measured_fps"))
                     val rawFpsString = BufferedReader(InputStreamReader(fpsProc.inputStream)).readLine()
                     fpsProc.waitFor()
                     
-                    val fpsRaw = rawFpsString?.replace(Regex("[^0-9]"), "")?.toIntOrNull()
+                    val fpsRaw = rawFpsString?.split(Regex("[^0-9]+"))
+                        ?.mapNotNull { it.toIntOrNull() }
+                        ?.firstOrNull { it in 1..240 }
                     
                     val tempProc = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys battery | grep temperature"))
                     val rawTempString = BufferedReader(InputStreamReader(tempProc.inputStream)).readLine()
@@ -173,7 +175,7 @@ class FpsOverlayService : Service() {
                         if (isCounting) {
                             val f = fpsRaw ?: "--"
                             val t = tempRaw ?: "--"
-                            overlayView.text = if (showTemp) "$f FPS  |  $t°C" else "$f FPS"
+                            overlayView.text = if (showTemp) "$f FPS | $t°C" else "$f FPS"
                         }
                     }
                 } catch (e: Exception) {
