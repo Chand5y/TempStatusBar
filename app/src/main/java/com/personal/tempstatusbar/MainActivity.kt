@@ -261,7 +261,7 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(-1, 180); setPadding(20, 10, 20, 10)
             setOnTouchListener { v, event ->
                 if (event.action == MotionEvent.ACTION_MOVE || event.action == MotionEvent.ACTION_DOWN) {
-                    val idx = (event.x / (v.width / 4)).toInt().coerceIn(0, 3)
+                    val idx = (event.x / (v.width / 4f)).toInt().coerceIn(0, 3)
                     if (currentTabIndex != idx) { haptic(v); switchTab(idx) }
                 }
                 true
@@ -343,7 +343,7 @@ class MainActivity : Activity() {
             setOnClickListener {
                 haptic(this)
                 try {
-                    val validRecords = dbHelper.getAllRecords().filter { !it.appDetails.contains("TempRecord(") }
+                    val validRecords = dbHelper.getAllRecords().filter { it.appDetails.isNotEmpty() && !it.appDetails.contains("TempRecord(") }
                     val records = validRecords.takeLast(50).joinToString("\n\n") { "[$it.chargeType] ${it.temp}°C\n${it.appDetails}" }
                     showModal("Raw Thermal Database", if (records.isEmpty()) "No logs yet." else records)
                 } catch (e: Exception) { showModal("Error", "Could not read database") }
