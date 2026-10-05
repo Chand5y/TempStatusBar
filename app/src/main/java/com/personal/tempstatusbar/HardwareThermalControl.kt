@@ -21,7 +21,7 @@ object HardwareThermalControl {
     private var toneGen: ToneGenerator? = null
     private var vibrator: Vibrator? = null
     private var appContext: Context? = null
-    
+
     var isChargingThrottled = false; private set
     var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
@@ -48,7 +48,7 @@ object HardwareThermalControl {
         } catch (e: Exception) {}
     }
 
-    private fun executeRootCommand(action: String, command: String): Boolean {
+    fun executeRootCommand(action: String, command: String): Boolean {
         if (!isRootAvailable()) return false
         var exitCode = -1
         var stdout = ""
@@ -61,7 +61,7 @@ object HardwareThermalControl {
             logDebugTrace(action, command, exitCode, stdout, stderr)
             return exitCode == 0
         } catch (e: Exception) {
-            logDebugTrace(action, command, -1, "", e.message ?: "CRASH: Unknown Java Execution Error")
+            logDebugTrace(action, command, -1, "", e.message ?: "CRASH: Execution Error")
             return false
         }
     }
@@ -69,7 +69,7 @@ object HardwareThermalControl {
     fun getHardwareInfo(): String {
         val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(Locale.getDefault())
         return when {
-            soc.contains("SM8250") -> "Snapdragon 870 (SM8250)"
+            soc.contains("SM8250") -> "Snapdragon 870"
             soc.contains("SM8350") -> "Snapdragon 888"
             soc.contains("SM8450") -> "Snapdragon 8 Gen 1"
             soc.contains("SM8475") -> "Snapdragon 8+ Gen 1"
@@ -113,46 +113,20 @@ object HardwareThermalControl {
     }
 
     fun setChargingEnabled(enable: Boolean, isManualToggle: Boolean = false) {
-        if (isManualToggle) {
-            isManualBypassActive = !enable
-        }
-
-        val action = if (enable) "Disable Bypass (Restore Charge)" else "Enable Bypass (Isolate Battery)"
-        
-        // Includes chmod 444 padlocks to block Xiaomi daemons, and hits both Master/Slave charge pumps
+        if (isManualToggle) isManualBypassActive = !enable
+        val action = if (enable) "Restore Charge" else "Isolate Battery"
         val cmd = if (enable) {
-            "setenforce 0; " +
-            "chmod 644 /sys/class/power_supply/battery/battery_charging_enabled; " +
-            "chmod 644 /sys/class/power_supply/battery/constant_charge_current; " +
-            "chmod 644 /sys/class/power_supply/bq2597x-master/charging_enabled; " +
-            "chmod 644 /sys/class/power_supply/bq2597x-slave/charging_enabled; " +
-            "echo 0 > /sys/class/power_supply/usb/enable_bypass_mode 2>/dev/null; " +
-            "echo 1 > /sys/class/power_supply/bq2597x-master/charging_enabled 2>/dev/null; " +
-            "echo 1 > /sys/class/power_supply/bq2597x-slave/charging_enabled 2>/dev/null; " +
-            "echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
-            "echo 3000000 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
-            "setenforce 1"
+            "echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null"
         } else {
-            "setenforce 0; " +
-            "echo 1 > /sys/class/power_supply/usb/enable_bypass_mode 2>/dev/null; " +
-            "echo 0 > /sys/class/power_supply/bq2597x-master/charging_enabled 2>/dev/null; " +
-            "echo 0 > /sys/class/power_supply/bq2597x-slave/charging_enabled 2>/dev/null; " +
-            "echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
-            "echo 0 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
-            "chmod 444 /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
-            "chmod 444 /sys/class/power_supply/battery/constant_charge_current 2>/dev/null; " +
-            "chmod 444 /sys/class/power_supply/bq2597x-master/charging_enabled 2>/dev/null; " +
-            "chmod 444 /sys/class/power_supply/bq2597x-slave/charging_enabled 2>/dev/null; " +
-            "setenforce 1"
+            "echo 0 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null"
         }
-        
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
     }
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
-    
+
     fun setCoreOnline(coreId: Int, online: Boolean) {
         val action = if (online) "Enable Core $coreId" else "Disable Core $coreId"
         val cmd = "echo ${if (online) "1" else "0"} > /sys/devices/system/cpu/cpu$coreId/online"
@@ -168,21 +142,21 @@ object HardwareThermalControl {
         }
         executeRootCommand(action, cmd)
     }
-    
+
     fun applySmartThermalGovernor(context: Context) {
         if (!isRootAvailable()) return
         throttlePrimeCore(true)
         val procs = getKernelProcessSnapshot(context)
         procs.forEach { p ->
             val cpuVal = p.cpu.toFloatOrNull() ?: 0f
-            if (cpuVal > 5.0f && !p.name.contains(context.packageName) && !p.name.contains("Android System") && !p.name.contains("SurfaceFlinger")) {
+            if (cpuVal > 5.0f && !p.name.contains(context.packageName) && !p.name.contains("Android System") && !p.name.contains("Display Compositor")) {
                 pinProcessToEfficiencyCores(p.pid)
             }
         }
     }
 
     fun killProcess(pid: Int) { executeRootCommand("Kill Process PID: $pid", "kill -9 $pid") }
-    fun pinProcessToEfficiencyCores(pid: Int) { executeRootCommand("Pin Process to Silver Cores PID: $pid", "taskset -p 0f $pid") }
+    fun pinProcessToEfficiencyCores(pid: Int) { executeRootCommand("Pin to Cores 0-3 PID: $pid", "taskset -p 0f $pid") }
     fun clearRamCaches() { executeRootCommand("Clear RAM Caches", "echo 3 > /proc/sys/vm/drop_caches") }
 
     fun playThermalAlert() {
@@ -224,7 +198,9 @@ object HardwareThermalControl {
                 if (line!!.contains("OOM adjustment:")) break
                 reg.find(line!!)?.let {
                     val mb = it.groupValues[1].replace(",", "").toIntOrNull()?.div(1024) ?: 0
-                    if (mb > 10) list.add(RamProc(it.groupValues[2], mb, it.groupValues[3].toInt()))
+                    val pid = it.groupValues[3].toInt()
+                    val friendly = AppLabelHelper.getAppName(appContext ?: return@let, it.groupValues[2], pid)
+                    if (mb > 10) list.add(RamProc(friendly, mb, pid))
                 }
             }
             p.waitFor()
@@ -236,8 +212,7 @@ object HardwareThermalControl {
         val list = mutableListOf<ProcessData>()
         if (!isRootAvailable()) return list
         try {
-            val pm = context.packageManager
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "top -n 1 -m 8"))
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "top -b -n 1 -m 8"))
             val reader = BufferedReader(InputStreamReader(p.inputStream))
             var headerPassed = false; var count = 0
             var line: String?
@@ -251,19 +226,9 @@ object HardwareThermalControl {
                         val pid = tokens[0].toIntOrNull() ?: -1
                         val cpu = tokens.subList(1, tokens.size).firstOrNull { it.matches(Regex("^\\d+(\\.\\d+)?$")) } ?: "0.0"
                         val rawName = tokens.last()
-                        
+
                         if (pid > 0 && !rawName.startsWith("[") && !rawName.startsWith("top") && rawName.length > 2) {
-                            var friendlyName = rawName
-                            if (rawName.contains(".")) {
-                                try { friendlyName = pm.getApplicationLabel(pm.getApplicationInfo(rawName, 0)).toString() } catch (e: Exception) {}
-                            } else {
-                                friendlyName = when {
-                                    rawName.contains("hvdcp") -> "Fast Charge Controller"
-                                    rawName.contains("system_server") -> "Android System Core"
-                                    rawName.contains("surfaceflinger") -> "Display Compositor"
-                                    else -> rawName
-                                }
-                            }
+                            val friendlyName = AppLabelHelper.getAppName(context, rawName, pid)
                             list.add(ProcessData(pid, friendlyName, cpu))
                             count++; if (count >= 7) break
                         }
@@ -273,21 +238,6 @@ object HardwareThermalControl {
             p.waitFor()
         } catch (e: Exception) {}
         return list
-    }
-
-    fun getAppBatteryDrain(): String {
-        if (!isRootAvailable()) return "Root required to parse batterystats."
-        return try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys batterystats --charged | grep -iE 'Uid|Estimated power use' -A 10"))
-            val reader = BufferedReader(InputStreamReader(p.inputStream))
-            val sb = StringBuilder()
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                if (line!!.contains("Uid")) sb.append(line!!.trim()).append("\n")
-            }
-            p.waitFor()
-            if (sb.isEmpty()) "Gathering battery statistics (Needs more uptime)..." else sb.toString().trim()
-        } catch (e: Exception) { "Failed to read batterystats." }
     }
 
     fun destroy() { try { setChargingEnabled(true); toneGen?.release(); vibrator?.cancel() } catch (e: Exception) {} }
