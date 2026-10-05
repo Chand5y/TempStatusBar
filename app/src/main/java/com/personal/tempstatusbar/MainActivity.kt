@@ -130,7 +130,6 @@ class FpsChartView(context: Context) : View(context) {
             if (i == 0) { fpsPath.moveTo(x, yFps); fpsFill.moveTo(x, padT + plotH); fpsFill.lineTo(x, yFps) } else { fpsPath.lineTo(x, yFps); fpsFill.lineTo(x, yFps) }
             
             if (i < tempPoints.size) {
-                // Map Temp 30C-50C directly to the middle UI height
                 val yTemp = padT + plotH - (((tempPoints[i] - 30f) / 20f).coerceIn(0f, 1f) * plotH)
                 if (i == 0) tempPath.moveTo(x, yTemp) else tempPath.lineTo(x, yTemp)
             }
@@ -300,7 +299,31 @@ class MainActivity : Activity() {
             .setNegativeButton("CLEAR") { _, _ -> AppLogger.clearLogs(); Toast.makeText(this, "Logs Cleared", Toast.LENGTH_SHORT).show() }.show()
     }
 
-    // Modern Rounded Button Factory
+    private fun showRamDetailsModal() {
+        val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        sv.addView(list)
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Detailed RAM Usage").setView(sv).setPositiveButton("Close", null).show()
+        thread {
+            val procs = HardwareThermalControl.getDetailedRam()
+            uiHandler.post {
+                if (procs.isEmpty()) { list.addView(txt("Failed to read RAM via Root.", 12f, Color.GRAY)); return@post }
+                procs.forEach { p ->
+                    val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,15,0,15); gravity=Gravity.CENTER_VERTICAL }
+                    row.addView(txt("${p.name}\n${p.sizeMb} MB", 12f, Color.WHITE).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
+                    row.addView(createBtn("KILL", Color.parseColor("#D32F2F")) {
+                        haptic(this@MainActivity)
+                        AppLogger.log("Killed RAM Process: ${p.name}")
+                        HardwareThermalControl.killProcess(p.pid)
+                        list.removeView(row)
+                        Toast.makeText(this@MainActivity, "Killed ${p.name}", Toast.LENGTH_SHORT).show()
+                    }.apply { layoutParams = LinearLayout.LayoutParams(-2, -2) })
+                    list.addView(row)
+                }
+            }
+        }
+    }
+
     private fun createBtn(t: String, bgCol: Int, onClick: () -> Unit): Button {
         return Button(this).apply {
             text = t; textSize = 11f; setTextColor(Color.WHITE); isAllCaps = false
@@ -540,7 +563,7 @@ class MainActivity : Activity() {
         val ramRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         ramUsageText = txt("Loading...", 15f, tPri, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         ramRow.addView(ramUsageText)
-        ramRow.addView(createBtn("CLEAN RAM", Color.parseColor("#2196F3")) { HardwareThermalControl.clearRamCaches(); Toast.makeText(this@MainActivity, "RAM dropped.", Toast.LENGTH_SHORT).show() })
+        ramRow.addView(createBtn("CLEAN RAM", Color.parseColor("#2196F3")) { HardwareThermalControl.clearRamCaches(); Toast.makeText(this@MainActivity, "Kernel RAM caches dropped.", Toast.LENGTH_SHORT).show() })
         rCard.addView(ramRow); lay.addView(rCard)
 
         val sgCard = card(cBg) { showModal("Smart Thermal Governor", "Throttles Prime Core (C7) and pins background apps to silver cores when Warning Temp is hit.") }
