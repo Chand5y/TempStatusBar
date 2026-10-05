@@ -24,9 +24,6 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.widget.*
-import java.io.File
-import java.io.PrintWriter
-import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.thread
@@ -172,26 +169,31 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Background thread crash interceptor
+        AppLogger.init(cacheDir)
+        
+        // Root-Forced Crash Interceptor
         Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
-            val sw = StringWriter()
-            throwable.printStackTrace(PrintWriter(sw))
-            try { File(getExternalFilesDir(null), "TempMonitor_Crash.txt").writeText(sw.toString()) } catch (e: Exception) {}
+            AppLogger.handleFatalCrash(throwable)
             System.exit(1)
         }
         
         try {
+            AppLogger.log("Initializing Hardware Control")
             HardwareThermalControl.init(this)
             dbHelper = DatabaseHelper(this)
             settings = SettingsManager(this)
             sharedPrefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
+            
+            AppLogger.log("Building Base Layout")
             buildBaseLayout()
             
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                AppLogger.log("Requesting Notification Permissions")
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
             }
             
             if (!HardwareThermalControl.isRootAvailable()) {
+                AppLogger.log("Root Not Available. Checking Usage Stats Ops.")
                 val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
                 val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
                 if (mode != AppOpsManager.MODE_ALLOWED) {
@@ -199,26 +201,17 @@ class MainActivity : Activity() {
                     Toast.makeText(this, "Please enable Usage Access for Non-Root tracking.", Toast.LENGTH_LONG).show()
                 }
             }
+            
+            AppLogger.log("Starting Background Monitoring Service")
             startMonitorService()
-
         } catch (t: Throwable) {
-            // UI Initialization Crash Interceptor (The Red Screen)
-            val sw = StringWriter()
-            t.printStackTrace(PrintWriter(sw))
-            val tv = TextView(this).apply {
-                text = "CRASH DETECTED:\n\n${sw.toString()}"
-                setTextColor(Color.parseColor("#FF5252"))
-                setBackgroundColor(Color.BLACK)
-                textSize = 11f
-                typeface = Typeface.MONOSPACE
-                setPadding(40, 60, 40, 40)
-            }
-            setContentView(ScrollView(this).apply { addView(tv) })
+            AppLogger.handleFatalCrash(t)
         }
     }
 
     override fun onResume() {
         super.onResume()
+        AppLogger.log("MainActivity Resumed")
         isPaused = false
         uiHandler.post(liveHardwarePoller)
         refreshDashboardData()
@@ -227,6 +220,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        AppLogger.log("MainActivity Paused")
         isPaused = true
         isCpuTabActive = false
         uiHandler.removeCallbacks(liveHardwarePoller)
@@ -240,12 +234,37 @@ class MainActivity : Activity() {
     private fun haptic(v: View) { v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) }
 
     private fun showModal(title: String, content: String) {
+        AppLogger.log("Opened Modal: $title")
         val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
         sv.addView(txt(content, 12f, Color.GRAY).apply { typeface = Typeface.MONOSPACE })
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle(title).setView(sv).setPositiveButton("Close", null).show()
     }
 
+    private fun showTrackerModal() {
+        AppLogger.log("Opened Global Action Tracker")
+        val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
+        val logText = txt(AppLogger.getLogs(), 11f, Color.GRAY).apply { typeface = Typeface.MONOSPACE }
+        sv.addView(logText)
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Global Action Tracker")
+            .setView(sv)
+            .setPositiveButton("CLOSE", null)
+            .setNeutralButton("SAVE LOG") { _, _ ->
+                AppLogger.log("User tapped SAVE LOG")
+                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                val success = AppLogger.exportLogsToDownloads("ActionLog_$timestamp.txt", AppLogger.getLogs())
+                Toast.makeText(this, if(success) "Saved to Downloads/TempMonitorLog" else "Failed to save", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("CLEAR") { _, _ ->
+                AppLogger.clearLogs()
+                Toast.makeText(this, "Tracker Logs Cleared", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
     private fun showRamDetailsModal() {
+        AppLogger.log("Opened RAM Details Modal")
         val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         sv.addView(list)
@@ -258,7 +277,13 @@ class MainActivity : Activity() {
                     val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,15,0,15); gravity=Gravity.CENTER_VERTICAL }
                     row.addView(txt("${p.name}\n${p.sizeMb} MB", 12f, Color.WHITE).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
                     row.addView(Button(this@MainActivity).apply { text="KILL"; textSize=10f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F")); setPadding(10,0,10,0); layoutParams=LinearLayout.LayoutParams(-2, -2)
-                        setOnClickListener { haptic(this); HardwareThermalControl.killProcess(p.pid); list.removeView(row); Toast.makeText(this@MainActivity, "Killed ${p.name}", Toast.LENGTH_SHORT).show() }
+                        setOnClickListener { 
+                            haptic(this); 
+                            AppLogger.log("Killed RAM Process: ${p.name}")
+                            HardwareThermalControl.killProcess(p.pid); 
+                            list.removeView(row); 
+                            Toast.makeText(this@MainActivity, "Killed ${p.name}", Toast.LENGTH_SHORT).show() 
+                        }
                     })
                     list.addView(row)
                 }
@@ -291,6 +316,18 @@ class MainActivity : Activity() {
         topBar.addView(txt("Temp Monitor", 22f, if (isDark) Color.WHITE else Color.parseColor("#000000"), true).apply { 
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f) 
         })
+        
+        // GLOBAL ACTION TRACKER BUTTON
+        topBar.addView(Button(this).apply {
+            text = "TRACKER"
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#4CAF50"))
+            setPadding(20,0,20,0)
+            layoutParams = LinearLayout.LayoutParams(-2, 90)
+            setOnClickListener { haptic(this); showTrackerModal() }
+        })
+        
         root.addView(topBar)
         
         contentFrame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
@@ -357,6 +394,8 @@ class MainActivity : Activity() {
         val isDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         val movingLeft = newIdx > currentTabIndex
         
+        AppLogger.log("Switched to Tab Index: $newIdx")
+        
         val oldTab = when(currentTabIndex) { 0 -> tab1Thermal; 1 -> tab2Battery; 2 -> tab3CPU; else -> tab4Display }
         val newTab = when(newIdx) { 0 -> tab1Thermal; 1 -> tab2Battery; 2 -> tab3CPU; else -> tab4Display }
         
@@ -386,6 +425,7 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(0,-2,1f); gravity = Gravity.END; setPadding(0,0,0,15)
             setOnClickListener {
                 haptic(this)
+                AppLogger.log("Tapped VIEW LOGS (Thermal Database)")
                 try {
                     val validRecords = dbHelper.getAllRecords().filter { it.appDetails.isNotEmpty() && !it.appDetails.contains("TempRecord(") }
                     val records = validRecords.takeLast(50).joinToString("\n\n") { "[$it.chargeType] ${it.temp}°C\n${it.appDetails}" }
@@ -411,6 +451,7 @@ class MainActivity : Activity() {
         lay.addView(c1)
 
         chartView.onRecordSelected = { r ->
+            AppLogger.log("Interacted with Thermal Chart: Selected point ${r.temp}C")
             val rootStr = if (r.isRoot) "🛡️ Root Trace" else "📱 Non-Root Trace"
             val screenStr = if (r.screenOn) "Screen ON" else "Screen OFF"
             detailTimeText.text = "${SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))} • $screenStr"
@@ -424,7 +465,7 @@ class MainActivity : Activity() {
         warnLabel = txt("🔔 Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
         warnS = SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=35+p; settings.warningTemp=v; warnLabel.text="🔔 Warning Sound Alert: $v°C" }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
+            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply); AppLogger.log("Adjusted Warning Temp to ${settings.warningTemp}C") }
         })}
         c3.addView(warnS)
 
@@ -432,21 +473,21 @@ class MainActivity : Activity() {
         cutS = SeekBar(this).apply { max = 12; progress = settings.cutoffTemp - 38; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=38+p; settings.cutoffTemp=v; cutoffLabel.text="🛑 Cut Off Charging (PMIC): $v°C"
                 if (settings.resumeTemp >= v-1) { settings.resumeTemp = v-2; resS.progress = (v-2)-32; resumeLabel.text="🔄 Resume Charging: ${v-2}°C" } }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
+            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply); AppLogger.log("Adjusted Cutoff Temp to ${settings.cutoffTemp}C") }
         })}
         c3.addView(cutS)
 
         resumeLabel = txt("🔄 Resume Charging: ${settings.resumeTemp}°C", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(resumeLabel)
         resS = SeekBar(this).apply { max = 13; progress = settings.resumeTemp - 32; setPadding(0,10,0,10); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { var v=32+p; if(v>settings.cutoffTemp-2){v=settings.cutoffTemp-2; progress=v-32}; settings.resumeTemp=v; resumeLabel.text="🔄 Resume Charging: $v°C" }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply) }
+            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { haptic(this@apply); AppLogger.log("Adjusted Resume Temp to ${settings.resumeTemp}C") }
         })}
         c3.addView(resS); lay.addView(c3)
 
         val c4 = card(cBg)
         c4.addView(txt("⚙️ NOTIFICATION PREFERENCES", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
-        c4.addView(Switch(this).apply { text = "📱 Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; setOnCheckedChangeListener { _, c -> haptic(this); settings.showNotification = c; startMonitorService() } })
-        c4.addView(Switch(this).apply { text = "⚡ Show Real-Time Wattage View"; setTextColor(tPri); isChecked = settings.showPowerMetrics; setOnCheckedChangeListener { _, c -> haptic(this); settings.showPowerMetrics = c; startMonitorService() } })
+        c4.addView(Switch(this).apply { text = "📱 Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; setOnCheckedChangeListener { _, c -> haptic(this); settings.showNotification = c; AppLogger.log("Toggled Status Bar Notification: $c"); startMonitorService() } })
+        c4.addView(Switch(this).apply { text = "⚡ Show Real-Time Wattage View"; setTextColor(tPri); isChecked = settings.showPowerMetrics; setOnCheckedChangeListener { _, c -> haptic(this); settings.showPowerMetrics = c; AppLogger.log("Toggled Power Metrics: $c"); startMonitorService() } })
         lay.addView(c4)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
@@ -470,6 +511,7 @@ class MainActivity : Activity() {
         lay.addView(c1)
 
         val c3 = card(cBg) {
+            AppLogger.log("Tapped Battery Health Diagnostic")
             try {
                 val h = BatteryHealthHelper.getHealthData(this@MainActivity)
                 showModal("Battery Diagnostic", "Design Capacity: ${h.designCapacityMah} mAh\nActual Capacity: ${h.actualCapacityMah} mAh\nTotal Charge Cycles: ${h.cycleCount}\n\nWear Level: ${100 - h.healthPercent}%\nStatus: ${h.statusText}")
@@ -500,7 +542,7 @@ class MainActivity : Activity() {
         ramRow.addView(ramUsageText)
         ramRow.addView(Button(this).apply {
             text = "CLEAN RAM"; textSize = 11f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#2196F3")); layoutParams = LinearLayout.LayoutParams(-2, -2); setPadding(20, 10, 20, 10)
-            setOnClickListener { haptic(this); HardwareThermalControl.clearRamCaches(); Toast.makeText(this@MainActivity, "Kernel RAM caches dropped.", Toast.LENGTH_SHORT).show() }
+            setOnClickListener { haptic(this); AppLogger.log("Tapped Clean RAM"); HardwareThermalControl.clearRamCaches(); Toast.makeText(this@MainActivity, "Kernel RAM caches dropped.", Toast.LENGTH_SHORT).show() }
         })
         rCard.addView(ramRow); lay.addView(rCard)
 
@@ -510,6 +552,7 @@ class MainActivity : Activity() {
             isChecked = isSmartGovernorEnabled
             setOnCheckedChangeListener { _, c -> 
                 haptic(this); isSmartGovernorEnabled = c
+                AppLogger.log("Toggled Smart Governor: $c")
                 sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply { putExtra("state", c); setPackage(packageName) })
                 Toast.makeText(context, if(c) "Smart Governor Engine Armed" else "Smart Governor Disabled", Toast.LENGTH_SHORT).show()
             }
@@ -530,10 +573,12 @@ class MainActivity : Activity() {
                 if (idx == 7) {
                     val throttled = (this.text.toString().contains("THROTTLED"))
                     HardwareThermalControl.throttlePrimeCore(!throttled)
+                    AppLogger.log("Toggled Prime Core Throttle: ${!throttled}")
                     Toast.makeText(context, if(!throttled) "Core 7 Throttled" else "Core 7 Restored", Toast.LENGTH_SHORT).show()
                 } else {
                     val isOff = (this.text.toString().contains("OFF"))
                     HardwareThermalControl.setCoreOnline(idx, isOff)
+                    AppLogger.log("Toggled Core $idx Online: $isOff")
                     if (isOff) {
                         (this.background as GradientDrawable).setColor(Color.parseColor("#4CAF50"))
                         this.text = "C$idx\nONLINE"
@@ -583,6 +628,7 @@ class MainActivity : Activity() {
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     haptic(this)
+                    AppLogger.log("Forced Screen Refresh Rate: ${r}Hz")
                     thread { 
                         val cmd = "settings put system peak_refresh_rate $r; settings put system min_refresh_rate $r; settings put system user_refresh_rate $r; settings put secure miui_refresh_rate $r; settings put system miui_refresh_rate $r"
                         Runtime.getRuntime().exec(arrayOf("su", "-c", cmd)) 
@@ -599,7 +645,7 @@ class MainActivity : Activity() {
         c2.addView(Switch(this).apply { 
             text = "Show Temperature on Pill"; setTextColor(tPri); setPadding(0,0,0,20)
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
-            setOnCheckedChangeListener { _, c -> haptic(this); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
+            setOnCheckedChangeListener { _, c -> haptic(this); AppLogger.log("Toggled Temp on FPS Pill: $c"); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
         })
 
         c2.addView(txt("Tap the pill to start/pause counting. Long-press to save session & close.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
@@ -609,6 +655,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             setOnClickListener {
                 haptic(this)
+                AppLogger.log("Tapped LAUNCH FPS OVERLAY")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
                     startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
                     Toast.makeText(this@MainActivity, "Please grant Draw Overlays permission first", Toast.LENGTH_LONG).show()
@@ -626,6 +673,7 @@ class MainActivity : Activity() {
             isDarkMode = isDark
             layoutParams = LinearLayout.LayoutParams(-1, 400)
             onSessionSelected = { s ->
+                AppLogger.log("Interacted with FPS Chart: Selected session for ${s.appName}")
                 val date = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(s.timestamp))
                 fpsDetailText.text = "Session: $date\nApp: ${s.appName}\nDuration: ${s.durationSec}s\nAverage: ${s.avgFps} FPS  |  Min: ${s.minFps}  |  Max: ${s.maxFps}\nAvg Temp: ${s.avgTemp}°C"
             }
@@ -706,7 +754,7 @@ class MainActivity : Activity() {
                             layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 15 }; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
                         }
                         row.addView(procTxt)
-                        row.addView(Button(this@MainActivity).apply { text="RESTRICT"; textSize=10f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#FF9800")); setPadding(10,0,10,0); layoutParams=LinearLayout.LayoutParams(-2, 80).apply{rightMargin=15}; setOnClickListener { haptic(this); HardwareThermalControl.pinProcessToEfficiencyCores(p.pid); Toast.makeText(this@MainActivity, "Pinned to Cores 0-3", Toast.LENGTH_SHORT).show() } })
+                        row.addView(Button(this@MainActivity).apply { text="RESTRICT"; textSize=10f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#FF9800")); setPadding(10,0,10,0); layoutParams=LinearLayout.LayoutParams(-2, 80).apply{rightMargin=15}; setOnClickListener { haptic(this); AppLogger.log("Restricted Process ${p.name}"); HardwareThermalControl.pinProcessToEfficiencyCores(p.pid); Toast.makeText(this@MainActivity, "Pinned to Cores 0-3", Toast.LENGTH_SHORT).show() } })
                         row.addView(Button(this@MainActivity).apply { text="KILL"; textSize=10f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F")); setPadding(10,0,10,0); layoutParams=LinearLayout.LayoutParams(-2, 80); setOnClickListener { haptic(this); showKillConfirmDialog(p.pid, p.name) } })
                         processListContainer.addView(row)
                     }
@@ -717,6 +765,6 @@ class MainActivity : Activity() {
     }
 
     private fun showKillConfirmDialog(pid: Int, name: String) {
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Terminate Process?").setMessage("Kill $name?").setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(pid); Toast.makeText(this, "Signal sent to $name", Toast.LENGTH_SHORT).show() }.setNegativeButton("Cancel", null).show()
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Terminate Process?").setMessage("Kill $name?").setPositiveButton("KILL") { _, _ -> AppLogger.log("Killed Process ${name}"); HardwareThermalControl.killProcess(pid); Toast.makeText(this, "Signal sent to $name", Toast.LENGTH_SHORT).show() }.setNegativeButton("Cancel", null).show()
     }
 }
