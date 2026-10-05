@@ -4,6 +4,8 @@
 
     <uses-permission android:name="android.permission.BATTERY_STATS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -11,6 +13,7 @@
 
     <application
         android:allowBackup="true"
+        android:icon="@drawable/ic_app_logo"
         android:label="Temp Monitor"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
@@ -26,12 +29,20 @@
             </intent-filter>
         </activity>
 
-        <service android:name=".TempMonitorService" android:exported="false" />
-        <service android:name=".FpsOverlayService" android:exported="false" />
+        <service 
+            android:name=".TempMonitorService" 
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+            
+        <service 
+            android:name=".FpsOverlayService" 
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
         
         <service
             android:name=".FpsTileService"
             android:exported="true"
+            android:icon="@drawable/ic_app_logo"
             android:label="FPS Overlay"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
