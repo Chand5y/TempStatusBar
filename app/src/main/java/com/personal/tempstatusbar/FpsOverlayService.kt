@@ -20,7 +20,8 @@ class FpsOverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: TextView
     private lateinit var dbHelper: DatabaseHelper
-    private var isCounting = false
+    private var isServiceActive = true
+    private var isRecording = false
     private var sessionStartTime = 0L
     private val fpsReadings = mutableListOf<Int>()
     private val tempReadings = mutableListOf<Int>()
@@ -36,17 +37,13 @@ class FpsOverlayService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         overlayView = TextView(this).apply {
-            text = "TAP TO START"
+            text = "INIT..."
             setTextColor(Color.WHITE)
             textSize = 13f
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding(35, 15, 35, 15)
-            background = GradientDrawable().apply {
-                cornerRadius = 50f
-                setColor(Color.parseColor("#E61C1C1E"))
-                setStroke(3, Color.parseColor("#55FFFFFF"))
-            }
+            setPadding(40, 20, 40, 20)
+            updatePillStyle(false)
         }
 
         val params = WindowManager.LayoutParams(
@@ -61,6 +58,21 @@ class FpsOverlayService : Service() {
 
         setupTouchListener(params)
         windowManager.addView(overlayView, params)
+        
+        startHardwarePoller()
+    }
+
+    private fun updatePillStyle(recording: Boolean) {
+        overlayView.background = GradientDrawable().apply {
+            cornerRadius = 100f // Fully rounded modern pill
+            if (recording) {
+                setColor(Color.parseColor("#E6D32F2F")) // Translucent Red for recording
+                setStroke(3, Color.parseColor("#FF5252"))
+            } else {
+                setColor(Color.parseColor("#E61C1C1E")) // Translucent Dark Gray for passive monitoring
+                setStroke(3, Color.parseColor("#55FFFFFF"))
+            }
+        }
     }
 
     private fun setupTouchListener(params: WindowManager.LayoutParams) {
@@ -71,7 +83,7 @@ class FpsOverlayService : Service() {
         val longPressRunnable = Runnable {
             if (!isMoved) {
                 overlayView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                endAndSaveSession()
+                if (isRecording) endAndSaveSession()
                 stopSelf()
             }
         }
@@ -101,7 +113,7 @@ class FpsOverlayService : Service() {
                     longPressHandler.removeCallbacks(longPressRunnable)
                     if (!isMoved) {
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                        toggleFpsCounter()
+                        toggleRecordingState()
                     }
                     true
                 }
@@ -110,63 +122,46 @@ class FpsOverlayService : Service() {
         }
     }
 
-    private fun toggleFpsCounter() {
-        isCounting = !isCounting
-        if (isCounting) {
+    private fun toggleRecordingState() {
+        if (isRecording) {
+            endAndSaveSession()
+        } else {
+            isRecording = true
             fpsReadings.clear()
             tempReadings.clear()
             sessionStartTime = System.currentTimeMillis()
-            fetchForegroundApp()
-            startFpsPoller()
-            overlayView.background = GradientDrawable().apply {
-                cornerRadius = 50f; setColor(Color.parseColor("#E600E676")); setStroke(3, Color.parseColor("#88FFFFFF"))
-            }
-            overlayView.setTextColor(Color.BLACK)
-        } else {
-            overlayView.text = "PAUSED"
-            overlayView.background = GradientDrawable().apply {
-                cornerRadius = 50f; setColor(Color.parseColor("#E61C1C1E")); setStroke(3, Color.parseColor("#55FFFFFF"))
-            }
-            overlayView.setTextColor(Color.WHITE)
-        }
-    }
-
-    private fun fetchForegroundApp() {
-        thread {
-            try {
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys window | grep -E 'mCurrentFocus|topResumedActivity'"))
-                val reader = BufferedReader(InputStreamReader(p.inputStream))
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    val cleanLine = line ?: continue
-                    val match = Regex("""([a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+)""").find(cleanLine)
-                    val foundPkg = match?.value
-                    if (foundPkg != null && !foundPkg.contains("tempstatusbar") && !foundPkg.contains("miui.home")) {
-                        foregroundApp = AppLabelHelper.getAppName(applicationContext, foundPkg)
-                        break
+            updatePillStyle(true)
+            thread {
+                try {
+                    val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys window | grep -E 'mCurrentFocus|topResumedActivity'"))
+                    val reader = BufferedReader(InputStreamReader(p.inputStream))
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        val match = Regex("""([a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+)""").find(line!!)
+                        val foundPkg = match?.value
+                        if (foundPkg != null && !foundPkg.contains("tempstatusbar") && !foundPkg.contains("miui.home")) {
+                            foregroundApp = AppLabelHelper.getAppName(applicationContext, foundPkg)
+                            break
+                        }
                     }
-                }
-                p.waitFor()
-            } catch (e: Exception) {
-                foregroundApp = "Active App"
+                    p.waitFor()
+                } catch (e: Exception) { foregroundApp = "Active App" }
             }
         }
     }
 
-    private fun startFpsPoller() {
+    private fun startHardwarePoller() {
         val prefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
 
         thread {
-            while (isCounting) {
+            while (isServiceActive) {
                 val showTemp = prefs.getBoolean("showTempInFpsOverlay", false)
                 try {
                     val fpsProc = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/class/drm/sde-crtc-0/measured_fps"))
                     val rawFpsString = BufferedReader(InputStreamReader(fpsProc.inputStream)).readLine()
                     fpsProc.waitFor()
 
-                    val fpsRaw = rawFpsString?.split(Regex("[^0-9]+"))
-                        ?.mapNotNull { it.toIntOrNull() }
-                        ?.firstOrNull { it in 1..240 }
+                    val fpsRaw = rawFpsString?.split(Regex("[^0-9]+"))?.mapNotNull { it.toIntOrNull() }?.firstOrNull { it in 1..240 }
 
                     val tempProc = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys battery | grep temperature"))
                     val rawTempString = BufferedReader(InputStreamReader(tempProc.inputStream)).readLine()
@@ -174,18 +169,21 @@ class FpsOverlayService : Service() {
 
                     val tempRaw = rawTempString?.replace(Regex("[^0-9]"), "")?.toIntOrNull()?.div(10)
 
-                    if (fpsRaw != null && fpsRaw > 0) { fpsReadings.add(fpsRaw) }
-                    if (tempRaw != null && tempRaw > 0) { tempReadings.add(tempRaw) }
+                    if (isRecording) {
+                        if (fpsRaw != null && fpsRaw > 0) fpsReadings.add(fpsRaw)
+                        if (tempRaw != null && tempRaw > 0) tempReadings.add(tempRaw)
+                    }
 
                     handler.post {
-                        if (isCounting) {
+                        if (isServiceActive) {
                             val f = fpsRaw ?: "--"
                             val t = tempRaw ?: "--"
-                            overlayView.text = if (showTemp) "$f FPS | $t°C" else "$f FPS"
+                            val recIndicator = if (isRecording) "🔴 " else ""
+                            overlayView.text = if (showTemp) "$recIndicator$f FPS | $t°C" else "$recIndicator$f FPS"
                         }
                     }
                 } catch (e: Exception) {
-                    handler.post { if (isCounting) overlayView.text = "ERROR" }
+                    handler.post { if (isServiceActive) overlayView.text = "FPS NODE BLOCKED" }
                 }
                 Thread.sleep(1000)
             }
@@ -193,7 +191,8 @@ class FpsOverlayService : Service() {
     }
 
     private fun endAndSaveSession() {
-        isCounting = false
+        isRecording = false
+        updatePillStyle(false)
         if (fpsReadings.isNotEmpty()) {
             val duration = ((System.currentTimeMillis() - sessionStartTime) / 1000).toInt()
             val min = fpsReadings.minOrNull() ?: 0
@@ -201,19 +200,17 @@ class FpsOverlayService : Service() {
             val avg = fpsReadings.average().toInt()
             val avgT = if (tempReadings.isNotEmpty()) tempReadings.average().toInt() else 0
 
-            // Keep up to 100 timeline samples for accurate graph plotting
             val step = (fpsReadings.size / 100).coerceAtLeast(1)
-            val downsampled = fpsReadings.filterIndexed { index, _ -> index % step == 0 }.take(100)
-            val samplesStr = downsampled.joinToString(",")
+            val downsampledFps = fpsReadings.filterIndexed { index, _ -> index % step == 0 }.take(100).joinToString(",")
+            val downsampledTemp = tempReadings.filterIndexed { index, _ -> index % step == 0 }.take(100).joinToString(",")
 
-            dbHelper.saveFpsSession(foregroundApp, duration, min, max, avg, avgT, samplesStr)
+            dbHelper.saveFpsSession(foregroundApp, duration, min, max, avg, avgT, downsampledFps, downsampledTemp)
         }
-        windowManager.removeView(overlayView)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        isCounting = false
+        isServiceActive = false
         isRunning = false
     }
 }
