@@ -16,15 +16,15 @@ import kotlin.concurrent.thread
 
 class FpsOverlayService : Service() {
     companion object { var isRunning = false }
-    
+
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: TextView
     private lateinit var dbHelper: DatabaseHelper
     private var isCounting = false
     private var sessionStartTime = 0L
-    private var fpsReadings = mutableListOf<Int>()
-    private var tempReadings = mutableListOf<Int>()
-    private var foregroundApp = "Unknown App"
+    private val fpsReadings = mutableListOf<Int>()
+    private val tempReadings = mutableListOf<Int>()
+    private var foregroundApp = "Active App"
     private val handler = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -38,7 +38,7 @@ class FpsOverlayService : Service() {
         overlayView = TextView(this).apply {
             text = "TAP TO START"
             setTextColor(Color.WHITE)
-            textSize = 14f
+            textSize = 13f
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             gravity = Gravity.CENTER
             setPadding(35, 15, 35, 15)
@@ -134,44 +134,50 @@ class FpsOverlayService : Service() {
     private fun fetchForegroundApp() {
         thread {
             try {
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys activity activities | grep mResumedActivity"))
+                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys window | grep -E 'mCurrentFocus|topResumedActivity'"))
                 val reader = BufferedReader(InputStreamReader(p.inputStream))
-                val line = reader.readLine()
-                if (line != null && line.contains(" u0 ")) {
-                    val pkg = line.substringAfter(" u0 ").substringBefore("/")
-                    foregroundApp = pkg.substringAfterLast(".")
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    val cleanLine = line ?: continue
+                    val match = Regex("""([a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+)""").find(cleanLine)
+                    val foundPkg = match?.value
+                    if (foundPkg != null && !foundPkg.contains("tempstatusbar") && !foundPkg.contains("miui.home")) {
+                        foregroundApp = AppLabelHelper.getAppName(applicationContext, foundPkg)
+                        break
+                    }
                 }
                 p.waitFor()
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                foregroundApp = "Active App"
+            }
         }
     }
 
     private fun startFpsPoller() {
         val prefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
-        
+
         thread {
             while (isCounting) {
                 val showTemp = prefs.getBoolean("showTempInFpsOverlay", false)
                 try {
-                    // Strict Array Slicing: Splits all garbage/timing strings, grabs ONLY the first valid FPS number (1-240)
                     val fpsProc = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/class/drm/sde-crtc-0/measured_fps"))
                     val rawFpsString = BufferedReader(InputStreamReader(fpsProc.inputStream)).readLine()
                     fpsProc.waitFor()
-                    
+
                     val fpsRaw = rawFpsString?.split(Regex("[^0-9]+"))
                         ?.mapNotNull { it.toIntOrNull() }
                         ?.firstOrNull { it in 1..240 }
-                    
+
                     val tempProc = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys battery | grep temperature"))
                     val rawTempString = BufferedReader(InputStreamReader(tempProc.inputStream)).readLine()
                     tempProc.waitFor()
-                    
+
                     val tempRaw = rawTempString?.replace(Regex("[^0-9]"), "")?.toIntOrNull()?.div(10)
 
                     if (fpsRaw != null && fpsRaw > 0) { fpsReadings.add(fpsRaw) }
                     if (tempRaw != null && tempRaw > 0) { tempReadings.add(tempRaw) }
 
-                    handler.post { 
+                    handler.post {
                         if (isCounting) {
                             val f = fpsRaw ?: "--"
                             val t = tempRaw ?: "--"
@@ -194,7 +200,13 @@ class FpsOverlayService : Service() {
             val max = fpsReadings.maxOrNull() ?: 0
             val avg = fpsReadings.average().toInt()
             val avgT = if (tempReadings.isNotEmpty()) tempReadings.average().toInt() else 0
-            dbHelper.saveFpsSession(foregroundApp, duration, min, max, avg, avgT)
+
+            // Keep up to 100 timeline samples for accurate graph plotting
+            val step = (fpsReadings.size / 100).coerceAtLeast(1)
+            val downsampled = fpsReadings.filterIndexed { index, _ -> index % step == 0 }.take(100)
+            val samplesStr = downsampled.joinToString(",")
+
+            dbHelper.saveFpsSession(foregroundApp, duration, min, max, avg, avgT, samplesStr)
         }
         windowManager.removeView(overlayView)
     }
