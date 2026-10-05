@@ -24,6 +24,9 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.widget.*
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.thread
@@ -169,6 +172,14 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        // Background thread crash interceptor
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
+            val sw = StringWriter()
+            throwable.printStackTrace(PrintWriter(sw))
+            try { File(getExternalFilesDir(null), "TempMonitor_Crash.txt").writeText(sw.toString()) } catch (e: Exception) {}
+            System.exit(1)
+        }
+        
         try {
             HardwareThermalControl.init(this)
             dbHelper = DatabaseHelper(this)
@@ -188,9 +199,22 @@ class MainActivity : Activity() {
                     Toast.makeText(this, "Please enable Usage Access for Non-Root tracking.", Toast.LENGTH_LONG).show()
                 }
             }
-            
             startMonitorService()
-        } catch (e: Exception) {}
+
+        } catch (t: Throwable) {
+            // UI Initialization Crash Interceptor (The Red Screen)
+            val sw = StringWriter()
+            t.printStackTrace(PrintWriter(sw))
+            val tv = TextView(this).apply {
+                text = "CRASH DETECTED:\n\n${sw.toString()}"
+                setTextColor(Color.parseColor("#FF5252"))
+                setBackgroundColor(Color.BLACK)
+                textSize = 11f
+                typeface = Typeface.MONOSPACE
+                setPadding(40, 60, 40, 40)
+            }
+            setContentView(ScrollView(this).apply { addView(tv) })
+        }
     }
 
     override fun onResume() {
@@ -256,7 +280,6 @@ class MainActivity : Activity() {
         
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
         
-        // WhatsApp Style Header
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(if (isDark) Color.parseColor("#121212") else Color.WHITE)
@@ -276,7 +299,6 @@ class MainActivity : Activity() {
         tab1Thermal = buildTab1(isDark); tab2Battery = buildTab2(isDark); tab3CPU = buildTab3(isDark); tab4Display = buildTab4(isDark)
         contentFrame.addView(tab1Thermal); contentFrame.addView(tab2Battery); contentFrame.addView(tab3CPU); contentFrame.addView(tab4Display)
 
-        // Bottom Navigation Bar
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; setBackgroundColor(if (isDark) Color.parseColor("#121212") else Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(-1, 180); setPadding(20, 10, 20, 10)
@@ -295,7 +317,7 @@ class MainActivity : Activity() {
             }
         }
         tabButtons.forEach { nav.addView(it) }
-        root.addView(nav) // Nav added at the bottom
+        root.addView(nav)
         
         setContentView(root)
         tab1Thermal.visibility = View.VISIBLE; tab2Battery.visibility = View.GONE; tab3CPU.visibility = View.GONE; tab4Display.visibility = View.GONE
