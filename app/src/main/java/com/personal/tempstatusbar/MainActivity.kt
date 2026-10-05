@@ -80,7 +80,8 @@ class FpsChartView(context: Context) : View(context) {
         super.onDraw(canvas)
         if (sessions.isEmpty()) {
             textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
-            canvas.drawText("No FPS data recorded yet.", width / 2f - 140, height / 2f, textPaint)
+            textPaint.textAlign = Paint.Align.CENTER
+            canvas.drawText("No FPS data recorded yet.", width / 2f, height / 2f, textPaint)
             return
         }
         val padX = 40f; val padY = 40f
@@ -121,6 +122,7 @@ class FpsChartView(context: Context) : View(context) {
 class MainActivity : Activity() {
     private lateinit var dbHelper: DatabaseHelper
     private lateinit var settings: SettingsManager
+    private lateinit var sharedPrefs: android.content.SharedPreferences
     private lateinit var contentFrame: FrameLayout
     private lateinit var tab1Thermal: View
     private lateinit var tab2Battery: View
@@ -165,54 +167,30 @@ class MainActivity : Activity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // --- THE BLACK BOX CRASH INTERCEPTOR ---
-        val crashFile = java.io.File(cacheDir, "crash_log.txt")
-        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { thread, exception ->
-            try { crashFile.writeText("FATAL CRASH on ${thread.name}:\n${exception.message}\n\n${exception.stackTraceToString()}") } catch (e: Exception) {}
-            defaultHandler?.uncaughtException(thread, exception)
-        }
-
         super.onCreate(savedInstanceState)
-
-        if (crashFile.exists() && crashFile.length() > 0) {
-            val log = crashFile.readText()
-            crashFile.delete()
-            val sv = ScrollView(this).apply { setPadding(40, 40, 40, 40) }
-            sv.addView(TextView(this).apply { text = log; textSize = 11f; setTextColor(Color.parseColor("#FF3B30")); typeface = Typeface.MONOSPACE })
-            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("FATAL CRASH INTERCEPTED")
-                .setView(sv)
-                .setPositiveButton("EXIT APP") { _, _ -> finish() }
-                .setCancelable(false)
-                .show()
-            return // Kills the UI thread so the app cannot crash again while displaying the log
-        }
-        // ---------------------------------------
-
-        HardwareThermalControl.init(this)
-        dbHelper = DatabaseHelper(this)
-        settings = SettingsManager(this)
-        buildBaseLayout()
-        
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
-        }
-        
-        if (!HardwareThermalControl.isRootAvailable()) {
-            val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-            val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName)
-            if (mode != AppOpsManager.MODE_ALLOWED) {
-                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                Toast.makeText(this, "Please enable Usage Access for Non-Root tracking.", Toast.LENGTH_LONG).show()
-            }
-        }
         
         try {
+            HardwareThermalControl.init(this)
+            dbHelper = DatabaseHelper(this)
+            settings = SettingsManager(this)
+            sharedPrefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
+            buildBaseLayout()
+            
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+            
+            if (!HardwareThermalControl.isRootAvailable()) {
+                val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+                val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
+                if (mode != AppOpsManager.MODE_ALLOWED) {
+                    startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                    Toast.makeText(this, "Please enable Usage Access for Non-Root tracking.", Toast.LENGTH_LONG).show()
+                }
+            }
+            
             startMonitorService()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Service Blocked: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+        } catch (e: Exception) {}
     }
 
     override fun onResume() {
@@ -278,15 +256,31 @@ class MainActivity : Activity() {
         
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
         
+        // WhatsApp Style Header
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(if (isDark) Color.parseColor("#121212") else Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(-1, 160)
+            setPadding(50, 0, 50, 0)
+            gravity = Gravity.CENTER_VERTICAL
+            elevation = 8f
+        }
+        topBar.addView(txt("Temp Monitor", 22f, if (isDark) Color.WHITE else Color.parseColor("#000000"), true).apply { 
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f) 
+        })
+        root.addView(topBar)
+        
         contentFrame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
         root.addView(contentFrame)
 
         tab1Thermal = buildTab1(isDark); tab2Battery = buildTab2(isDark); tab3CPU = buildTab3(isDark); tab4Display = buildTab4(isDark)
         contentFrame.addView(tab1Thermal); contentFrame.addView(tab2Battery); contentFrame.addView(tab3CPU); contentFrame.addView(tab4Display)
 
+        // Bottom Navigation Bar
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; setBackgroundColor(if (isDark) Color.parseColor("#121212") else Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(-1, 180); setPadding(20, 10, 20, 10)
+            elevation = 16f
             setOnTouchListener { v, event ->
                 if (event.action == MotionEvent.ACTION_MOVE || event.action == MotionEvent.ACTION_DOWN) {
                     val idx = (event.x / (v.width / 4f)).toInt().coerceIn(0, 3)
@@ -301,7 +295,7 @@ class MainActivity : Activity() {
             }
         }
         tabButtons.forEach { nav.addView(it) }
-        root.addView(nav)
+        root.addView(nav) // Nav added at the bottom
         
         setContentView(root)
         tab1Thermal.visibility = View.VISIBLE; tab2Battery.visibility = View.GONE; tab3CPU.visibility = View.GONE; tab4Display.visibility = View.GONE
@@ -359,7 +353,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildTab1(isDark: Boolean): View {
-        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
+        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
@@ -437,7 +431,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildTab2(isDark: Boolean): View {
-        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
+        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
@@ -468,7 +462,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildTab3(isDark: Boolean): View {
-        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
+        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
@@ -552,7 +546,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildTab4(isDark: Boolean): View {
-        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 40, 20) }
+        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
@@ -579,7 +573,14 @@ class MainActivity : Activity() {
 
         val c2 = card(cBg)
         c2.addView(txt("LIVE FPS METRE OVERLAY", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 10) })
-        c2.addView(txt("Tap the floating pill to start/pause counting. Long-press to save the session data and close the overlay.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
+        
+        c2.addView(Switch(this).apply { 
+            text = "Show Temperature on Pill"; setTextColor(tPri); setPadding(0,0,0,20)
+            isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
+            setOnCheckedChangeListener { _, c -> haptic(this); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
+        })
+
+        c2.addView(txt("Tap the pill to start/pause counting. Long-press to save session & close.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
         c2.addView(Button(this).apply {
             text = "LAUNCH FPS OVERLAY"
             setBackgroundColor(Color.parseColor("#2196F3"))
@@ -604,7 +605,7 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(-1, 400)
             onSessionSelected = { s ->
                 val date = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(s.timestamp))
-                fpsDetailText.text = "Session: $date\nApp: ${s.appName}\nDuration: ${s.durationSec}s\nAverage: ${s.avgFps} FPS  |  Min: ${s.minFps}  |  Max: ${s.maxFps}"
+                fpsDetailText.text = "Session: $date\nApp: ${s.appName}\nDuration: ${s.durationSec}s\nAverage: ${s.avgFps} FPS  |  Min: ${s.minFps}  |  Max: ${s.maxFps}\nAvg Temp: ${s.avgTemp}°C"
             }
         }
         c3.addView(fpsChartView); c3.addView(fpsDetailText); lay.addView(c3)
@@ -626,7 +627,7 @@ class MainActivity : Activity() {
             
             livePowerText.text = if (stats.isCharging) "Charging AC\n⚡ ${stats.wattage}W (+${stats.currentMa} mA)" else "Discharging\n🔋 -${stats.wattage}W (${stats.currentMa} mA)"
         } catch (e: Exception) {
-            livePowerText.text = "Hardware parsing error"
+            try { livePowerText.text = "Hardware parsing error" } catch (ex: Exception) {}
         }
     }
 
