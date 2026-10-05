@@ -4,6 +4,7 @@
 
     <uses-permission android:name="android.permission.BATTERY_STATS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -27,8 +28,8 @@
             </intent-filter>
         </activity>
 
-        <service android:name=".TempMonitorService" android:exported="false" />
-        <service android:name=".FpsOverlayService" android:exported="false" />
+        <service android:name=".TempMonitorService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".FpsOverlayService" android:exported="false" android:foregroundServiceType="dataSync" />
         
         <receiver android:name=".ThermalActionReceiver" android:exported="false">
             <intent-filter>
