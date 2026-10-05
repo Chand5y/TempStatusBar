@@ -11,7 +11,6 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_app_logo"
         android:label="Temp Monitor"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
@@ -33,7 +32,6 @@
         <service
             android:name=".FpsTileService"
             android:exported="true"
-            android:icon="@drawable/ic_app_logo"
             android:label="FPS Overlay"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
