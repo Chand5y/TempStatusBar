@@ -312,7 +312,6 @@ class MainActivity : Activity() {
                     val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,15,0,15); gravity=Gravity.CENTER_VERTICAL }
                     row.addView(txt("${p.name}\n${p.sizeMb} MB", 12f, Color.WHITE).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
                     row.addView(createBtn("KILL", Color.parseColor("#D32F2F")) {
-                        haptic(this@MainActivity)
                         AppLogger.log("Killed RAM Process: ${p.name}")
                         HardwareThermalControl.killProcess(p.pid)
                         list.removeView(row)
