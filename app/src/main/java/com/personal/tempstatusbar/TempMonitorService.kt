@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.graphics.*
 import android.graphics.drawable.Icon
 import android.os.*
@@ -168,9 +169,10 @@ class TempMonitorService : Service() {
         if (!settings.showNotification) { manager?.cancel(NOTIF_ID); return }
 
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
+        val bypassStr = if (HardwareThermalControl.isManualBypassActive && stats.isCharging) "\n🛡️ BYPASS" else ""
         val bodyText = if (settings.showPowerMetrics) {
-            if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)" else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)"
-        } else { if (stats.isCharging) "⚡ Charging" else "🔋 Discharging" }
+            if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)$bypassStr" else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)$bypassStr"
+        } else { if (stats.isCharging) "⚡ Charging$bypassStr" else "🔋 Discharging$bypassStr" }
 
         val notif = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Battery: $lastTemp°C")
@@ -195,7 +197,17 @@ class TempMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIF_ID, Notification.Builder(this, CHANNEL_ID).setContentTitle("Thermal Monitor Active").setSmallIcon(drawIcon("--")).build())
+        val notif = Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("Thermal Monitor Active")
+            .setSmallIcon(drawIcon("--"))
+            .build()
+            
+        // Critical Android 14 foreground security patch
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIF_ID, notif)
+        }
         return START_STICKY
     }
 
@@ -206,6 +218,7 @@ class TempMonitorService : Service() {
         HardwareThermalControl.destroy()
         handlerThread.quitSafely()
     }
+    
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createChannels() {
