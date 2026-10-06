@@ -51,6 +51,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ThermalMonit
         } catch (e: Exception) {}
     }
 
+    fun deleteFpsSession(id: Int) {
+        try {
+            writableDatabase.delete("fps_sessions", "id = ?", arrayOf(id.toString()))
+        } catch (e: Exception) {}
+    }
+
     fun getAllRecords(): List<TempRecord> {
         val list = mutableListOf<TempRecord>()
         try {
