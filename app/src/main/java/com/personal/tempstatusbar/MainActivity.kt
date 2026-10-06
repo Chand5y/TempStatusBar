@@ -71,7 +71,6 @@ class BatteryGraphicView(context: Context) : View(context) {
     }
 }
 
-// Interactive Dual-Axis FPS & Thermal Chart
 class FpsChartView(context: Context) : View(context) {
     private var activeSession: FpsSession? = null
     var onScrub: ((Int, Int) -> Unit)? = null
@@ -84,23 +83,16 @@ class FpsChartView(context: Context) : View(context) {
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.5f; style = Paint.Style.STROKE }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
     
-    // Updated bright blue highly visible dashed scrub line
+    // Explicit, highly visible solid red scrub line
     private val scrubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { 
-        color = Color.parseColor("#2196F3")
+        color = Color.parseColor("#FF3B30") 
         strokeWidth = 4f 
         style = Paint.Style.STROKE 
-        pathEffect = android.graphics.DashPathEffect(floatArrayOf(15f, 10f), 0f)
     }
     private val scrubDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Color.WHITE }
 
     fun setSession(session: FpsSession?) {
         activeSession = session; scrubIndex = -1; invalidate()
-    }
-
-    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        // Unconditionally prevent vertical swipe stealing while inside graph bounds
-        parent?.requestDisallowInterceptTouchEvent(true)
-        return super.dispatchTouchEvent(event)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -174,6 +166,7 @@ class FpsChartView(context: Context) : View(context) {
 
         when (event.action) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
                 val padL = 70f; val plotW = width.toFloat() - padL - 40f
                 val stepX = plotW / (fpsPoints.size - 1).coerceAtLeast(1).toFloat()
                 val idx = ((event.x - padL) / stepX).toInt().coerceIn(0, fpsPoints.size - 1)
@@ -208,13 +201,10 @@ class MainActivity : Activity() {
     private lateinit var tabButtons: List<TextView>
 
     private lateinit var chartView: TemperatureChartView
-    private var thermalTimeRangeMs = 86400000L // Default 24 Hours
-    private lateinit var btn24H: Button
-    private lateinit var btn48H: Button
-    private lateinit var btnAll: Button
-
+    private var thermalTimeRangeMs = 86400000L
     private lateinit var fpsChartView: FpsChartView
     private lateinit var fpsDetailText: TextView
+    private lateinit var fpsSessionHScroll: HorizontalScrollView
     private lateinit var fpsSessionButtonContainer: LinearLayout
     private lateinit var refreshRateButtons: List<Button>
     private lateinit var screenTimeText: TextView
@@ -311,7 +301,7 @@ class MainActivity : Activity() {
 
     private fun showModal(title: String, content: String) {
         val sv = ScrollView(this).apply { setPadding(40, 20, 40, 20) }
-        sv.addView(txt(content, 12f, Color.GRAY).apply { typeface = Typeface.MONOSPACE })
+        sv.addView(txt(content, 13f, Color.GRAY).apply { typeface = Typeface.MONOSPACE })
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle(title).setView(sv).setPositiveButton("Close", null).show()
     }
 
@@ -367,7 +357,7 @@ class MainActivity : Activity() {
 
     private fun buildBaseLayout() {
         val isDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-        val bg = if (isDark) Color.parseColor("#0B141A") else Color.WHITE // WhatsApp authentic background
+        val bg = if (isDark) Color.parseColor("#0B141A") else Color.WHITE
         
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
 
@@ -387,7 +377,7 @@ class MainActivity : Activity() {
             elevation = 4f
         }
         
-        // Brand Orange Label Fix
+        // Exact Brand Orange Color requested for Title
         topBar.addView(txt("Temp Monitor", 22f, Color.parseColor("#FF9800"), true).apply { 
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f) 
         })
@@ -444,8 +434,10 @@ class MainActivity : Activity() {
 
     private var downX = 0f; private var downY = 0f
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Excludes scrollable areas from tab swiping mechanism
         if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS))) return super.dispatchTouchEvent(ev)
-        if (currentTabIndex == 3 && isTouchInside(ev, fpsChartView)) return super.dispatchTouchEvent(ev)
+        if (currentTabIndex == 3 && (isTouchInside(ev, fpsChartView) || isTouchInside(ev, fpsSessionHScroll))) return super.dispatchTouchEvent(ev)
+        
         when (ev.action) {
             MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
             MotionEvent.ACTION_UP -> {
@@ -479,24 +471,10 @@ class MainActivity : Activity() {
         if (newIdx == 3) updateActiveRefreshRateUI()
     }
 
-    private fun updateThermalFilters(activeMs: Long, activeBtn: Button) {
-        thermalTimeRangeMs = activeMs
-        listOf(btn24H, btn48H, btnAll).forEach { (it.background as GradientDrawable).setColor(Color.parseColor("#333333")) }
-        (activeBtn.background as GradientDrawable).setColor(Color.parseColor("#2196F3"))
-        refreshDashboardData()
-    }
-
     private fun buildTab1(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F6")
         val tPri = if (isDark) Color.WHITE else Color.BLACK
-
-        val filterRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f; setPadding(0, 0, 0, 25) }
-        btn24H = createBtn("1 DAY", Color.parseColor("#2196F3")) { updateThermalFilters(86400000L, btn24H) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(5,0,5,0) } }
-        btn48H = createBtn("2 DAYS", Color.parseColor("#333333")) { updateThermalFilters(172800000L, btn48H) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(5,0,5,0) } }
-        btnAll = createBtn("ALL", Color.parseColor("#333333")) { updateThermalFilters(604800000L, btnAll) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(5,0,5,0) } }
-        filterRow.addView(btn24H); filterRow.addView(btn48H); filterRow.addView(btnAll)
-        lay.addView(filterRow)
 
         val c1 = card(cBg)
         val headerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f; setPadding(0,0,0,15); gravity = Gravity.CENTER_VERTICAL }
@@ -513,19 +491,33 @@ class MainActivity : Activity() {
         chartView = TemperatureChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
         c1.addView(chartView)
 
+        // Time Range Filter via Long Press
+        c1.setOnLongClickListener {
+            haptic(it)
+            val options = arrayOf("Last 24 Hours", "Last 48 Hours", "All Time")
+            AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Select Graph Range")
+                .setItems(options) { _, which ->
+                    thermalTimeRangeMs = when(which) { 0 -> 86400000L; 1 -> 172800000L; else -> 31536000000L }
+                    refreshDashboardData()
+                    Toast.makeText(this@MainActivity, "Range Updated", Toast.LENGTH_SHORT).show()
+                }.show()
+            true
+        }
+
         val detailRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,25,0,0); gravity = Gravity.CENTER_VERTICAL }
         
-        // Single Line Temperature Text Font Size Fix
-        detailTempText = txt("--°C", 30f, Color.parseColor("#FF3B30"), true).apply { 
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            setSingleLine(true); maxLines = 1 
+        // Single Line Temperature Size Fix
+        detailTempText = txt("--°C", 26f, Color.parseColor("#FF3B30"), true).apply { 
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 30 }
+            setSingleLine(true)
         }
         detailRow.addView(detailTempText)
 
-        val infoCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 2.5f) }
+        val infoCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         detailTimeText = txt("Tap chart to inspect", 12f, tPri, true); infoCol.addView(detailTimeText)
         
-        detailBadgesText = txt("", 12f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { setSingleLine(true) }
+        detailBadgesText = txt("Long-press card to filter time", 11f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { setSingleLine(true) }
         infoCol.addView(detailBadgesText)
         
         detailAppContent = txt("Awaiting selection...", 11f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { setPadding(0, 8, 0, 0) }
@@ -535,6 +527,7 @@ class MainActivity : Activity() {
         c1.addView(detailRow)
         lay.addView(c1)
 
+        // Clean Process String (No Emojis)
         chartView.onRecordSelected = { r ->
             val time = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))
             val screenIcon = if (r.screenOn) "🔆 On" else "🌙 Off"
@@ -554,7 +547,7 @@ class MainActivity : Activity() {
         }
 
         val c3 = card(cBg) { showModal("PMIC Safety Engine", "Cut Off (🛑): Breaks circuit when limit is reached.\nResume (🔄): Restores circuit when cooled.") }
-        c3.addView(txt("🛡️️ HARDWARE PROTECTION", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
+        c3.addView(txt("🛡 HARDWARE PROTECTION", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
 
         warnLabel = txt("🔔 Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
         warnS = SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -648,11 +641,16 @@ class MainActivity : Activity() {
         })
         lay.addView(sgCard)
 
-        // Modal Instructions Fix
-        val cCard = card(cBg) {
-            showModal("CPU Architecture Map", "Long-press any core to forcefully toggle it ONLINE or OFFLINE in the kernel.\n\nNote: The Snapdragon 870 kernel instantly crashes if the Prime Core (C7) is offlined. Long-pressing C7 will THROTTLE its max frequency instead.\n\nAll actions are actively recorded in the Global Tracker log.")
-        }
-        cCard.addView(txt("CPU ARCHITECTURE MAP (LONG-PRESS)", 11f, Color.GRAY).apply{setPadding(0,0,0,20)})
+        // Core Interaction with Logger
+        val cCard = card(cBg)
+        val cCardHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0,0,0,20) }
+        cCardHeader.addView(txt("CPU ARCHITECTURE MAP (LONG-PRESS)", 11f, Color.GRAY).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
+        cCardHeader.addView(Button(this).apply {
+            text = "ℹ️ INFO"; textSize = 10f; setTextColor(Color.GRAY); setBackgroundColor(Color.TRANSPARENT); setPadding(0,0,0,0)
+            setOnClickListener { haptic(this); showModal("Core Map Instructions", "Long-press any core to forcefully toggle it ONLINE or OFFLINE in the kernel.\n\nNote: The Snapdragon 870 kernel instantly crashes if the Prime Core (C7) is offlined. Long-pressing C7 will THROTTLE its max frequency instead.\n\nAll actions are actively recorded in the Global Tracker log.") }
+        })
+        cCard.addView(cCardHeader)
+        
         cpuArchitectureGrid = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f; layoutParams = LinearLayout.LayoutParams(-1, 380) }
         coreBlocks = Array(8) { TextView(this) }
 
@@ -661,9 +659,17 @@ class MainActivity : Activity() {
             background = GradientDrawable().apply { cornerRadius = 30f; setColor(Color.DKGRAY) }
             setOnLongClickListener { v ->
                 haptic(v)
-                if (idx == 7) { HardwareThermalControl.throttlePrimeCore(!text.toString().contains("THROTTLED")) } 
-                else { HardwareThermalControl.setCoreOnline(idx, text.toString().contains("OFF")) }
-                Toast.makeText(context, "Command sent to Core $idx", Toast.LENGTH_SHORT).show()
+                val success: Boolean
+                if (idx == 7) { 
+                    val throttle = !text.toString().contains("THROTTLED")
+                    success = HardwareThermalControl.executeRootCommand("Throttle C7", if(throttle) "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq" else "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq")
+                } else { 
+                    val offline = !text.toString().contains("OFF")
+                    success = HardwareThermalControl.executeRootCommand("Toggle C$idx", "echo ${if (offline) "0" else "1"} > /sys/devices/system/cpu/cpu$idx/online")
+                }
+                
+                if (success) Toast.makeText(context, "Success: Core $idx modified", Toast.LENGTH_SHORT).show()
+                else Toast.makeText(context, "Failed: Kernel Denied", Toast.LENGTH_SHORT).show()
                 true
             }
         }
@@ -691,10 +697,24 @@ class MainActivity : Activity() {
         c1.addView(txt("DISPLAY REFRESH RATE", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 20) })
         val rrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f }
         
+        // Multi-level HyperOS Refresh Rate Enforcer
         refreshRateButtons = listOf(60, 90, 120).map { r ->
             createBtn("${r}Hz", Color.parseColor("#333333")) {
-                HardwareThermalControl.forceRefreshRate(r)
-                Toast.makeText(this@MainActivity, "Forced ${r}Hz", Toast.LENGTH_SHORT).show()
+                AppLogger.log("Requested Display Refresh Rate: ${r}Hz")
+                thread { 
+                    try {
+                        val cmd = "settings put system peak_refresh_rate $r; " +
+                                  "settings put system min_refresh_rate $r; " +
+                                  "settings put system user_refresh_rate $r; " +
+                                  "settings put secure miui_refresh_rate $r; " +
+                                  "settings put system miui_refresh_rate $r; " +
+                                  "service call SurfaceFlinger 1035 i32 $r"
+                        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+                        process.waitFor()
+                        AppLogger.log("Refresh Rate Shell Code: ${process.exitValue()}")
+                    } catch (e: Exception) { AppLogger.log("Refresh Rate Shell Error: ${e.message}") }
+                }
+                Toast.makeText(this@MainActivity, "Forcing ${r}Hz", Toast.LENGTH_SHORT).show()
                 uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 1500)
             }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } }
         }
@@ -708,7 +728,7 @@ class MainActivity : Activity() {
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
             setOnCheckedChangeListener { v, c -> haptic(v); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
         })
-        c2.addView(txt("Tap pill to toggle Recording. Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
+        c2.addView(txt("Tap pill to toggle Recording (🔴). Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
         c2.addView(createBtn("LAUNCH FPS OVERLAY", Color.parseColor("#2196F3")) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
@@ -721,9 +741,9 @@ class MainActivity : Activity() {
         fpsChartView = FpsChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
         c3.addView(fpsChartView)
 
-        // Tab View Swiping Fix
-        val hScroll = HorizontalScrollView(this).apply { 
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 20 }
+        // Session Scroll Touch intercept fix
+        fpsSessionHScroll = HorizontalScrollView(this).apply { 
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 20 } 
             isScrollContainer = false
             setOnTouchListener { v, event ->
                 when (event.action) {
@@ -734,7 +754,7 @@ class MainActivity : Activity() {
             }
         }
         fpsSessionButtonContainer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        hScroll.addView(fpsSessionButtonContainer); c3.addView(hScroll)
+        fpsSessionHScroll.addView(fpsSessionButtonContainer); c3.addView(fpsSessionHScroll)
 
         fpsDetailText = txt("Select a session below to view timeline", 12f, tPri).apply { setPadding(0, 20, 0, 0) }
         fpsChartView.onScrub = { fps, temp -> fpsDetailText.text = "📍 Scrub: $fps FPS  |  $temp°C" }
@@ -831,9 +851,9 @@ class MainActivity : Activity() {
                         for (j in 0 until fpsSessionButtonContainer.childCount) { ((fpsSessionButtonContainer.getChildAt(j) as? LinearLayout)?.getChildAt(0) as? Button)?.background?.setTint(Color.parseColor("#333333")) }
                     }.apply { layoutParams = LinearLayout.LayoutParams(-2, -2).apply { setMargins(6,0,6,0) } }
                     
-                    // Session Deletion Fix
-                    btn.setOnLongClickListener { 
-                        haptic(it)
+                    // Delete FPS Session Fix
+                    btn.setOnLongClickListener { v ->
+                        haptic(v)
                         AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                             .setTitle("Delete Session")
                             .setMessage("Permanently remove ${s.appName} recording?")
