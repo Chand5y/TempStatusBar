@@ -36,6 +36,7 @@ class FpsOverlayService : Service() {
         dbHelper = DatabaseHelper(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
+        // Create the view first
         overlayView = TextView(this).apply {
             text = "INIT..."
             setTextColor(Color.WHITE)
@@ -43,8 +44,10 @@ class FpsOverlayService : Service() {
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             gravity = Gravity.CENTER
             setPadding(40, 20, 40, 20)
-            updatePillStyle(false)
         }
+        
+        // Apply the style ONLY AFTER the view is fully initialized to prevent lateinit crash
+        updatePillStyle(false)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -64,12 +67,12 @@ class FpsOverlayService : Service() {
 
     private fun updatePillStyle(recording: Boolean) {
         overlayView.background = GradientDrawable().apply {
-            cornerRadius = 100f // Fully rounded modern pill
+            cornerRadius = 100f
             if (recording) {
-                setColor(Color.parseColor("#E6D32F2F")) // Translucent Red for recording
+                setColor(Color.parseColor("#E6D32F2F"))
                 setStroke(3, Color.parseColor("#FF5252"))
             } else {
-                setColor(Color.parseColor("#E61C1C1E")) // Translucent Dark Gray for passive monitoring
+                setColor(Color.parseColor("#E61C1C1E"))
                 setStroke(3, Color.parseColor("#55FFFFFF"))
             }
         }
@@ -183,7 +186,7 @@ class FpsOverlayService : Service() {
                         }
                     }
                 } catch (e: Exception) {
-                    handler.post { if (isServiceActive) overlayView.text = "FPS NODE BLOCKED" }
+                    handler.post { if (isServiceActive) overlayView.text = "FPS NODE ERROR" }
                 }
                 Thread.sleep(1000)
             }
