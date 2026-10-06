@@ -70,6 +70,7 @@ class BatteryGraphicView(context: Context) : View(context) {
     }
 }
 
+// Interactive Dual-Axis FPS & Thermal Chart
 class FpsChartView(context: Context) : View(context) {
     private var activeSession: FpsSession? = null
     var onScrub: ((Int, Int) -> Unit)? = null
@@ -311,7 +312,6 @@ class MainActivity : Activity() {
                     val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,15,0,15); gravity=Gravity.CENTER_VERTICAL }
                     row.addView(txt("${p.name}\n${p.sizeMb} MB", 12f, Color.WHITE).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
                     row.addView(createBtn("KILL", Color.parseColor("#D32F2F")) {
-                        haptic(this@MainActivity)
                         AppLogger.log("Killed RAM Process: ${p.name}")
                         HardwareThermalControl.killProcess(p.pid)
                         list.removeView(row)
@@ -346,7 +346,6 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
 
-        // WhatsApp Style Top Header
         val waHeaderColor = if (isDark) Color.parseColor("#202C33") else Color.parseColor("#008069")
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -360,7 +359,6 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f) 
         })
         
-        // WhatsApp style compact translucent Tracker pill
         val trackerBtn = Button(this).apply {
             text = "Tracker"
             textSize = 11f
@@ -483,7 +481,6 @@ class MainActivity : Activity() {
         c1.addView(detailRow)
         lay.addView(c1)
 
-        // Clean Icon Matrix Fix
         chartView.onRecordSelected = { r ->
             val time = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))
             val screenIcon = if (r.screenOn) "🔆 On" else "🌙 Off"
@@ -645,7 +642,7 @@ class MainActivity : Activity() {
                     } catch (e: Exception) { AppLogger.log("Refresh Rate Shell Error: ${e.message}") }
                 }
                 Toast.makeText(this@MainActivity, "Forced ${r}Hz (Lock/Unlock screen to apply)", Toast.LENGTH_SHORT).show()
-                uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 2000)
+                uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 1500)
             }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } }
         }
         refreshRateButtons.forEach { rrRow.addView(it) }
@@ -658,7 +655,7 @@ class MainActivity : Activity() {
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
             setOnCheckedChangeListener { v, c -> haptic(v); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
         })
-        c2.addView(txt("Tap pill to toggle Recording. Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
+        c2.addView(txt("Tap pill to toggle Recording (🔴). Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
         c2.addView(createBtn("LAUNCH FPS OVERLAY", Color.parseColor("#2196F3")) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
@@ -690,9 +687,11 @@ class MainActivity : Activity() {
     private fun updateActiveRefreshRateUI() {
         try {
             val activeHz = Settings.System.getInt(contentResolver, "user_refresh_rate", 120)
-            refreshRateButtons.forEachIndexed { i, btn ->
-                val targetHz = listOf(60, 90, 120)[i]
-                (btn.background as GradientDrawable).setColor(if (targetHz == activeHz) Color.parseColor("#2196F3") else Color.parseColor("#333333"))
+            uiHandler.post {
+                refreshRateButtons.forEachIndexed { i, btn ->
+                    val targetHz = listOf(60, 90, 120)[i]
+                    (btn.background as GradientDrawable).setColor(if (targetHz == activeHz) Color.parseColor("#2196F3") else Color.parseColor("#333333"))
+                }
             }
         } catch (e: Exception) {}
         
