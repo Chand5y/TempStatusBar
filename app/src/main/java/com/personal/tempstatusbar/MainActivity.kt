@@ -26,6 +26,7 @@ import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import android.widget.*
 import java.io.File
 import java.io.PrintWriter
@@ -82,7 +83,13 @@ class FpsChartView(context: Context) : View(context) {
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.5f; style = Paint.Style.STROKE }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
-    private val scrubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; strokeWidth = 2f; style = Paint.Style.STROKE }
+    
+    // Improved, highly visible dashed scrub line
+    private val scrubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { 
+        strokeWidth = 3.5f 
+        style = Paint.Style.STROKE 
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(15f, 15f), 0f)
+    }
     private val scrubDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Color.WHITE }
 
     fun setSession(session: FpsSession?) {
@@ -113,6 +120,7 @@ class FpsChartView(context: Context) : View(context) {
         gridPaint.color = if (isDarkMode) Color.parseColor("#2C2C2E") else Color.parseColor("#E5E5EA")
         textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
         textPaint.textAlign = Paint.Align.RIGHT
+        scrubPaint.color = if (isDarkMode) Color.parseColor("#E0E0E0") else Color.parseColor("#424242")
 
         listOf(30, 60, 90, 120).forEach { lvl ->
             val y = padT + plotH - ((lvl / maxFpsScale) * plotH)
@@ -158,20 +166,27 @@ class FpsChartView(context: Context) : View(context) {
         val fpsPoints = s.fpsSamples.split(",").mapNotNull { it.trim().toIntOrNull() }
         if (fpsPoints.isEmpty()) return false
 
-        if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) {
-            val padL = 70f; val plotW = width.toFloat() - padL - 40f
-            val stepX = plotW / (fpsPoints.size - 1).coerceAtLeast(1).toFloat()
-            val idx = ((event.x - padL) / stepX).toInt().coerceIn(0, fpsPoints.size - 1)
-            
-            if (idx != scrubIndex) {
-                scrubIndex = idx
-                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                val tempPoints = s.tempSamples.split(",").mapNotNull { it.trim().toIntOrNull() }
-                val tempVal = if (idx < tempPoints.size) tempPoints[idx] else s.avgTemp
-                onScrub?.invoke(fpsPoints[idx], tempVal)
-                invalidate()
+        when (event.action) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                // Completely prevents ScrollView from stealing touch during scrubbing
+                parent?.requestDisallowInterceptTouchEvent(true) 
+                val padL = 70f; val plotW = width.toFloat() - padL - 40f
+                val stepX = plotW / (fpsPoints.size - 1).coerceAtLeast(1).toFloat()
+                val idx = ((event.x - padL) / stepX).toInt().coerceIn(0, fpsPoints.size - 1)
+                
+                if (idx != scrubIndex) {
+                    scrubIndex = idx
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    val tempPoints = s.tempSamples.split(",").mapNotNull { it.trim().toIntOrNull() }
+                    val tempVal = if (idx < tempPoints.size) tempPoints[idx] else s.avgTemp
+                    onScrub?.invoke(fpsPoints[idx], tempVal)
+                    invalidate()
+                }
+                return true
             }
-            return true
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
         }
         return super.onTouchEvent(event)
     }
@@ -200,6 +215,7 @@ class MainActivity : Activity() {
     private lateinit var resS: SeekBar
 
     private lateinit var detailTimeText: TextView
+    private lateinit var detailBadgesText: TextView
     private lateinit var detailTempText: TextView
     private lateinit var detailAppContent: TextView
     private lateinit var warnLabel: TextView
@@ -342,32 +358,35 @@ class MainActivity : Activity() {
 
     private fun buildBaseLayout() {
         val isDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-        val bg = if (isDark) Color.BLACK else Color.parseColor("#F4F4F6")
-
+        val bg = if (isDark) Color.parseColor("#0B141A") else Color.WHITE // WhatsApp authentic background
+        
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
 
-        val waHeaderColor = if (isDark) Color.parseColor("#202C33") else Color.parseColor("#008069")
+        // WhatsApp Style Status Bar Synchronization
+        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+        window.statusBarColor = bg
+        val decorView = window.decorView
+        var flags = decorView.systemUiVisibility
+        if (!isDark) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else flags = flags and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+        decorView.systemUiVisibility = flags
+
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(waHeaderColor)
-            layoutParams = LinearLayout.LayoutParams(-1, 150)
-            setPadding(45, 0, 45, 0)
+            setBackgroundColor(bg)
+            layoutParams = LinearLayout.LayoutParams(-1, 160)
+            setPadding(50, 0, 50, 0)
             gravity = Gravity.CENTER_VERTICAL
-            elevation = 12f
+            elevation = 4f
         }
-        topBar.addView(txt("Temp Monitor", 20f, Color.WHITE, true).apply { 
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f) 
-        })
+        val waTitleColor = if (isDark) Color.WHITE else Color.parseColor("#008069")
+        topBar.addView(txt("Temp Monitor", 22f, waTitleColor, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
         
         val trackerBtn = Button(this).apply {
-            text = "Tracker"
-            textSize = 11f
-            setTextColor(Color.WHITE)
-            isAllCaps = false
+            text = "Tracker"; textSize = 11f; isAllCaps = false
+            setTextColor(if (isDark) Color.WHITE else Color.parseColor("#008069"))
             background = GradientDrawable().apply { 
                 cornerRadius = 60f
-                setColor(Color.parseColor("#33FFFFFF")) 
-                setStroke(2, Color.parseColor("#4DFFFFFF"))
+                setColor(if (isDark) Color.parseColor("#33FFFFFF") else Color.parseColor("#1A008069")) 
             }
             setPadding(35, 0, 35, 0)
             layoutParams = LinearLayout.LayoutParams(-2, 85)
@@ -451,7 +470,7 @@ class MainActivity : Activity() {
 
     private fun buildTab1(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
-        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
+        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F6")
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
         val c1 = card(cBg)
@@ -473,21 +492,28 @@ class MainActivity : Activity() {
         detailTempText = txt("--°C", 38f, Color.parseColor("#FF3B30"), true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         detailRow.addView(detailTempText)
 
-        val infoCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 2.5f) }
+        val infoCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 3f) }
         detailTimeText = txt("Tap chart to inspect", 12f, tPri, true); infoCol.addView(detailTimeText)
+        
+        detailBadgesText = txt("", 12f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { setSingleLine(true) }
+        infoCol.addView(detailBadgesText)
+        
         detailAppContent = txt("Awaiting selection...", 11f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { setPadding(0, 8, 0, 0) }
         infoCol.addView(detailAppContent)
+        
         detailRow.addView(infoCol)
         c1.addView(detailRow)
         lay.addView(c1)
 
+        // Clean Icon Matrix Fix
         chartView.onRecordSelected = { r ->
             val time = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))
             val screenIcon = if (r.screenOn) "🔆 On" else "🌙 Off"
             val powerIcon = if (r.isCharging) "⚡ Chg" else "🔋 Dis"
             val traceIcon = if (r.isRoot) "🛡️ Root" else "📱 User"
 
-            detailTimeText.text = "$time\n$screenIcon  •  $powerIcon  •  $traceIcon"
+            detailTimeText.text = time
+            detailBadgesText.text = "$screenIcon  •  $powerIcon  •  $traceIcon"
             detailTempText.text = "${r.temp}°C"
 
             detailAppContent.text = r.appDetails.lines().joinToString("\n") { line ->
@@ -499,7 +525,7 @@ class MainActivity : Activity() {
         }
 
         val c3 = card(cBg) { showModal("PMIC Safety Engine", "Cut Off (🛑): Breaks circuit when limit is reached.\nResume (🔄): Restores circuit when cooled.") }
-        c3.addView(txt("🛡️ HARDWARE PROTECTION", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
+        c3.addView(txt("🛡️️ HARDWARE PROTECTION", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
 
         warnLabel = txt("🔔 Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
         warnS = SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -534,7 +560,7 @@ class MainActivity : Activity() {
 
     private fun buildTab2(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
-        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
+        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F6")
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
         val c1 = card(cBg)
@@ -570,7 +596,7 @@ class MainActivity : Activity() {
 
     private fun buildTab3(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
-        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
+        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F6")
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
         val rCard = card(cBg) { showRamDetailsModal() }
@@ -625,7 +651,7 @@ class MainActivity : Activity() {
 
     private fun buildTab4(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
-        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.WHITE
+        val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F6")
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
         val c1 = card(cBg)
@@ -642,7 +668,7 @@ class MainActivity : Activity() {
                     } catch (e: Exception) { AppLogger.log("Refresh Rate Shell Error: ${e.message}") }
                 }
                 Toast.makeText(this@MainActivity, "Forced ${r}Hz (Lock/Unlock screen to apply)", Toast.LENGTH_SHORT).show()
-                uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 1500)
+                uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 2000)
             }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } }
         }
         refreshRateButtons.forEach { rrRow.addView(it) }
