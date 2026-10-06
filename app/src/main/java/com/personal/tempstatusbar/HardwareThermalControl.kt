@@ -10,9 +10,6 @@ import android.os.Vibrator
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 data class RamProc(val name: String, val sizeMb: Int, val pid: Int)
 data class ProcessData(val pid: Int, val name: String, val cpu: String)
@@ -36,20 +33,11 @@ object HardwareThermalControl {
         isRootAvailable()
     }
 
-    private fun logDebugTrace(action: String, cmd: String, exitCode: Int, stdout: String, stderr: String) {
-        try {
-            val cacheDir = appContext?.cacheDir
-            if (cacheDir != null) {
-                val logFile = File(cacheDir, "HardwareShield_Log.txt")
-                val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
-                val logMessage = "[$time] ACTION: $action\nCMD: $cmd\nEXIT_CODE: $exitCode\nSTDOUT: ${stdout.ifEmpty { "None" }}\nSTDERR: ${stderr.ifEmpty { "None" }}\n---------------------------\n"
-                logFile.appendText(logMessage)
-            }
-        } catch (e: Exception) {}
-    }
-
     fun executeRootCommand(action: String, command: String): Boolean {
-        if (!isRootAvailable()) return false
+        if (!isRootAvailable()) {
+            AppLogger.log("KERNEL DENIED: Root not available for [$action]")
+            return false
+        }
         var exitCode = -1
         var stdout = ""
         var stderr = ""
@@ -58,16 +46,27 @@ object HardwareThermalControl {
             stdout = process.inputStream.bufferedReader().readText().trim()
             stderr = process.errorStream.bufferedReader().readText().trim()
             exitCode = process.waitFor()
-            logDebugTrace(action, command, exitCode, stdout, stderr)
+            
+            AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode | OUT: ${stdout.take(40)} | ERR: ${stderr.take(40)}")
             return exitCode == 0
         } catch (e: Exception) {
-            logDebugTrace(action, command, -1, "", e.message ?: "CRASH: Execution Error")
+            AppLogger.log("KERNEL CRASH during [$action]: ${e.message}")
             return false
         }
     }
 
+    fun forceRefreshRate(hz: Int) {
+        val cmd = "settings put system peak_refresh_rate $hz; " +
+                  "settings put system min_refresh_rate $hz; " +
+                  "settings put system user_refresh_rate $hz; " +
+                  "settings put secure miui_refresh_rate $hz; " +
+                  "settings put system miui_refresh_rate $hz; " +
+                  "service call SurfaceFlinger 1035 i32 $hz"
+        executeRootCommand("Force Display Refresh to ${hz}Hz", cmd)
+    }
+
     fun getHardwareInfo(): String {
-        val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(Locale.getDefault())
+        val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(java.util.Locale.getDefault())
         return when {
             soc.contains("SM8250") -> "Snapdragon 870"
             soc.contains("SM8350") -> "Snapdragon 888"
