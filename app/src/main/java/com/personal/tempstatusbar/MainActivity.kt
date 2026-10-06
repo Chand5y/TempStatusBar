@@ -311,6 +311,7 @@ class MainActivity : Activity() {
                     val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,15,0,15); gravity=Gravity.CENTER_VERTICAL }
                     row.addView(txt("${p.name}\n${p.sizeMb} MB", 12f, Color.WHITE).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
                     row.addView(createBtn("KILL", Color.parseColor("#D32F2F")) {
+                        haptic(this@MainActivity)
                         AppLogger.log("Killed RAM Process: ${p.name}")
                         HardwareThermalControl.killProcess(p.pid)
                         list.removeView(row)
@@ -345,12 +346,36 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
 
+        // WhatsApp Style Top Header
+        val waHeaderColor = if (isDark) Color.parseColor("#202C33") else Color.parseColor("#008069")
         val topBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(if (isDark) Color.parseColor("#121212") else Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(-1, 160); setPadding(50, 0, 50, 0); gravity = Gravity.CENTER_VERTICAL; elevation = 8f
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(waHeaderColor)
+            layoutParams = LinearLayout.LayoutParams(-1, 150)
+            setPadding(45, 0, 45, 0)
+            gravity = Gravity.CENTER_VERTICAL
+            elevation = 12f
         }
-        topBar.addView(txt("Temp Monitor", 22f, if (isDark) Color.WHITE else Color.BLACK, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
-        topBar.addView(createBtn("TRACKER", Color.parseColor("#4CAF50")) { showTrackerModal() })
+        topBar.addView(txt("Temp Monitor", 20f, Color.WHITE, true).apply { 
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f) 
+        })
+        
+        // WhatsApp style compact translucent Tracker pill
+        val trackerBtn = Button(this).apply {
+            text = "Tracker"
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            background = GradientDrawable().apply { 
+                cornerRadius = 60f
+                setColor(Color.parseColor("#33FFFFFF")) 
+                setStroke(2, Color.parseColor("#4DFFFFFF"))
+            }
+            setPadding(35, 0, 35, 0)
+            layoutParams = LinearLayout.LayoutParams(-2, 85)
+            setOnClickListener { haptic(it); showTrackerModal() }
+        }
+        topBar.addView(trackerBtn)
         root.addView(topBar)
 
         contentFrame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
@@ -458,6 +483,7 @@ class MainActivity : Activity() {
         c1.addView(detailRow)
         lay.addView(c1)
 
+        // Clean Icon Matrix Fix
         chartView.onRecordSelected = { r ->
             val time = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))
             val screenIcon = if (r.screenOn) "🔆 On" else "🌙 Off"
@@ -632,7 +658,7 @@ class MainActivity : Activity() {
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
             setOnCheckedChangeListener { v, c -> haptic(v); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
         })
-        c2.addView(txt("Tap pill to toggle Recording (🔴). Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
+        c2.addView(txt("Tap pill to toggle Recording. Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
         c2.addView(createBtn("LAUNCH FPS OVERLAY", Color.parseColor("#2196F3")) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
