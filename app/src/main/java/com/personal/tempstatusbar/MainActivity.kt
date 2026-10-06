@@ -70,7 +70,6 @@ class BatteryGraphicView(context: Context) : View(context) {
     }
 }
 
-// Interactive Dual-Axis FPS & Thermal Chart
 class FpsChartView(context: Context) : View(context) {
     private var activeSession: FpsSession? = null
     var onScrub: ((Int, Int) -> Unit)? = null
@@ -459,7 +458,6 @@ class MainActivity : Activity() {
         c1.addView(detailRow)
         lay.addView(c1)
 
-        // Clean Icon Matrix Fix
         chartView.onRecordSelected = { r ->
             val time = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))
             val screenIcon = if (r.screenOn) "🔆 On" else "🌙 Off"
@@ -613,7 +611,13 @@ class MainActivity : Activity() {
         
         refreshRateButtons = listOf(60, 90, 120).map { r ->
             createBtn("${r}Hz", Color.parseColor("#333333")) {
-                thread { Runtime.getRuntime().exec(arrayOf("su", "-c", "settings put system peak_refresh_rate $r; settings put system user_refresh_rate $r; settings put secure miui_refresh_rate $r")) }
+                AppLogger.log("Requested Refresh Rate: ${r}Hz")
+                thread { 
+                    try {
+                        val cmd = "settings put system peak_refresh_rate $r; settings put system min_refresh_rate $r; settings put system user_refresh_rate $r; settings put secure miui_refresh_rate $r; settings put system miui_refresh_rate $r; service call SurfaceFlinger 1035 i32 $r"
+                        Runtime.getRuntime().exec(arrayOf("su", "-c", cmd)).waitFor() 
+                    } catch (e: Exception) { AppLogger.log("Refresh Rate Shell Error: ${e.message}") }
+                }
                 Toast.makeText(this@MainActivity, "Forced ${r}Hz (Lock/Unlock screen to apply)", Toast.LENGTH_SHORT).show()
                 uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 2000)
             }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } }
