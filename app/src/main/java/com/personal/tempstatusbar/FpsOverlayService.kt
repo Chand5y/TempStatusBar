@@ -15,7 +15,10 @@ import java.io.InputStreamReader
 import kotlin.concurrent.thread
 
 class FpsOverlayService : Service() {
-    companion object { var isRunning = false }
+    companion object { 
+        var isRunning = false 
+        private var activeOverlay: View? = null // Singleton tracker to prevent multiple pills
+    }
 
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: TextView
@@ -36,17 +39,17 @@ class FpsOverlayService : Service() {
         dbHelper = DatabaseHelper(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        // Create the view first
+        // INSTANTLY KILL ANY GHOST PILLS FROM PREVIOUS CRASHES
+        activeOverlay?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
+
         overlayView = TextView(this).apply {
-            text = "INIT..."
+            text = "TAP TO START"
             setTextColor(Color.WHITE)
             textSize = 13f
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding(40, 20, 40, 20)
+            setPadding(45, 18, 45, 18)
         }
-        
-        // Apply the style ONLY AFTER the view is fully initialized to prevent lateinit crash
         updatePillStyle(false)
 
         val params = WindowManager.LayoutParams(
@@ -61,6 +64,7 @@ class FpsOverlayService : Service() {
 
         setupTouchListener(params)
         windowManager.addView(overlayView, params)
+        activeOverlay = overlayView
         
         startHardwarePoller()
     }
@@ -69,12 +73,11 @@ class FpsOverlayService : Service() {
         overlayView.background = GradientDrawable().apply {
             cornerRadius = 100f
             if (recording) {
-                setColor(Color.parseColor("#E6D32F2F"))
-                setStroke(3, Color.parseColor("#FF5252"))
+                setColor(Color.parseColor("#E6E53935")) // Reddish background
             } else {
-                setColor(Color.parseColor("#E61C1C1E"))
-                setStroke(3, Color.parseColor("#55FFFFFF"))
+                setColor(Color.parseColor("#E643A047")) // Light Greenish background
             }
+            setStroke(3, Color.parseColor("#4DFFFFFF"))
         }
     }
 
@@ -87,6 +90,10 @@ class FpsOverlayService : Service() {
             if (!isMoved) {
                 overlayView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                 if (isRecording) endAndSaveSession()
+                
+                // Forcibly destroy the view on long press
+                activeOverlay?.let { try { windowManager.removeView(it) } catch(e:Exception){} }
+                activeOverlay = null
                 stopSelf()
             }
         }
@@ -181,8 +188,7 @@ class FpsOverlayService : Service() {
                         if (isServiceActive) {
                             val f = fpsRaw ?: "--"
                             val t = tempRaw ?: "--"
-                            val recIndicator = if (isRecording) "🔴 " else ""
-                            overlayView.text = if (showTemp) "$recIndicator$f FPS | $t°C" else "$recIndicator$f FPS"
+                            overlayView.text = if (showTemp) "$f FPS | $t°C" else "$f FPS"
                         }
                     }
                 } catch (e: Exception) {
@@ -215,5 +221,7 @@ class FpsOverlayService : Service() {
         super.onDestroy()
         isServiceActive = false
         isRunning = false
+        activeOverlay?.let { try { windowManager.removeView(it) } catch(e:Exception){} }
+        activeOverlay = null
     }
 }
