@@ -12,7 +12,14 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.Shader
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.*
 import android.provider.Settings
@@ -28,6 +35,301 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.thread
 import kotlin.math.abs
+
+class BatteryGraphicView(context: Context) : View(context) {
+    var level = 0
+    var isCharging = false
+    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; style = Paint.Style.STROKE; strokeWidth = 6f; strokeCap = Paint.Cap.ROUND }
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+
+    fun update(newLevel: Int, charging: Boolean) {
+        level = newLevel; isCharging = charging
+        fillPaint.color = when {
+            isCharging -> Color.parseColor("#00E676")
+            level > 50 -> Color.parseColor("#4CAF50")
+            level > 30 -> Color.parseColor("#FFD600")
+            level > 20 -> Color.parseColor("#FF9800")
+            else -> Color.parseColor("#F44336")
+        }
+        invalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val pad = 10f; val bw = width - 30f; val bh = height - 20f
+        canvas.drawRoundRect(pad, pad, bw, pad + bh, 15f, 15f, outlinePaint)
+        canvas.drawRoundRect(bw, pad + (bh/3f), bw + 15f, pad + (bh*2f/3f), 5f, 5f, fillPaint)
+        val fillWidth = (bw - pad - 10f) * (level / 100f)
+        if (fillWidth > 0) canvas.drawRoundRect(pad + 5f, pad + 5f, pad + 5f + fillWidth, pad + bh - 5f, 10f, 10f, fillPaint)
+        if (isCharging) {
+            val bolt = Path(); val cx = bw / 2f; val cy = height / 2f
+            bolt.moveTo(cx + 10f, cy - 20f); bolt.lineTo(cx - 10f, cy + 5f)
+            bolt.lineTo(cx + 5f, cy + 5f); bolt.lineTo(cx - 10f, cy + 25f)
+            bolt.lineTo(cx + 15f, cy); bolt.lineTo(cx, cy); bolt.close()
+            canvas.drawPath(bolt, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL })
+        }
+    }
+}
+
+class TemperatureChartView(context: Context) : View(context) {
+    private var records: List<TempRecord> = emptyList()
+    var onRecordSelected: ((TempRecord) -> Unit)? = null
+    var isDarkMode = true
+    private var scrubIndex = -1
+
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        strokeWidth = 6f
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.5f; style = Paint.Style.STROKE }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
+    
+    private val scrubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { 
+        color = Color.parseColor("#2196F3") 
+        strokeWidth = 4f 
+        style = Paint.Style.STROKE 
+        pathEffect = DashPathEffect(floatArrayOf(15f, 10f), 0f)
+    }
+    private val scrubDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Color.parseColor("#00E5FF") }
+
+    fun setData(data: List<TempRecord>) {
+        records = data; scrubIndex = -1; invalidate()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        parent?.requestDisallowInterceptTouchEvent(true)
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val w = width.toFloat(); val h = height.toFloat()
+        if (w <= 0 || h <= 0 || records.isEmpty()) return
+
+        val padL = 70f; val padR = 40f; val padT = 30f; val padB = 40f
+        val plotW = w - padL - padR; val plotH = h - padT - padB
+
+        val minTemp = 25f
+        val maxTemp = 45f
+        val tempRange = maxTemp - minTemp
+
+        gridPaint.color = if (isDarkMode) Color.parseColor("#2C2C2E") else Color.parseColor("#E5E5EA")
+        textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
+        textPaint.textAlign = Paint.Align.RIGHT
+
+        listOf(25, 30, 35, 40, 45).forEach { lvl ->
+            val y = padT + plotH - (((lvl - minTemp) / tempRange) * plotH)
+            if (y in padT..padT+plotH) {
+                canvas.drawLine(padL, y, w - padR, y, gridPaint)
+                canvas.drawText("${lvl}°", padL - 12f, y + 8f, textPaint)
+            }
+        }
+
+        // Dynamic Temperature Gradient: Green < 32, Yellow 32-34, Orange 35-39, Red 40+
+        val y40 = padT + plotH - (((40f - minTemp) / tempRange) * plotH)
+        val y35 = padT + plotH - (((35f - minTemp) / tempRange) * plotH)
+        val y32 = padT + plotH - (((32f - minTemp) / tempRange) * plotH)
+
+        val p40 = (y40 / h).coerceIn(0f, 1f)
+        val p35 = (y35 / h).coerceIn(0f, 1f)
+        val p32 = (y32 / h).coerceIn(0f, 1f)
+
+        linePaint.shader = LinearGradient(
+            0f, 0f, 0f, h,
+            intArrayOf(Color.parseColor("#F44336"), Color.parseColor("#FF9800"), Color.parseColor("#FFEB3B"), Color.parseColor("#4CAF50")),
+            floatArrayOf(p40, p35, p32, 1f),
+            Shader.TileMode.CLAMP
+        )
+
+        val path = Path()
+        val fillPath = Path()
+        val stepX = plotW / (records.size - 1).coerceAtLeast(1).toFloat()
+
+        for (i in records.indices) {
+            val x = padL + i * stepX
+            val y = padT + plotH - (((records[i].temp - minTemp).coerceIn(0f, tempRange) / tempRange) * plotH)
+            
+            if (i == 0) { 
+                path.moveTo(x, y)
+                fillPath.moveTo(x, padT + plotH)
+                fillPath.lineTo(x, y)
+            } else { 
+                path.lineTo(x, y)
+                fillPath.lineTo(x, y)
+            }
+        }
+
+        fillPath.lineTo(padL + (records.size - 1) * stepX, padT + plotH); fillPath.close()
+        fillPaint.shader = LinearGradient(0f, padT, 0f, padT + plotH, Color.parseColor("#33FF9800"), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        
+        val bgPaint = Paint().apply { style = Paint.Style.FILL }
+        for (i in 0 until records.size - 1) {
+            if (!records[i].screenOn) {
+                bgPaint.color = if (isDarkMode) Color.parseColor("#1AFFFFFF") else Color.parseColor("#0D000000")
+                canvas.drawRect(padL + i * stepX, padT, padL + (i + 1) * stepX, padT + plotH, bgPaint)
+            }
+        }
+
+        canvas.drawPath(fillPath, fillPaint)
+        canvas.drawPath(path, linePaint)
+
+        if (scrubIndex in records.indices) {
+            val x = padL + scrubIndex * stepX
+            canvas.drawLine(x, padT, x, padT + plotH, scrubPaint)
+            val y = padT + plotH - (((records[scrubIndex].temp - minTemp).coerceIn(0f, tempRange) / tempRange) * plotH)
+            canvas.drawCircle(x, y, 10f, scrubDotPaint)
+        }
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (records.isEmpty()) return false
+        when (event.action) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                val padL = 70f; val plotW = width.toFloat() - padL - 40f
+                val stepX = plotW / (records.size - 1).coerceAtLeast(1).toFloat()
+                val idx = ((event.x - padL) / stepX).toInt().coerceIn(0, records.size - 1)
+                
+                if (idx != scrubIndex) {
+                    scrubIndex = idx
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    onRecordSelected?.invoke(records[idx])
+                    invalidate()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+}
+
+class FpsChartView(context: Context) : View(context) {
+    private var activeSession: FpsSession? = null
+    var onScrub: ((Int, Int) -> Unit)? = null
+    var isDarkMode = true
+    private var scrubIndex = -1
+
+    private val fpsLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#00E676"); strokeWidth = 5f; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val tempLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FF9800"); strokeWidth = 6f; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.5f; style = Paint.Style.STROKE }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
+    
+    private val scrubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { 
+        color = Color.parseColor("#FF3B30") 
+        strokeWidth = 4f 
+        style = Paint.Style.STROKE 
+    }
+    private val scrubDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Color.WHITE }
+
+    fun setSession(session: FpsSession?) {
+        activeSession = session; scrubIndex = -1; invalidate()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        parent?.requestDisallowInterceptTouchEvent(true)
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val w = width.toFloat(); val h = height.toFloat()
+        if (w <= 0 || h <= 0) return
+
+        val s = activeSession
+        if (s == null) {
+            textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
+            textPaint.textAlign = Paint.Align.CENTER
+            canvas.drawText("No FPS recording session selected.", w / 2f, h / 2f, textPaint)
+            return
+        }
+
+        val fpsPoints = s.fpsSamples.split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it in 1..240 }
+        val tempPoints = s.tempSamples.split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it in 20..60 }
+        if (fpsPoints.isEmpty()) return
+
+        val padL = 70f; val padR = 40f; val padT = 30f; val padB = 40f
+        val plotW = w - padL - padR; val plotH = h - padT - padB
+
+        val maxFpsScale = 120f
+        gridPaint.color = if (isDarkMode) Color.parseColor("#2C2C2E") else Color.parseColor("#E5E5EA")
+        textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
+        textPaint.textAlign = Paint.Align.RIGHT
+
+        listOf(30, 60, 90, 120).forEach { lvl ->
+            val y = padT + plotH - ((lvl / maxFpsScale) * plotH)
+            canvas.drawLine(padL, y, w - padR, y, gridPaint)
+            canvas.drawText("${lvl}", padL - 12f, y + 8f, textPaint)
+        }
+
+        val fpsPath = Path(); val fpsFill = Path()
+        val tempPath = Path()
+        val stepX = plotW / (fpsPoints.size - 1).coerceAtLeast(1).toFloat()
+
+        for (i in fpsPoints.indices) {
+            val x = padL + i * stepX
+            val yFps = padT + plotH - ((fpsPoints[i].coerceIn(0, 120) / maxFpsScale) * plotH)
+            if (i == 0) { fpsPath.moveTo(x, yFps); fpsFill.moveTo(x, padT + plotH); fpsFill.lineTo(x, yFps) } else { fpsPath.lineTo(x, yFps); fpsFill.lineTo(x, yFps) }
+            
+            if (i < tempPoints.size) {
+                val yTemp = padT + plotH - (((tempPoints[i] - 30f) / 20f).coerceIn(0f, 1f) * plotH)
+                if (i == 0) tempPath.moveTo(x, yTemp) else tempPath.lineTo(x, yTemp)
+            }
+        }
+        
+        fpsFill.lineTo(padL + (fpsPoints.size - 1) * stepX, padT + plotH); fpsFill.close()
+        fillPaint.shader = LinearGradient(0f, padT, 0f, padT + plotH, Color.parseColor("#5500E676"), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        canvas.drawPath(fpsFill, fillPaint)
+        canvas.drawPath(fpsPath, fpsLinePaint)
+        if (tempPoints.isNotEmpty()) canvas.drawPath(tempPath, tempLinePaint)
+
+        if (scrubIndex in fpsPoints.indices) {
+            val x = padL + scrubIndex * stepX
+            canvas.drawLine(x, padT, x, padT + plotH, scrubPaint)
+            val yFps = padT + plotH - ((fpsPoints[scrubIndex].coerceIn(0, 120) / maxFpsScale) * plotH)
+            canvas.drawCircle(x, yFps, 8f, scrubDotPaint)
+            if (scrubIndex < tempPoints.size) {
+                val yTemp = padT + plotH - (((tempPoints[scrubIndex] - 30f) / 20f).coerceIn(0f, 1f) * plotH)
+                canvas.drawCircle(x, yTemp, 8f, scrubDotPaint)
+            }
+        }
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val s = activeSession ?: return false
+        val fpsPoints = s.fpsSamples.split(",").mapNotNull { it.trim().toIntOrNull() }
+        if (fpsPoints.isEmpty()) return false
+
+        when (event.action) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                val padL = 70f; val plotW = width.toFloat() - padL - 40f
+                val stepX = plotW / (fpsPoints.size - 1).coerceAtLeast(1).toFloat()
+                val idx = ((event.x - padL) / stepX).toInt().coerceIn(0, fpsPoints.size - 1)
+                
+                if (idx != scrubIndex) {
+                    scrubIndex = idx
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    val tempPoints = s.tempSamples.split(",").mapNotNull { it.trim().toIntOrNull() }
+                    val tempVal = if (idx < tempPoints.size) tempPoints[idx] else s.avgTemp
+                    onScrub?.invoke(fpsPoints[idx], tempVal)
+                    invalidate()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+}
 
 class MainActivity : Activity() {
     private lateinit var dbHelper: DatabaseHelper
@@ -447,8 +749,8 @@ class MainActivity : Activity() {
             }
         }
 
-        val c3 = card(cBg) { showModal("PMIC Safety Engine", "Cut Off (🛑): Breaks circuit when limit is reached.\nResume (🔄): Restores circuit when cooled.") }
         val rootTag = if (!hasRoot) " (Root Required)" else ""
+        val c3 = card(cBg) { showModal("PMIC Safety Engine", "Cut Off (🛑): Breaks circuit when limit is reached.\nResume (🔄): Restores circuit when cooled.") }
         c3.addView(txt("🛡 HARDWARE PROTECTION$rootTag", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
 
         warnLabel = txt("🔔 Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
