@@ -83,7 +83,6 @@ class FpsChartView(context: Context) : View(context) {
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.5f; style = Paint.Style.STROKE }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
     
-    // Explicit, highly visible solid red scrub line
     private val scrubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { 
         color = Color.parseColor("#FF3B30") 
         strokeWidth = 4f 
@@ -93,6 +92,11 @@ class FpsChartView(context: Context) : View(context) {
 
     fun setSession(session: FpsSession?) {
         activeSession = session; scrubIndex = -1; invalidate()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        parent?.requestDisallowInterceptTouchEvent(true)
+        return super.dispatchTouchEvent(event)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -209,9 +213,12 @@ class MainActivity : Activity() {
     private lateinit var refreshRateButtons: List<Button>
     private lateinit var screenTimeText: TextView
     private lateinit var batteryEstText: TextView
+    
     private lateinit var warnS: SeekBar
     private lateinit var cutS: SeekBar
     private lateinit var resS: SeekBar
+    private lateinit var maxChargeS: SeekBar
+    private lateinit var resChargeS: SeekBar
 
     private lateinit var detailTimeText: TextView
     private lateinit var detailBadgesText: TextView
@@ -220,6 +227,8 @@ class MainActivity : Activity() {
     private lateinit var warnLabel: TextView
     private lateinit var cutoffLabel: TextView
     private lateinit var resumeLabel: TextView
+    private lateinit var maxChargeLabel: TextView
+    private lateinit var resChargeLabel: TextView
     private lateinit var batteryGraphic: BatteryGraphicView
     private lateinit var livePowerText: TextView
     private lateinit var currentLevelText: TextView
@@ -377,7 +386,6 @@ class MainActivity : Activity() {
             elevation = 4f
         }
         
-        // Exact Brand Orange Color requested for Title
         topBar.addView(txt("Temp Monitor", 22f, Color.parseColor("#FF9800"), true).apply { 
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f) 
         })
@@ -434,8 +442,7 @@ class MainActivity : Activity() {
 
     private var downX = 0f; private var downY = 0f
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        // Excludes scrollable areas from tab swiping mechanism
-        if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS))) return super.dispatchTouchEvent(ev)
+        if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS) || isTouchInside(ev, maxChargeS) || isTouchInside(ev, resChargeS))) return super.dispatchTouchEvent(ev)
         if (currentTabIndex == 3 && (isTouchInside(ev, fpsChartView) || isTouchInside(ev, fpsSessionHScroll))) return super.dispatchTouchEvent(ev)
         
         when (ev.action) {
@@ -491,7 +498,6 @@ class MainActivity : Activity() {
         chartView = TemperatureChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
         c1.addView(chartView)
 
-        // Time Range Filter via Long Press
         c1.setOnLongClickListener {
             haptic(it)
             val options = arrayOf("Last 24 Hours", "Last 48 Hours", "All Time")
@@ -507,7 +513,6 @@ class MainActivity : Activity() {
 
         val detailRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,25,0,0); gravity = Gravity.CENTER_VERTICAL }
         
-        // Single Line Temperature Size Fix
         detailTempText = txt("--°C", 26f, Color.parseColor("#FF3B30"), true).apply { 
             layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 30 }
             setSingleLine(true)
@@ -527,7 +532,6 @@ class MainActivity : Activity() {
         c1.addView(detailRow)
         lay.addView(c1)
 
-        // Clean Process String (No Emojis)
         chartView.onRecordSelected = { r ->
             val time = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))
             val screenIcon = if (r.screenOn) "🔆 On" else "🌙 Off"
@@ -602,6 +606,50 @@ class MainActivity : Activity() {
         batteryEstText = txt("Calculating based on live drain...", 18f, Color.parseColor("#00E676"), true)
         cEst.addView(batteryEstText); lay.addView(cEst)
 
+        // SMART CHARGE LIMITER CARD
+        val cLimiter = card(cBg) {
+            showModal("Smart Charge Limiter", "Preserve battery health by limiting the maximum charge level. The device will automatically disconnect power when it hits the limit and reconnect when it drops to the resume point.")
+        }
+        cLimiter.addView(txt("⚡ SMART CHARGE LIMITER", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
+
+        val swLimiter = Switch(this).apply { text = "Enable Charge Limiter"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.chargeLimitEnabled }
+        cLimiter.addView(swLimiter)
+
+        maxChargeLabel = txt("🛑 Cut Off Charging At: ${settings.chargeLimitMax}%", 14f, tPri).apply { setPadding(0,10,0,0) }
+        maxChargeS = SeekBar(this).apply { max = 50; progress = settings.chargeLimitMax - 50; setPadding(0,10,0,20) }
+        
+        resChargeLabel = txt("🔄 Resume Charging At: ${settings.chargeLimitResume}%", 14f, tPri).apply { setPadding(0,10,0,0) }
+        resChargeS = SeekBar(this).apply { max = 50; progress = settings.chargeLimitResume - 40; setPadding(0,10,0,10) }
+
+        maxChargeS.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
+            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
+                val v = 50 + p; settings.chargeLimitMax = v; maxChargeLabel.text = "🛑 Cut Off Charging At: $v%"
+                if (settings.chargeLimitResume >= v) {
+                    settings.chargeLimitResume = v - 1; resChargeS.progress = (v - 1) - 40
+                    resChargeLabel.text = "🔄 Resume Charging At: ${v - 1}%"
+                }
+            }
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) { s?.let{haptic(it)} }
+        })
+
+        resChargeS.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
+            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
+                var v = 40 + p
+                if (v >= settings.chargeLimitMax) { v = settings.chargeLimitMax - 1; progress = v - 40 }
+                settings.chargeLimitResume = v; resChargeLabel.text = "🔄 Resume Charging At: $v%"
+            }
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) { s?.let{haptic(it)} }
+        })
+
+        swLimiter.setOnCheckedChangeListener { v, c -> haptic(v); settings.chargeLimitEnabled = c; maxChargeS.isEnabled = c; resChargeS.isEnabled = c }
+        maxChargeS.isEnabled = settings.chargeLimitEnabled; resChargeS.isEnabled = settings.chargeLimitEnabled
+
+        cLimiter.addView(maxChargeLabel); cLimiter.addView(maxChargeS)
+        cLimiter.addView(resChargeLabel); cLimiter.addView(resChargeS)
+        lay.addView(cLimiter)
+
         val c3 = card(cBg) {
             try {
                 val h = BatteryHealthHelper.getHealthData(this@MainActivity)
@@ -641,7 +689,6 @@ class MainActivity : Activity() {
         })
         lay.addView(sgCard)
 
-        // Core Interaction with Logger
         val cCard = card(cBg)
         val cCardHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0,0,0,20) }
         cCardHeader.addView(txt("CPU ARCHITECTURE MAP (LONG-PRESS)", 11f, Color.GRAY).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
@@ -697,24 +744,10 @@ class MainActivity : Activity() {
         c1.addView(txt("DISPLAY REFRESH RATE", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 20) })
         val rrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f }
         
-        // Multi-level HyperOS Refresh Rate Enforcer
         refreshRateButtons = listOf(60, 90, 120).map { r ->
             createBtn("${r}Hz", Color.parseColor("#333333")) {
-                AppLogger.log("Requested Display Refresh Rate: ${r}Hz")
-                thread { 
-                    try {
-                        val cmd = "settings put system peak_refresh_rate $r; " +
-                                  "settings put system min_refresh_rate $r; " +
-                                  "settings put system user_refresh_rate $r; " +
-                                  "settings put secure miui_refresh_rate $r; " +
-                                  "settings put system miui_refresh_rate $r; " +
-                                  "service call SurfaceFlinger 1035 i32 $r"
-                        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-                        process.waitFor()
-                        AppLogger.log("Refresh Rate Shell Code: ${process.exitValue()}")
-                    } catch (e: Exception) { AppLogger.log("Refresh Rate Shell Error: ${e.message}") }
-                }
-                Toast.makeText(this@MainActivity, "Forcing ${r}Hz", Toast.LENGTH_SHORT).show()
+                HardwareThermalControl.forceRefreshRate(r)
+                Toast.makeText(this@MainActivity, "Forced ${r}Hz", Toast.LENGTH_SHORT).show()
                 uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 1500)
             }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } }
         }
@@ -728,7 +761,7 @@ class MainActivity : Activity() {
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
             setOnCheckedChangeListener { v, c -> haptic(v); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
         })
-        c2.addView(txt("Tap pill to toggle Recording (🔴). Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
+        c2.addView(txt("Tap pill to toggle Recording. Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
         c2.addView(createBtn("LAUNCH FPS OVERLAY", Color.parseColor("#2196F3")) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
@@ -741,7 +774,6 @@ class MainActivity : Activity() {
         fpsChartView = FpsChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
         c3.addView(fpsChartView)
 
-        // Session Scroll Touch intercept fix
         fpsSessionHScroll = HorizontalScrollView(this).apply { 
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 20 } 
             isScrollContainer = false
@@ -851,7 +883,6 @@ class MainActivity : Activity() {
                         for (j in 0 until fpsSessionButtonContainer.childCount) { ((fpsSessionButtonContainer.getChildAt(j) as? LinearLayout)?.getChildAt(0) as? Button)?.background?.setTint(Color.parseColor("#333333")) }
                     }.apply { layoutParams = LinearLayout.LayoutParams(-2, -2).apply { setMargins(6,0,6,0) } }
                     
-                    // Delete FPS Session Fix
                     btn.setOnLongClickListener { v ->
                         haptic(v)
                         AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
