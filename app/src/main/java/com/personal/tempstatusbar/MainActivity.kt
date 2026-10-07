@@ -10,14 +10,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.content.res.Configuration
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.Shader
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.*
 import android.provider.Settings
@@ -29,170 +24,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.*
-import java.io.File
-import java.io.PrintWriter
-import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.thread
 import kotlin.math.abs
-
-class BatteryGraphicView(context: Context) : View(context) {
-    var level = 0
-    var isCharging = false
-    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; style = Paint.Style.STROKE; strokeWidth = 6f; strokeCap = Paint.Cap.ROUND }
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-
-    fun update(newLevel: Int, charging: Boolean) {
-        level = newLevel; isCharging = charging
-        fillPaint.color = when {
-            isCharging -> Color.parseColor("#00E676")
-            level > 50 -> Color.parseColor("#4CAF50")
-            level > 30 -> Color.parseColor("#FFD600")
-            level > 20 -> Color.parseColor("#FF9800")
-            else -> Color.parseColor("#F44336")
-        }
-        invalidate()
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val pad = 10f; val bw = width - 30f; val bh = height - 20f
-        canvas.drawRoundRect(pad, pad, bw, pad + bh, 15f, 15f, outlinePaint)
-        canvas.drawRoundRect(bw, pad + (bh/3f), bw + 15f, pad + (bh*2f/3f), 5f, 5f, fillPaint)
-        val fillWidth = (bw - pad - 10f) * (level / 100f)
-        if (fillWidth > 0) canvas.drawRoundRect(pad + 5f, pad + 5f, pad + 5f + fillWidth, pad + bh - 5f, 10f, 10f, fillPaint)
-        if (isCharging) {
-            val bolt = Path(); val cx = bw / 2f; val cy = height / 2f
-            bolt.moveTo(cx + 10f, cy - 20f); bolt.lineTo(cx - 10f, cy + 5f)
-            bolt.lineTo(cx + 5f, cy + 5f); bolt.lineTo(cx - 10f, cy + 25f)
-            bolt.lineTo(cx + 15f, cy); bolt.lineTo(cx, cy); bolt.close()
-            canvas.drawPath(bolt, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL })
-        }
-    }
-}
-
-class FpsChartView(context: Context) : View(context) {
-    private var activeSession: FpsSession? = null
-    var onScrub: ((Int, Int) -> Unit)? = null
-    var isDarkMode = true
-    private var scrubIndex = -1
-
-    private val fpsLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#00E676"); strokeWidth = 5f; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
-    private val tempLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FF9800"); strokeWidth = 6f; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.5f; style = Paint.Style.STROKE }
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
-    
-    private val scrubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { 
-        color = Color.parseColor("#FF3B30") 
-        strokeWidth = 4f 
-        style = Paint.Style.STROKE 
-    }
-    private val scrubDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Color.WHITE }
-
-    fun setSession(session: FpsSession?) {
-        activeSession = session; scrubIndex = -1; invalidate()
-    }
-
-    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        parent?.requestDisallowInterceptTouchEvent(true)
-        return super.dispatchTouchEvent(event)
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val w = width.toFloat(); val h = height.toFloat()
-        if (w <= 0 || h <= 0) return
-
-        val s = activeSession
-        if (s == null) {
-            textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
-            textPaint.textAlign = Paint.Align.CENTER
-            canvas.drawText("No FPS recording session selected.", w / 2f, h / 2f, textPaint)
-            return
-        }
-
-        val fpsPoints = s.fpsSamples.split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it in 1..240 }
-        val tempPoints = s.tempSamples.split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it in 20..60 }
-        if (fpsPoints.isEmpty()) return
-
-        val padL = 70f; val padR = 40f; val padT = 30f; val padB = 40f
-        val plotW = w - padL - padR; val plotH = h - padT - padB
-
-        val maxFpsScale = 120f
-        gridPaint.color = if (isDarkMode) Color.parseColor("#2C2C2E") else Color.parseColor("#E5E5EA")
-        textPaint.color = if (isDarkMode) Color.parseColor("#8E8E93") else Color.parseColor("#98989D")
-        textPaint.textAlign = Paint.Align.RIGHT
-
-        listOf(30, 60, 90, 120).forEach { lvl ->
-            val y = padT + plotH - ((lvl / maxFpsScale) * plotH)
-            canvas.drawLine(padL, y, w - padR, y, gridPaint)
-            canvas.drawText("${lvl}", padL - 12f, y + 8f, textPaint)
-        }
-
-        val fpsPath = Path(); val fpsFill = Path()
-        val tempPath = Path()
-        val stepX = plotW / (fpsPoints.size - 1).coerceAtLeast(1).toFloat()
-
-        for (i in fpsPoints.indices) {
-            val x = padL + i * stepX
-            val yFps = padT + plotH - ((fpsPoints[i].coerceIn(0, 120) / maxFpsScale) * plotH)
-            if (i == 0) { fpsPath.moveTo(x, yFps); fpsFill.moveTo(x, padT + plotH); fpsFill.lineTo(x, yFps) } else { fpsPath.lineTo(x, yFps); fpsFill.lineTo(x, yFps) }
-            
-            if (i < tempPoints.size) {
-                val yTemp = padT + plotH - (((tempPoints[i] - 30f) / 20f).coerceIn(0f, 1f) * plotH)
-                if (i == 0) tempPath.moveTo(x, yTemp) else tempPath.lineTo(x, yTemp)
-            }
-        }
-        
-        fpsFill.lineTo(padL + (fpsPoints.size - 1) * stepX, padT + plotH); fpsFill.close()
-        fillPaint.shader = LinearGradient(0f, padT, 0f, padT + plotH, Color.parseColor("#5500E676"), Color.TRANSPARENT, Shader.TileMode.CLAMP)
-        canvas.drawPath(fpsFill, fillPaint)
-        canvas.drawPath(fpsPath, fpsLinePaint)
-        if (tempPoints.isNotEmpty()) canvas.drawPath(tempPath, tempLinePaint)
-
-        if (scrubIndex in fpsPoints.indices) {
-            val x = padL + scrubIndex * stepX
-            canvas.drawLine(x, padT, x, padT + plotH, scrubPaint)
-            val yFps = padT + plotH - ((fpsPoints[scrubIndex].coerceIn(0, 120) / maxFpsScale) * plotH)
-            canvas.drawCircle(x, yFps, 8f, scrubDotPaint)
-            if (scrubIndex < tempPoints.size) {
-                val yTemp = padT + plotH - (((tempPoints[scrubIndex] - 30f) / 20f).coerceIn(0f, 1f) * plotH)
-                canvas.drawCircle(x, yTemp, 8f, scrubDotPaint)
-            }
-        }
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        val s = activeSession ?: return false
-        val fpsPoints = s.fpsSamples.split(",").mapNotNull { it.trim().toIntOrNull() }
-        if (fpsPoints.isEmpty()) return false
-
-        when (event.action) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                parent?.requestDisallowInterceptTouchEvent(true)
-                val padL = 70f; val plotW = width.toFloat() - padL - 40f
-                val stepX = plotW / (fpsPoints.size - 1).coerceAtLeast(1).toFloat()
-                val idx = ((event.x - padL) / stepX).toInt().coerceIn(0, fpsPoints.size - 1)
-                
-                if (idx != scrubIndex) {
-                    scrubIndex = idx
-                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    val tempPoints = s.tempSamples.split(",").mapNotNull { it.trim().toIntOrNull() }
-                    val tempVal = if (idx < tempPoints.size) tempPoints[idx] else s.avgTemp
-                    onScrub?.invoke(fpsPoints[idx], tempVal)
-                    invalidate()
-                }
-                return true
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                parent?.requestDisallowInterceptTouchEvent(false)
-            }
-        }
-        return super.onTouchEvent(event)
-    }
-}
 
 class MainActivity : Activity() {
     private lateinit var dbHelper: DatabaseHelper
@@ -206,7 +41,7 @@ class MainActivity : Activity() {
     private lateinit var tabButtons: List<TextView>
 
     private lateinit var chartView: TemperatureChartView
-    private var thermalTimeRangeMs = 86400000L // Default 24 Hours
+    private var thermalTimeRangeMs = 86400000L 
     private var thermalRangeLabel = "Last 24 Hours"
 
     private lateinit var fpsChartView: FpsChartView
@@ -249,9 +84,9 @@ class MainActivity : Activity() {
     private var isPaused = false
     private var isSmartGovernorEnabled = false
     
-    // Swipe tracking variables
     private var downX = 0f
     private var downY = 0f
+    private var hasRoot = false
 
     private val liveHardwarePoller = object : Runnable {
         override fun run() {
@@ -266,6 +101,7 @@ class MainActivity : Activity() {
 
         try {
             HardwareThermalControl.init(this)
+            hasRoot = HardwareThermalControl.isRootAvailable()
             dbHelper = DatabaseHelper(this)
             settings = SettingsManager(this)
             sharedPrefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
@@ -278,6 +114,17 @@ class MainActivity : Activity() {
             }
             startMonitorService()
         } catch (t: Throwable) { AppLogger.handleFatalCrash(t) }
+    }
+
+    private fun styleControl(view: View) {
+        val accentColor = ColorStateList.valueOf(Color.parseColor("#2196F3"))
+        if (view is SeekBar) {
+            view.progressTintList = accentColor
+            view.thumbTintList = accentColor
+        } else if (view is Switch) {
+            view.thumbTintList = accentColor
+            view.trackTintList = ColorStateList.valueOf(Color.parseColor("#90CAF9"))
+        }
     }
 
     private fun checkAndRequestUsageAccess() {
@@ -563,7 +410,7 @@ class MainActivity : Activity() {
 
         val detailRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,25,0,0); gravity = Gravity.CENTER_VERTICAL }
         
-        detailTempText = txt("--°C", 26f, Color.parseColor("#FF3B30"), true).apply { 
+        detailTempText = txt("--°C", 30f, Color.parseColor("#FF3B30"), true).apply { 
             layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 25 }
             setSingleLine(true)
         }
@@ -601,11 +448,13 @@ class MainActivity : Activity() {
         }
 
         val c3 = card(cBg) { showModal("PMIC Safety Engine", "Cut Off (🛑): Breaks circuit when limit is reached.\nResume (🔄): Restores circuit when cooled.") }
-        c3.addView(txt("🛡 HARDWARE PROTECTION", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
+        val rootTag = if (!hasRoot) " (Root Required)" else ""
+        c3.addView(txt("🛡 HARDWARE PROTECTION$rootTag", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
 
         warnLabel = txt("🔔 Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
         warnS = SeekBar(this).apply { 
             max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20)
+            styleControl(this)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
                     val v = 35 + p; settings.warningTemp = v; warnLabel.text = "🔔 Warning Sound Alert: $v°C"
@@ -620,6 +469,7 @@ class MainActivity : Activity() {
         cutoffLabel = txt("🛑 Cut Off Charging (PMIC): ${settings.cutoffTemp}°C", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(cutoffLabel)
         cutS = SeekBar(this).apply { 
             max = 12; progress = settings.cutoffTemp - 38; setPadding(0,10,0,20)
+            styleControl(this)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
                     val v = 38 + p; settings.cutoffTemp = v; cutoffLabel.text = "🛑 Cut Off Charging (PMIC): $v°C"
@@ -635,6 +485,7 @@ class MainActivity : Activity() {
         resumeLabel = txt("🔄 Resume Charging: ${settings.resumeTemp}°C", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(resumeLabel)
         resS = SeekBar(this).apply { 
             max = 13; progress = settings.resumeTemp - 32; setPadding(0,10,0,10)
+            styleControl(this)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
                     var v = 32 + p
@@ -647,11 +498,14 @@ class MainActivity : Activity() {
             })
         }
         c3.addView(resS); lay.addView(c3)
+        
+        if (!hasRoot) { warnS.isEnabled=false; cutS.isEnabled=false; resS.isEnabled=false; c3.alpha=0.4f }
 
         val c4 = card(cBg)
         c4.addView(txt("⚙️ NOTIFICATION PREFERENCES", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
-        c4.addView(Switch(this).apply { text = "📱 Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; setOnCheckedChangeListener { v, c -> haptic(v); settings.showNotification = c; startMonitorService() } })
-        c4.addView(Switch(this).apply { text = "⚡ Show Real-Time Wattage View"; setTextColor(tPri); isChecked = settings.showPowerMetrics; setOnCheckedChangeListener { v, c -> haptic(v); settings.showPowerMetrics = c; startMonitorService() } })
+        val s1 = Switch(this).apply { text = "📱 Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; styleControl(this); setOnCheckedChangeListener { v, c -> haptic(v); settings.showNotification = c; startMonitorService() } }
+        val s2 = Switch(this).apply { text = "⚡ Show Real-Time Wattage View"; setTextColor(tPri); isChecked = settings.showPowerMetrics; styleControl(this); setOnCheckedChangeListener { v, c -> haptic(v); settings.showPowerMetrics = c; startMonitorService() } }
+        c4.addView(s1); c4.addView(s2)
         lay.addView(c4)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
@@ -682,14 +536,16 @@ class MainActivity : Activity() {
         val cLimiter = card(cBg) {
             showModal("Smart Charge Limiter", "Preserve battery health by limiting the maximum charge level. The device will automatically disconnect power when it hits the limit and reconnect when it drops to the resume point.")
         }
-        cLimiter.addView(txt("⚡ SMART CHARGE LIMITER", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
+        val rootTag = if (!hasRoot) " (Root Required)" else ""
+        cLimiter.addView(txt("⚡ SMART CHARGE LIMITER$rootTag", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
 
-        val swLimiter = Switch(this).apply { text = "Enable Charge Limiter"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.chargeLimitEnabled }
+        val swLimiter = Switch(this).apply { text = "Enable Charge Limiter"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.chargeLimitEnabled; styleControl(this) }
         cLimiter.addView(swLimiter)
 
         maxChargeLabel = txt("🛑 Cut Off Charging At: ${settings.chargeLimitMax}%", 14f, tPri).apply { setPadding(0,10,0,0) }
         maxChargeS = SeekBar(this).apply { 
             max = 50; progress = settings.chargeLimitMax - 50; setPadding(0,10,0,20)
+            styleControl(this)
             setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
                     val v = 50 + p; settings.chargeLimitMax = v; maxChargeLabel.text = "🛑 Cut Off Charging At: $v%"
@@ -707,6 +563,7 @@ class MainActivity : Activity() {
         resChargeLabel = txt("🔄 Resume Charging At: ${settings.chargeLimitResume}%", 14f, tPri).apply { setPadding(0,10,0,0) }
         resChargeS = SeekBar(this).apply { 
             max = 50; progress = settings.chargeLimitResume - 40; setPadding(0,10,0,10)
+            styleControl(this)
             setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
                     var v = 40 + p
@@ -724,6 +581,8 @@ class MainActivity : Activity() {
 
         cLimiter.addView(maxChargeLabel); cLimiter.addView(maxChargeS)
         cLimiter.addView(resChargeLabel); cLimiter.addView(resChargeS)
+        
+        if (!hasRoot) { swLimiter.isEnabled=false; maxChargeS.isEnabled=false; resChargeS.isEnabled=false; cLimiter.alpha=0.4f }
         lay.addView(cLimiter)
 
         val c3 = card(cBg) {
@@ -745,7 +604,7 @@ class MainActivity : Activity() {
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F6")
         val tPri = if (isDark) Color.WHITE else Color.BLACK
 
-        val rCard = card(cBg) { showRamDetailsModal() }
+        val rCard = card(cBg) { if(hasRoot) showRamDetailsModal() else Toast.makeText(this,"Root Required", Toast.LENGTH_SHORT).show() }
         val hdRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         hdRow.addView(txt("SoC: ${HardwareThermalControl.getHardwareInfo()}", 14f, tPri, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
         gpuText = txt("GPU: --%", 14f, Color.parseColor("#00E5FF"), true); hdRow.addView(gpuText)
@@ -755,19 +614,24 @@ class MainActivity : Activity() {
         val ramRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         ramUsageText = txt("Loading...", 15f, tPri, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         ramRow.addView(ramUsageText)
-        ramRow.addView(createBtn("CLEAN RAM", Color.parseColor("#2196F3")) { HardwareThermalControl.clearRamCaches(); Toast.makeText(this@MainActivity, "Kernel RAM caches dropped.", Toast.LENGTH_SHORT).show() })
+        val cleanBtn = createBtn("CLEAN RAM", Color.parseColor("#2196F3")) { HardwareThermalControl.clearRamCaches(); Toast.makeText(this@MainActivity, "Kernel RAM caches dropped.", Toast.LENGTH_SHORT).show() }
+        if (!hasRoot) { cleanBtn.isEnabled=false; cleanBtn.alpha=0.5f }
+        ramRow.addView(cleanBtn)
         rCard.addView(ramRow); lay.addView(rCard)
 
+        val rootTag = if (!hasRoot) " (Root Required)" else ""
         val sgCard = card(cBg) { showModal("Smart Thermal Governor", "Throttles Prime Core (C7) and pins background apps to silver cores when Warning Temp is hit.") }
-        sgCard.addView(Switch(this).apply {
-            text = "Auto-Thermal Smart Governor"; setTextColor(tPri); isChecked = isSmartGovernorEnabled
+        val sgSwitch = Switch(this).apply {
+            text = "Auto-Thermal Smart Governor$rootTag"; setTextColor(tPri); isChecked = isSmartGovernorEnabled; styleControl(this)
             setOnCheckedChangeListener { v, c -> haptic(v); isSmartGovernorEnabled = c; sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply { putExtra("state", c); setPackage(packageName) }) }
-        })
+        }
+        if (!hasRoot) { sgSwitch.isEnabled=false; sgCard.alpha=0.4f }
+        sgCard.addView(sgSwitch)
         lay.addView(sgCard)
 
         val cCard = card(cBg)
         val cCardHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0,0,0,20) }
-        cCardHeader.addView(txt("CPU ARCHITECTURE MAP (LONG-PRESS)", 11f, Color.GRAY).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
+        cCardHeader.addView(txt("CPU ARCHITECTURE MAP$rootTag", 11f, Color.GRAY).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
         cCardHeader.addView(Button(this).apply {
             text = "ℹ️ INFO"; textSize = 10f; setTextColor(Color.GRAY); setBackgroundColor(Color.TRANSPARENT); setPadding(0,0,0,0)
             setOnClickListener { haptic(this); showModal("Core Map Instructions", "Long-press any core to forcefully toggle it ONLINE or OFFLINE in the kernel.\n\nNote: The Snapdragon 870 kernel instantly crashes if the Prime Core (C7) is offlined. Long-pressing C7 will THROTTLE its max frequency instead.\n\nAll actions are actively recorded in the Global Tracker log.") }
@@ -782,6 +646,7 @@ class MainActivity : Activity() {
             background = GradientDrawable().apply { cornerRadius = 30f; setColor(Color.DKGRAY) }
             setOnLongClickListener { v ->
                 haptic(v)
+                if (!hasRoot) { Toast.makeText(context, "Root Required", Toast.LENGTH_SHORT).show(); return@setOnLongClickListener true }
                 val success: Boolean
                 if (idx == 7) { 
                     val throttle = !text.toString().contains("THROTTLED")
@@ -801,11 +666,13 @@ class MainActivity : Activity() {
         val gldCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }; for(i in 4..6) { val b = coreBox(i); coreBlocks[i] = b; gldCol.addView(b) }
         val prmCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-1,1f) }; val c7 = coreBox(7); coreBlocks[7] = c7; prmCol.addView(c7)
         cpuArchitectureGrid.addView(silCol); cpuArchitectureGrid.addView(gldCol); cpuArchitectureGrid.addView(prmCol)
+        if (!hasRoot) cCard.alpha = 0.4f
         cCard.addView(cpuArchitectureGrid); lay.addView(cCard)
 
         val pCard = card(cBg)
-        pCard.addView(txt("LIVE CPU STRESS & TERMINATION", 12f, Color.GRAY).apply{setPadding(0,0,0,20)})
+        pCard.addView(txt("LIVE CPU STRESS & TERMINATION$rootTag", 12f, Color.GRAY).apply{setPadding(0,0,0,20)})
         processListContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutTransition = LayoutTransition() }
+        if (!hasRoot) pCard.alpha = 0.4f
         pCard.addView(processListContainer); lay.addView(pCard)
 
         return ScrollView(this).apply { addView(lay); isFillViewport = true }
@@ -815,9 +682,10 @@ class MainActivity : Activity() {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F6")
         val tPri = if (isDark) Color.WHITE else Color.BLACK
+        val rootTag = if (!hasRoot) " (Root Required)" else ""
 
         val c1 = card(cBg)
-        c1.addView(txt("DISPLAY REFRESH RATE", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 20) })
+        c1.addView(txt("DISPLAY REFRESH RATE$rootTag", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 20) })
         val rrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f }
         
         refreshRateButtons = listOf(60, 90, 120).map { r ->
@@ -825,18 +693,23 @@ class MainActivity : Activity() {
                 HardwareThermalControl.forceRefreshRate(r)
                 Toast.makeText(this@MainActivity, "Forcing ${r}Hz", Toast.LENGTH_SHORT).show()
                 uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 1500)
-            }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } }
+            }.apply { 
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } 
+                if (!hasRoot) isEnabled = false
+            }
         }
+        if (!hasRoot) c1.alpha = 0.4f
         refreshRateButtons.forEach { rrRow.addView(it) }
         c1.addView(rrRow); lay.addView(c1)
 
         val c2 = card(cBg)
         c2.addView(txt("LIVE FPS METRE OVERLAY", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 10) })
-        c2.addView(Switch(this).apply {
-            text = "Show Temperature on Pill"; setTextColor(tPri); setPadding(0,0,0,20)
+        val sFps = Switch(this).apply {
+            text = "Show Temperature on Pill"; setTextColor(tPri); setPadding(0,0,0,20); styleControl(this)
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
             setOnCheckedChangeListener { v, c -> haptic(v); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
-        })
+        }
+        c2.addView(sFps)
         c2.addView(txt("Tap pill to toggle Recording (🔴). Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
         c2.addView(createBtn("LAUNCH FPS OVERLAY", Color.parseColor("#2196F3")) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
@@ -877,6 +750,7 @@ class MainActivity : Activity() {
     }
 
     private fun updateActiveRefreshRateUI() {
+        if (!hasRoot) return
         try {
             val activeHz = Settings.System.getInt(contentResolver, "user_refresh_rate", 120)
             uiHandler.post {
@@ -1005,12 +879,12 @@ class MainActivity : Activity() {
                         }
                     }
                     processListContainer.removeAllViews()
-                    if (procs.isEmpty()) { processListContainer.addView(txt("Waiting for kernel data...", 13f, Color.GRAY)); return@post }
+                    if (procs.isEmpty()) { processListContainer.addView(txt(if(hasRoot)"Waiting for kernel data..." else "Requires Root", 13f, Color.GRAY)); return@post }
                     procs.forEach { p ->
                         val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 15, 0, 15); gravity = Gravity.CENTER_VERTICAL }
                         row.addView(txt("${p.name} — ${p.cpu}%", 12f, if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES) Color.WHITE else Color.BLACK).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 15 }; maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
-                        row.addView(createBtn("RESTRICT", Color.parseColor("#FF9800")) { HardwareThermalControl.pinProcessToEfficiencyCores(p.pid); Toast.makeText(this@MainActivity, "Pinned to Cores 0-3", Toast.LENGTH_SHORT).show() }.apply { layoutParams = LinearLayout.LayoutParams(-2, 80).apply { rightMargin = 15 } })
-                        row.addView(createBtn("KILL", Color.parseColor("#D32F2F")) { AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Terminate Process?").setMessage("Kill ${p.name}?").setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(p.pid); Toast.makeText(this@MainActivity, "Signal sent", Toast.LENGTH_SHORT).show() }.setNegativeButton("Cancel", null).show() }.apply { layoutParams = LinearLayout.LayoutParams(-2, 80) })
+                        row.addView(createBtn("RESTRICT", Color.parseColor("#FF9800")) { HardwareThermalControl.pinProcessToEfficiencyCores(p.pid); Toast.makeText(this@MainActivity, "Pinned to Cores 0-3", Toast.LENGTH_SHORT).show() }.apply { layoutParams = LinearLayout.LayoutParams(-2, 80).apply { rightMargin = 15 }; if(!hasRoot) isEnabled=false })
+                        row.addView(createBtn("KILL", Color.parseColor("#D32F2F")) { AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Terminate Process?").setMessage("Kill ${p.name}?").setPositiveButton("KILL") { _, _ -> HardwareThermalControl.killProcess(p.pid); Toast.makeText(this@MainActivity, "Signal sent", Toast.LENGTH_SHORT).show() }.setNegativeButton("Cancel", null).show() }.apply { layoutParams = LinearLayout.LayoutParams(-2, 80); if(!hasRoot) isEnabled=false })
                         processListContainer.addView(row)
                     }
                 }
