@@ -570,7 +570,7 @@ class MainActivity : Activity() {
 
         resumeLabel = txt("🔄 Resume Charging: ${settings.resumeTemp}°C", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(resumeLabel)
         resS = SeekBar(this).apply { max = 13; progress = settings.resumeTemp - 32; setPadding(0,10,0,10); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { var v=32+p; if(v>settings.cutoffTemp-2){v=settings.cutoffTemp-2; progress=v-32}; settings.resumeTemp=v; resumeLabel.text="🔄 Resume Charging: $v°C" }
+            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { var v=32+p; if(v>settings.cutoffTemp-2){v=settings.cutoffTemp-2; s?.progress=v-32}; settings.resumeTemp=v; resumeLabel.text="🔄 Resume Charging: $v°C" }
             override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
         })}
         c3.addView(resS); lay.addView(c3)
@@ -606,7 +606,6 @@ class MainActivity : Activity() {
         batteryEstText = txt("Calculating based on live drain...", 18f, Color.parseColor("#00E676"), true)
         cEst.addView(batteryEstText); lay.addView(cEst)
 
-        // SMART CHARGE LIMITER CARD
         val cLimiter = card(cBg) {
             showModal("Smart Charge Limiter", "Preserve battery health by limiting the maximum charge level. The device will automatically disconnect power when it hits the limit and reconnect when it drops to the resume point.")
         }
@@ -636,7 +635,7 @@ class MainActivity : Activity() {
         resChargeS.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
             override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
                 var v = 40 + p
-                if (v >= settings.chargeLimitMax) { v = settings.chargeLimitMax - 1; progress = v - 40 }
+                if (v >= settings.chargeLimitMax) { v = settings.chargeLimitMax - 1; s?.progress = v - 40 }
                 settings.chargeLimitResume = v; resChargeLabel.text = "🔄 Resume Charging At: $v%"
             }
             override fun onStartTrackingTouch(s: SeekBar?) {}
@@ -746,8 +745,21 @@ class MainActivity : Activity() {
         
         refreshRateButtons = listOf(60, 90, 120).map { r ->
             createBtn("${r}Hz", Color.parseColor("#333333")) {
-                HardwareThermalControl.forceRefreshRate(r)
-                Toast.makeText(this@MainActivity, "Forced ${r}Hz", Toast.LENGTH_SHORT).show()
+                AppLogger.log("Requested Display Refresh Rate: ${r}Hz")
+                thread { 
+                    try {
+                        val cmd = "settings put system peak_refresh_rate $r; " +
+                                  "settings put system min_refresh_rate $r; " +
+                                  "settings put system user_refresh_rate $r; " +
+                                  "settings put secure miui_refresh_rate $r; " +
+                                  "settings put system miui_refresh_rate $r; " +
+                                  "service call SurfaceFlinger 1035 i32 $r"
+                        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+                        process.waitFor()
+                        AppLogger.log("Refresh Rate Shell Code: ${process.exitValue()}")
+                    } catch (e: Exception) { AppLogger.log("Refresh Rate Shell Error: ${e.message}") }
+                }
+                Toast.makeText(this@MainActivity, "Forcing ${r}Hz", Toast.LENGTH_SHORT).show()
                 uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 1500)
             }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } }
         }
@@ -761,7 +773,7 @@ class MainActivity : Activity() {
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
             setOnCheckedChangeListener { v, c -> haptic(v); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
         })
-        c2.addView(txt("Tap pill to toggle Recording. Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
+        c2.addView(txt("Tap pill to toggle Recording (🔴). Long-press to exit.", 13f, tPri).apply { setPadding(0, 0, 0, 20) })
         c2.addView(createBtn("LAUNCH FPS OVERLAY", Color.parseColor("#2196F3")) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
