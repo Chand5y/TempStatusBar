@@ -30,6 +30,9 @@ class TempMonitorService : Service() {
     private var isScreenOn = true
     var isSmartGovernorActive = false
 
+    private var isThermalCutoff = false
+    private var isPctCutoff = false
+
     private val iconSize = 64
     private val cachedBitmap = Bitmap.createBitmap(iconSize, iconSize, Bitmap.Config.ARGB_8888)
     private val cachedCanvas = Canvas(cachedBitmap)
@@ -62,9 +65,11 @@ class TempMonitorService : Service() {
                 Intent.ACTION_BATTERY_CHANGED -> {
                     val currentTemp = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
                     val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
-                    val stats = PowerHardwareHelper.readPowerStats(applicationContext, plugged != 0)
+                    val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                    val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                    val pct = if (scale > 0) (level * 100 / scale.toFloat()).toInt() else 0
 
-                    handleThermalSafety(currentTemp, stats.isCharging)
+                    handleSafetyAndChargingLimits(currentTemp, pct)
 
                     if (currentTemp != lastTemp || plugged != lastPlugged) {
                         lastTemp = currentTemp; lastPlugged = plugged
@@ -106,21 +111,19 @@ class TempMonitorService : Service() {
             val details = if (hasRoot) {
                 val snapshotList = HardwareThermalControl.getKernelProcessSnapshot(applicationContext)
                 if (snapshotList.isNotEmpty()) snapshotList.joinToString("\n") { "• ${it.name} — ${it.cpu}% CPU" } else "Kernel active (Idle)"
-            } else { ProcessInspector.captureNonRootActiveApps(applicationContext) }
+            } else { "Active app tracking requires Usage Access permission" }
             dbHelper.insertRecord(temp, isCharging, chargeType, details, hasRoot, screenOn)
         }
     }
 
-    private fun handleThermalSafety(temp: Int, isCharging: Boolean) {
+    private fun handleSafetyAndChargingLimits(temp: Int, pct: Int) {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         val safeTemp = settings.warningTemp - 1
 
+        // 1. Audio/Visual Thermal Overheat Warnings
         if (temp >= settings.warningTemp) {
             HardwareThermalControl.playThermalAlert()
-            
-            if (isSmartGovernorActive) {
-                backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
-            }
+            if (isSmartGovernorActive) backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
 
             val muteIntent = PendingIntent.getBroadcast(this, 0, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_MUTE" }, PendingIntent.FLAG_IMMUTABLE)
             val coolIntent = PendingIntent.getBroadcast(this, 1, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_COOLDOWN" }, PendingIntent.FLAG_IMMUTABLE)
@@ -141,19 +144,30 @@ class TempMonitorService : Service() {
             HardwareThermalControl.resetMute()
             if (HardwareThermalControl.isEmergencyCooldownActive) {
                 HardwareThermalControl.clearEmergencyCooldown()
-                if (!HardwareThermalControl.isManualBypassActive) {
-                    HardwareThermalControl.setChargingEnabled(true)
-                }
             }
-            if (isSmartGovernorActive) {
-                backgroundHandler.post { HardwareThermalControl.throttlePrimeCore(false) }
-            }
+            if (isSmartGovernorActive) backgroundHandler.post { HardwareThermalControl.throttlePrimeCore(false) }
         }
 
-        if (temp >= settings.cutoffTemp && isCharging && !HardwareThermalControl.isChargingThrottled && !HardwareThermalControl.isEmergencyCooldownActive) {
-            HardwareThermalControl.setChargingEnabled(false)
-        } else if (temp <= settings.resumeTemp && HardwareThermalControl.isChargingThrottled && !HardwareThermalControl.isEmergencyCooldownActive && !HardwareThermalControl.isManualBypassActive) {
-            HardwareThermalControl.setChargingEnabled(true)
+        // 2. Unified Hardware Charging Evaluator
+        if (temp >= settings.cutoffTemp) isThermalCutoff = true
+        else if (temp <= settings.resumeTemp) isThermalCutoff = false
+
+        if (settings.chargeLimitEnabled) {
+            if (pct >= settings.chargeLimitMax) isPctCutoff = true
+            else if (pct <= settings.chargeLimitResume) isPctCutoff = false
+        } else {
+            isPctCutoff = false
+        }
+
+        if (!HardwareThermalControl.isEmergencyCooldownActive && !HardwareThermalControl.isManualBypassActive) {
+            val shouldBeThrottled = isThermalCutoff || isPctCutoff
+            if (shouldBeThrottled && !HardwareThermalControl.isChargingThrottled) {
+                HardwareThermalControl.setChargingEnabled(false)
+                AppLogger.log("KERNEL: PMIC Blocked (Thermal: $isThermalCutoff, Limit: $isPctCutoff)")
+            } else if (!shouldBeThrottled && HardwareThermalControl.isChargingThrottled) {
+                HardwareThermalControl.setChargingEnabled(true)
+                AppLogger.log("KERNEL: PMIC Resumed (Thermal: $isThermalCutoff, Limit: $isPctCutoff)")
+            }
         }
     }
 
@@ -170,9 +184,14 @@ class TempMonitorService : Service() {
 
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val bypassStr = if (HardwareThermalControl.isManualBypassActive && stats.isCharging) "\n🛡️ BYPASS" else ""
+        
         val bodyText = if (settings.showPowerMetrics) {
-            if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)$bypassStr" else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)$bypassStr"
-        } else { if (stats.isCharging) "⚡ Charging$bypassStr" else "🔋 Discharging$bypassStr" }
+            if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)$bypassStr" 
+            else if (isThermalCutoff || isPctCutoff) "🛑 Charging Paused by Limits"
+            else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)$bypassStr"
+        } else { 
+            if (stats.isCharging) "⚡ Charging$bypassStr" else "🔋 Discharging$bypassStr" 
+        }
 
         val notif = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Battery: $lastTemp°C")
@@ -202,7 +221,6 @@ class TempMonitorService : Service() {
             .setSmallIcon(drawIcon("--"))
             .build()
             
-        // Critical Android 14 foreground security patch
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
