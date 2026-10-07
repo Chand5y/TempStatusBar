@@ -248,6 +248,10 @@ class MainActivity : Activity() {
     private val uiHandler = Handler(Looper.getMainLooper())
     private var isPaused = false
     private var isSmartGovernorEnabled = false
+    
+    // Swipe tracking variables
+    private var downX = 0f
+    private var downY = 0f
 
     private val liveHardwarePoller = object : Runnable {
         override fun run() {
@@ -444,7 +448,6 @@ class MainActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        // Correctly guard sliders and charts per tab to avoid tab switching while interacting
         if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS))) return super.dispatchTouchEvent(ev)
         if (currentTabIndex == 1 && (isTouchInside(ev, maxChargeS) || isTouchInside(ev, resChargeS))) return super.dispatchTouchEvent(ev)
         if (currentTabIndex == 3 && (isTouchInside(ev, fpsChartView) || isTouchInside(ev, fpsSessionHScroll))) return super.dispatchTouchEvent(ev)
@@ -527,7 +530,6 @@ class MainActivity : Activity() {
         chartView = TemperatureChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
         c1.addView(chartView)
 
-        // Fully Dynamic Time Range Picker on Long Press
         c1.setOnLongClickListener {
             haptic(it)
             val options = arrayOf(
@@ -580,7 +582,6 @@ class MainActivity : Activity() {
         c1.addView(detailRow)
         lay.addView(c1)
 
-        // Thermal Card Badges with full words
         chartView.onRecordSelected = { r ->
             val time = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))
             val screenIcon = if (r.screenOn) "🔆 Screen On" else "🌙 Screen Off"
