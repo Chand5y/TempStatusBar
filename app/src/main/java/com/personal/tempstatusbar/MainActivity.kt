@@ -21,6 +21,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.*
 import android.provider.Settings
+import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -205,7 +206,9 @@ class MainActivity : Activity() {
     private lateinit var tabButtons: List<TextView>
 
     private lateinit var chartView: TemperatureChartView
-    private var thermalTimeRangeMs = 86400000L
+    private var thermalTimeRangeMs = 86400000L // Default 24 Hours
+    private var thermalRangeLabel = "Last 24 Hours"
+
     private lateinit var fpsChartView: FpsChartView
     private lateinit var fpsDetailText: TextView
     private lateinit var fpsSessionHScroll: HorizontalScrollView
@@ -434,15 +437,16 @@ class MainActivity : Activity() {
         tabButtons[0].setTextColor(Color.parseColor("#00E5FF"))
     }
 
-    private fun isTouchInside(ev: MotionEvent, view: View): Boolean {
-        if (view.visibility != View.VISIBLE || !view.isShown) return false
+    private fun isTouchInside(ev: MotionEvent, view: View?): Boolean {
+        if (view == null || view.visibility != View.VISIBLE || !view.isShown) return false
         val loc = IntArray(2); view.getLocationOnScreen(loc)
         return ev.rawX >= loc[0] && ev.rawX <= loc[0] + view.width && ev.rawY >= loc[1] && ev.rawY <= loc[1] + view.height
     }
 
-    private var downX = 0f; private var downY = 0f
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS) || isTouchInside(ev, maxChargeS) || isTouchInside(ev, resChargeS))) return super.dispatchTouchEvent(ev)
+        // Correctly guard sliders and charts per tab to avoid tab switching while interacting
+        if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS))) return super.dispatchTouchEvent(ev)
+        if (currentTabIndex == 1 && (isTouchInside(ev, maxChargeS) || isTouchInside(ev, resChargeS))) return super.dispatchTouchEvent(ev)
         if (currentTabIndex == 3 && (isTouchInside(ev, fpsChartView) || isTouchInside(ev, fpsSessionHScroll))) return super.dispatchTouchEvent(ev)
         
         when (ev.action) {
@@ -478,6 +482,31 @@ class MainActivity : Activity() {
         if (newIdx == 3) updateActiveRefreshRateUI()
     }
 
+    private fun showCustomRangeDialog() {
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            hint = "e.g., 8, 36, 72"
+        }
+        val container = FrameLayout(this).apply { setPadding(50, 20, 50, 20); addView(input) }
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Enter Custom Range (Hours)")
+            .setView(container)
+            .setPositiveButton("APPLY") { _, _ ->
+                val hours = input.text.toString().toLongOrNull()
+                if (hours != null && hours > 0) {
+                    thermalTimeRangeMs = hours * 3600000L
+                    thermalRangeLabel = "Last $hours Hours"
+                    refreshDashboardData()
+                    Toast.makeText(this, "Set range to $hours hours", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Invalid number of hours", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
+
     private fun buildTab1(isDark: Boolean): View {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F6")
@@ -498,15 +527,34 @@ class MainActivity : Activity() {
         chartView = TemperatureChartView(this).apply { isDarkMode = isDark; layoutParams = LinearLayout.LayoutParams(-1, 450) }
         c1.addView(chartView)
 
+        // Fully Dynamic Time Range Picker on Long Press
         c1.setOnLongClickListener {
             haptic(it)
-            val options = arrayOf("Last 24 Hours", "Last 48 Hours", "All Time")
+            val options = arrayOf(
+                "Last 6 Hours",
+                "Last 12 Hours",
+                "Last 24 Hours (1 Day)",
+                "Last 48 Hours (2 Days)",
+                "Last 3 Days",
+                "Last 7 Days (1 Week)",
+                "All Time",
+                "Custom Hours..."
+            )
             AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Select Graph Range")
                 .setItems(options) { _, which ->
-                    thermalTimeRangeMs = when(which) { 0 -> 86400000L; 1 -> 172800000L; else -> 31536000000L }
+                    when (which) {
+                        0 -> { thermalTimeRangeMs = 6 * 3600000L; thermalRangeLabel = "Last 6 Hours" }
+                        1 -> { thermalTimeRangeMs = 12 * 3600000L; thermalRangeLabel = "Last 12 Hours" }
+                        2 -> { thermalTimeRangeMs = 24 * 3600000L; thermalRangeLabel = "Last 24 Hours" }
+                        3 -> { thermalTimeRangeMs = 48 * 3600000L; thermalRangeLabel = "Last 48 Hours" }
+                        4 -> { thermalTimeRangeMs = 72 * 3600000L; thermalRangeLabel = "Last 3 Days" }
+                        5 -> { thermalTimeRangeMs = 7 * 24 * 3600000L; thermalRangeLabel = "Last 7 Days" }
+                        6 -> { thermalTimeRangeMs = 315360000000L; thermalRangeLabel = "All Time" }
+                        7 -> { showCustomRangeDialog(); return@setItems }
+                    }
                     refreshDashboardData()
-                    Toast.makeText(this@MainActivity, "Range Updated", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Range set to $thermalRangeLabel", Toast.LENGTH_SHORT).show()
                 }.show()
             true
         }
@@ -514,7 +562,7 @@ class MainActivity : Activity() {
         val detailRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,25,0,0); gravity = Gravity.CENTER_VERTICAL }
         
         detailTempText = txt("--°C", 26f, Color.parseColor("#FF3B30"), true).apply { 
-            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 30 }
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 25 }
             setSingleLine(true)
         }
         detailRow.addView(detailTempText)
@@ -522,7 +570,7 @@ class MainActivity : Activity() {
         val infoCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         detailTimeText = txt("Tap chart to inspect", 12f, tPri, true); infoCol.addView(detailTimeText)
         
-        detailBadgesText = txt("Long-press card to filter time", 11f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { setSingleLine(true) }
+        detailBadgesText = txt("Long-press card to filter range", 11f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { setSingleLine(true) }
         infoCol.addView(detailBadgesText)
         
         detailAppContent = txt("Awaiting selection...", 11f, if(isDark) Color.LTGRAY else Color.DKGRAY).apply { setPadding(0, 8, 0, 0) }
@@ -532,10 +580,11 @@ class MainActivity : Activity() {
         c1.addView(detailRow)
         lay.addView(c1)
 
+        // Thermal Card Badges with full words
         chartView.onRecordSelected = { r ->
             val time = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(r.timestamp))
-            val screenIcon = if (r.screenOn) "🔆 On" else "🌙 Off"
-            val powerIcon = if (r.isCharging) "⚡ Chg" else "🔋 Dis"
+            val screenIcon = if (r.screenOn) "🔆 Screen On" else "🌙 Screen Off"
+            val powerIcon = if (r.isCharging) "⚡ Charging" else "🔋 Discharging"
             val traceIcon = if (r.isRoot) "🛡️ Root" else "📱 User"
 
             detailTimeText.text = time
@@ -554,25 +603,48 @@ class MainActivity : Activity() {
         c3.addView(txt("🛡 HARDWARE PROTECTION", 12f, Color.GRAY).apply { setPadding(0,0,0,25) })
 
         warnLabel = txt("🔔 Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
-        warnS = SeekBar(this).apply { max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=35+p; settings.warningTemp=v; warnLabel.text="🔔 Warning Sound Alert: $v°C" }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
-        })}
+        warnS = SeekBar(this).apply { 
+            max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
+                    val v = 35 + p; settings.warningTemp = v; warnLabel.text = "🔔 Warning Sound Alert: $v°C"
+                    if (b) s?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
+            })
+        }
         c3.addView(warnS)
 
         cutoffLabel = txt("🛑 Cut Off Charging (PMIC): ${settings.cutoffTemp}°C", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(cutoffLabel)
-        cutS = SeekBar(this).apply { max = 12; progress = settings.cutoffTemp - 38; setPadding(0,10,0,20); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { val v=38+p; settings.cutoffTemp=v; cutoffLabel.text="🛑 Cut Off Charging (PMIC): $v°C"
-                if (settings.resumeTemp >= v-1) { settings.resumeTemp = v-2; resS.progress = (v-2)-32; resumeLabel.text="🔄 Resume Charging: ${v-2}°C" } }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
-        })}
+        cutS = SeekBar(this).apply { 
+            max = 12; progress = settings.cutoffTemp - 38; setPadding(0,10,0,20)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
+                    val v = 38 + p; settings.cutoffTemp = v; cutoffLabel.text = "🛑 Cut Off Charging (PMIC): $v°C"
+                    if (settings.resumeTemp >= v - 1) { settings.resumeTemp = v - 2; resS.progress = (v - 2) - 32; resumeLabel.text = "🔄 Resume Charging: ${v - 2}°C" }
+                    if (b) s?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
+            })
+        }
         c3.addView(cutS)
 
         resumeLabel = txt("🔄 Resume Charging: ${settings.resumeTemp}°C", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(resumeLabel)
-        resS = SeekBar(this).apply { max = 13; progress = settings.resumeTemp - 32; setPadding(0,10,0,10); setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { var v=32+p; if(v>settings.cutoffTemp-2){v=settings.cutoffTemp-2; s?.progress=v-32}; settings.resumeTemp=v; resumeLabel.text="🔄 Resume Charging: $v°C" }
-            override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
-        })}
+        resS = SeekBar(this).apply { 
+            max = 13; progress = settings.resumeTemp - 32; setPadding(0,10,0,10)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
+                    var v = 32 + p
+                    if (v > settings.cutoffTemp - 2) { v = settings.cutoffTemp - 2; s?.progress = v - 32 }
+                    settings.resumeTemp = v; resumeLabel.text = "🔄 Resume Charging: $v°C"
+                    if (b) s?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
+            })
+        }
         c3.addView(resS); lay.addView(c3)
 
         val c4 = card(cBg)
@@ -615,32 +687,36 @@ class MainActivity : Activity() {
         cLimiter.addView(swLimiter)
 
         maxChargeLabel = txt("🛑 Cut Off Charging At: ${settings.chargeLimitMax}%", 14f, tPri).apply { setPadding(0,10,0,0) }
-        maxChargeS = SeekBar(this).apply { max = 50; progress = settings.chargeLimitMax - 50; setPadding(0,10,0,20) }
+        maxChargeS = SeekBar(this).apply { 
+            max = 50; progress = settings.chargeLimitMax - 50; setPadding(0,10,0,20)
+            setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
+                override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
+                    val v = 50 + p; settings.chargeLimitMax = v; maxChargeLabel.text = "🛑 Cut Off Charging At: $v%"
+                    if (settings.chargeLimitResume >= v) {
+                        settings.chargeLimitResume = v - 1; resChargeS.progress = (v - 1) - 40
+                        resChargeLabel.text = "🔄 Resume Charging At: ${v - 1}%"
+                    }
+                    if (b) s?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) { s?.let{haptic(it)} }
+            })
+        }
         
         resChargeLabel = txt("🔄 Resume Charging At: ${settings.chargeLimitResume}%", 14f, tPri).apply { setPadding(0,10,0,0) }
-        resChargeS = SeekBar(this).apply { max = 50; progress = settings.chargeLimitResume - 40; setPadding(0,10,0,10) }
-
-        maxChargeS.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
-            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
-                val v = 50 + p; settings.chargeLimitMax = v; maxChargeLabel.text = "🛑 Cut Off Charging At: $v%"
-                if (settings.chargeLimitResume >= v) {
-                    settings.chargeLimitResume = v - 1; resChargeS.progress = (v - 1) - 40
-                    resChargeLabel.text = "🔄 Resume Charging At: ${v - 1}%"
+        resChargeS = SeekBar(this).apply { 
+            max = 50; progress = settings.chargeLimitResume - 40; setPadding(0,10,0,10)
+            setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
+                override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
+                    var v = 40 + p
+                    if (v >= settings.chargeLimitMax) { v = settings.chargeLimitMax - 1; s?.progress = v - 40 }
+                    settings.chargeLimitResume = v; resChargeLabel.text = "🔄 Resume Charging At: $v%"
+                    if (b) s?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                 }
-            }
-            override fun onStartTrackingTouch(s: SeekBar?) {}
-            override fun onStopTrackingTouch(s: SeekBar?) { s?.let{haptic(it)} }
-        })
-
-        resChargeS.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
-            override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
-                var v = 40 + p
-                if (v >= settings.chargeLimitMax) { v = settings.chargeLimitMax - 1; s?.progress = v - 40 }
-                settings.chargeLimitResume = v; resChargeLabel.text = "🔄 Resume Charging At: $v%"
-            }
-            override fun onStartTrackingTouch(s: SeekBar?) {}
-            override fun onStopTrackingTouch(s: SeekBar?) { s?.let{haptic(it)} }
-        })
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) { s?.let{haptic(it)} }
+            })
+        }
 
         swLimiter.setOnCheckedChangeListener { v, c -> haptic(v); settings.chargeLimitEnabled = c; maxChargeS.isEnabled = c; resChargeS.isEnabled = c }
         maxChargeS.isEnabled = settings.chargeLimitEnabled; resChargeS.isEnabled = settings.chargeLimitEnabled
@@ -745,20 +821,7 @@ class MainActivity : Activity() {
         
         refreshRateButtons = listOf(60, 90, 120).map { r ->
             createBtn("${r}Hz", Color.parseColor("#333333")) {
-                AppLogger.log("Requested Display Refresh Rate: ${r}Hz")
-                thread { 
-                    try {
-                        val cmd = "settings put system peak_refresh_rate $r; " +
-                                  "settings put system min_refresh_rate $r; " +
-                                  "settings put system user_refresh_rate $r; " +
-                                  "settings put secure miui_refresh_rate $r; " +
-                                  "settings put system miui_refresh_rate $r; " +
-                                  "service call SurfaceFlinger 1035 i32 $r"
-                        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-                        process.waitFor()
-                        AppLogger.log("Refresh Rate Shell Code: ${process.exitValue()}")
-                    } catch (e: Exception) { AppLogger.log("Refresh Rate Shell Error: ${e.message}") }
-                }
+                HardwareThermalControl.forceRefreshRate(r)
                 Toast.makeText(this@MainActivity, "Forcing ${r}Hz", Toast.LENGTH_SHORT).show()
                 uiHandler.postDelayed({ updateActiveRefreshRateUI() }, 1500)
             }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(10,0,10,0) } }
