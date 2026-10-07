@@ -114,10 +114,18 @@ object HardwareThermalControl {
     fun setChargingEnabled(enable: Boolean, isManualToggle: Boolean = false) {
         if (isManualToggle) isManualBypassActive = !enable
         val action = if (enable) "Restore Charge" else "Isolate Battery"
+        
+        // Multi-level PMIC injection bridging Android generic, Snapdragon generic, and Xiaomi specific hardware nodes
         val cmd = if (enable) {
-            "echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null"
+            "echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; " +
+            "echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
+            "echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; " +
+            "echo 0 > /sys/class/qcom-battery/input_suspend 2>/dev/null"
         } else {
-            "echo 0 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null"
+            "echo 0 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; " +
+            "echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
+            "echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; " +
+            "echo 1 > /sys/class/qcom-battery/input_suspend 2>/dev/null"
         }
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
