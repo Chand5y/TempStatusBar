@@ -4,26 +4,37 @@ import android.content.Context
 import android.content.SharedPreferences
 
 class SettingsManager(context: Context) {
-
-    private val prefs: SharedPreferences = context.getSharedPreferences("thermal_config", Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences = context.getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
 
     var warningTemp: Int
-        get() = prefs.getInt("warn_temp", 40)
-        set(v) = prefs.edit().putInt("warn_temp", v).apply()
+        get() = prefs.getInt("warningTemp", 40)
+        set(value) = prefs.edit().putInt("warningTemp", value).apply()
 
     var cutoffTemp: Int
-        get() = prefs.getInt("cutoff_temp", 41)
-        set(v) = prefs.edit().putInt("cutoff_temp", v).apply()
+        get() = prefs.getInt("cutoffTemp", 41)
+        set(value) = prefs.edit().putInt("cutoffTemp", value).apply()
 
     var resumeTemp: Int
-        get() = prefs.getInt("resume_temp", 39)
-        set(v) = prefs.edit().putInt("resume_temp", v).apply()
+        get() = prefs.getInt("resumeTemp", 39)
+        set(value) = prefs.edit().putInt("resumeTemp", value).apply()
 
     var showNotification: Boolean
-        get() = prefs.getBoolean("show_notif", true)
-        set(v) = prefs.edit().putBoolean("show_notif", v).apply()
+        get() = prefs.getBoolean("showNotification", true)
+        set(value) = prefs.edit().putBoolean("showNotification", value).apply()
 
     var showPowerMetrics: Boolean
-        get() = prefs.getBoolean("show_power", true)
-        set(v) = prefs.edit().putBoolean("show_power", v).apply()
+        get() = prefs.getBoolean("showPowerMetrics", true)
+        set(value) = prefs.edit().putBoolean("showPowerMetrics", value).apply()
+
+    var chargeLimitEnabled: Boolean
+        get() = prefs.getBoolean("chargeLimitEnabled", false)
+        set(value) = prefs.edit().putBoolean("chargeLimitEnabled", value).apply()
+
+    var chargeLimitMax: Int
+        get() = prefs.getInt("chargeLimitMax", 80)
+        set(value) = prefs.edit().putInt("chargeLimitMax", value).apply()
+
+    var chargeLimitResume: Int
+        get() = prefs.getInt("chargeLimitResume", 75)
+        set(value) = prefs.edit().putInt("chargeLimitResume", value).apply()
 }
