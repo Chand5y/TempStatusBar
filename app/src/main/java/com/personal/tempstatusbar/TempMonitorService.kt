@@ -77,13 +77,12 @@ class TempMonitorService : Service() {
                             HardwareThermalControl.throttlePrimeCore(false)
                             HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
                         } else {
-                            // Hit custom throttle threshold
                             HardwareThermalControl.setPeakPerformanceMode(false)
                             HardwareThermalControl.throttlePrimeCore(true)
                         }
                     } else {
-                        // Game exited
                         HardwareThermalControl.setPeakPerformanceMode(false)
+                        HardwareThermalControl.clearGamingOptimization()
                         if (!isSmartGovernorActive || lastTemp < settings.warningTemp) {
                             HardwareThermalControl.throttlePrimeCore(false)
                         }
