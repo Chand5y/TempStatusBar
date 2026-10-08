@@ -47,7 +47,9 @@ object HardwareThermalControl {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             exitCode = process.waitFor()
-            AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
+            if (action != "Force Prime Core Max") { // Prevent spamming the log every 3 seconds
+                AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
+            }
             return exitCode == 0
         } catch (e: Exception) { return false }
     }
@@ -66,17 +68,22 @@ object HardwareThermalControl {
                 AppLogger.log("GAMING ENGINE: Peak Performance Engaged")
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 
-                // FIXED: Use pgrep -f to bypass Android's 15-character truncation limit
-                val stopJoyose = "pids=\$(pgrep -f joyose); if [ ! -z \"\$pids\" ]; then for p in \$pids; do kill -STOP \$p; done; fi"
-                executeRootCommand("Freeze Joyose (Xiaomi Throttler)", stopJoyose)
+                // Safe daemon freeze using exact PID matching
+                val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
+                executeRootCommand("Freeze Thermal Daemons", stopCmd)
             } else {
                 AppLogger.log("GAMING ENGINE: Normal Performance Restored")
                 executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 
-                val resumeJoyose = "pids=\$(pgrep -f joyose); if [ ! -z \"\$pids\" ]; then for p in \$pids; do kill -CONT \$p; done; fi"
-                executeRootCommand("Resume Joyose (Xiaomi Throttler)", resumeJoyose)
+                val resumeCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done"
+                executeRootCommand("Resume Thermal Daemons", resumeCmd)
             }
         }
+    }
+
+    fun forceUnthrottlePrimeCore() {
+        // Unlocks the state guard to continuously fight back against the OS during active gaming
+        executeRootCommand("Force Prime Core Max", "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq")
     }
 
     fun optimizeBackgroundForGaming(exemptPackages: Set<String>, foregroundPkg: String) {
@@ -154,7 +161,6 @@ object HardwareThermalControl {
     fun getGpuFrequency(): String {
         if (!isRootAvailable()) return "-- MHz"
         try {
-            // FIXED: Expanded search paths to catch MIUI/HyperOS specific GPU clock files
             val cmd = "cat /sys/class/kgsl/kgsl-3d0/gpuclk 2>/dev/null || cat /sys/class/kgsl/kgsl-3d0/devfreq/cur_freq 2>/dev/null || cat /sys/kernel/gpu/gpu_clock 2>/dev/null"
             val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
             val raw = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.trim()
