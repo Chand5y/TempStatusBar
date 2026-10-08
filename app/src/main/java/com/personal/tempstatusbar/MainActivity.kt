@@ -385,7 +385,6 @@ class MainActivity : Activity() {
     private var isCpuTabActive = false
     private val uiHandler = Handler(Looper.getMainLooper())
     private var isPaused = false
-    private var isSmartGovernorEnabled = false
     
     private var downX = 0f
     private var downY = 0f
@@ -423,8 +422,9 @@ class MainActivity : Activity() {
         val accentColor = Color.parseColor("#2196F3")
         val accentTrack = Color.parseColor("#90CAF9")
         
-        val offThumb = if (isDark) Color.parseColor("#BDBDBD") else Color.parseColor("#FAFAFA")
-        val offTrack = if (isDark) Color.parseColor("#424242") else Color.parseColor("#BDBDBD")
+        // Explicitly set the unchecked thumb and track to visible gray tones
+        val offThumb = if (isDark) Color.parseColor("#9E9E9E") else Color.parseColor("#757575")
+        val offTrack = if (isDark) Color.parseColor("#424242") else Color.parseColor("#E0E0E0")
 
         val states = arrayOf(
             intArrayOf(android.R.attr.state_checked),
@@ -518,18 +518,35 @@ class MainActivity : Activity() {
         val pm = packageManager
         thread {
             try {
-                val installed = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-                    .filter { pm.getLaunchIntentForPackage(it.packageName) != null }
-                    .sortedBy { pm.getApplicationLabel(it).toString() }
+                // Use Launcher Intent query to bypass Android 11+ package visibility restrictions
+                // This fetches all actual user-installed apps (Games, Social Media) rather than hidden system packages
+                val mainIntent = Intent(Intent.ACTION_MAIN, null).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
+                val resolveInfos = if (Build.VERSION.SDK_INT >= 33) {
+                    pm.queryIntentActivities(mainIntent, PackageManager.ResolveInfoFlags.of(0L))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.queryIntentActivities(mainIntent, 0)
+                }
                 
-                val appNames = installed.map { pm.getApplicationLabel(it).toString() }.toTypedArray()
-                val pkgNames = installed.map { it.packageName }.toTypedArray()
+                val appMap = mutableMapOf<String, String>()
+                for (info in resolveInfos) {
+                    val pkg = info.activityInfo.packageName
+                    appMap[pkg] = info.loadLabel(pm).toString()
+                }
+                
+                val sortedList = appMap.entries.sortedBy { it.value.lowercase(Locale.getDefault()) }
+                val appNames = sortedList.map { it.value }.toTypedArray()
+                val pkgNames = sortedList.map { it.key }.toTypedArray()
                 
                 val currentSet = if (isGamingAppList) settings.gamingApps else settings.exemptApps
                 val checkedItems = pkgNames.map { currentSet.contains(it) }.toBooleanArray()
                 val selectedPkgs = currentSet.toMutableSet()
                 
                 uiHandler.post {
+                    if (appNames.isEmpty()) {
+                        Toast.makeText(this@MainActivity, "No launchable apps found. Check manifest permissions.", Toast.LENGTH_LONG).show()
+                        return@post
+                    }
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle(title)
                         .setMultiChoiceItems(appNames, checkedItems) { _, which, isChecked ->
@@ -541,7 +558,9 @@ class MainActivity : Activity() {
                         }
                         .setNegativeButton("CANCEL", null).show()
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                uiHandler.post { Toast.makeText(this@MainActivity, "Error loading apps: ${e.message}", Toast.LENGTH_SHORT).show() }
+            }
         }
     }
 
