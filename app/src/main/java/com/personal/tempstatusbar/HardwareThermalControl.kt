@@ -26,7 +26,10 @@ object HardwareThermalControl {
     private var isMuted = false
     private var cachedRootState: Boolean? = null
     private var lastRootCheckTime = 0L
+    
     private var isPeakPerformanceActive = false
+    private var isPrimeCoreThrottled: Boolean? = null
+    private var lastOptimizedGame = ""
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -54,7 +57,6 @@ object HardwareThermalControl {
         executeRootCommand("Force Display Refresh to ${hz}Hz", cmd)
     }
 
-    // --- GAMING PERFORMANCE ENGINE ---
     fun setPeakPerformanceMode(enable: Boolean) {
         if (!isRootAvailable() || isPeakPerformanceActive == enable) return
         isPeakPerformanceActive = enable
@@ -73,7 +75,8 @@ object HardwareThermalControl {
     }
 
     fun optimizeBackgroundForGaming(exemptPackages: Set<String>, foregroundPkg: String) {
-        if (!isRootAvailable()) return
+        if (!isRootAvailable() || lastOptimizedGame == foregroundPkg) return
+        lastOptimizedGame = foregroundPkg
         thread {
             try {
                 val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "ps -A -o pid,NAME"))
@@ -105,7 +108,10 @@ object HardwareThermalControl {
         }
     }
 
-    // --- STANDARD SYSTEM CONTROL ---
+    fun clearGamingOptimization() {
+        lastOptimizedGame = ""
+    }
+
     fun getHardwareInfo(): String {
         val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(java.util.Locale.getDefault())
         return when {
@@ -172,6 +178,8 @@ object HardwareThermalControl {
     }
 
     fun throttlePrimeCore(throttle: Boolean) {
+        if (isPrimeCoreThrottled == throttle) return
+        isPrimeCoreThrottled = throttle
         val action = if (throttle) "Throttle Prime Core (C7)" else "Restore Prime Core (C7)"
         val cmd = if (throttle) "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
                   else "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
