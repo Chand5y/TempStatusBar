@@ -38,6 +38,17 @@
             android:name=".FpsOverlayService" 
             android:exported="false"
             android:foregroundServiceType="specialUse" />
+        <service
+    android:name=".NetworkInfoTileService"
+    android:label="Phone Info (Network)"
+    android:icon="@drawable/ic_network_tile"
+    android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+    android:exported="true">
+    <intent-filter>
+        <action android:name="android.service.quicksettings.action.QS_TILE" />
+    </intent-filter>
+</service>
+        
         
         <service
             android:name=".FpsTileService"
