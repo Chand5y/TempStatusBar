@@ -146,6 +146,23 @@ object HardwareThermalControl {
         return "--%"
     }
 
+    fun getGpuFrequency(): String {
+        val paths = listOf("/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq", "/sys/class/kgsl/kgsl-3d0/gpuclk")
+        for (path in paths) {
+            try {
+                val f = File(path)
+                if (f.exists()) {
+                    val raw = f.readText().trim()
+                    val hz = raw.toLongOrNull()
+                    if (hz != null) {
+                        return if (hz > 1000000) "${hz / 1000000} MHz" else "$hz MHz"
+                    }
+                }
+            } catch (e: Exception) {}
+        }
+        return "-- MHz"
+    }
+
     fun isRootAvailable(): Boolean {
         val now = System.currentTimeMillis()
         if (cachedRootState != null && (now - lastRootCheckTime < 60000L)) return cachedRootState!!
