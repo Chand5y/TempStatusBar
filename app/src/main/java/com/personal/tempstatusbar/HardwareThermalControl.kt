@@ -66,14 +66,14 @@ object HardwareThermalControl {
                 AppLogger.log("GAMING ENGINE: Peak Performance Engaged")
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 
-                // Advanced PID-based freeze for HyperOS compatibility
-                val stopJoyose = "pid=\$(pidof com.xiaomi.joyose); if [ ! -z \"\$pid\" ]; then kill -STOP \$pid; fi"
+                // FIXED: Use pgrep -f to bypass Android's 15-character truncation limit
+                val stopJoyose = "pids=\$(pgrep -f joyose); if [ ! -z \"\$pids\" ]; then for p in \$pids; do kill -STOP \$p; done; fi"
                 executeRootCommand("Freeze Joyose (Xiaomi Throttler)", stopJoyose)
             } else {
                 AppLogger.log("GAMING ENGINE: Normal Performance Restored")
                 executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 
-                val resumeJoyose = "pid=\$(pidof com.xiaomi.joyose); if [ ! -z \"\$pid\" ]; then kill -CONT \$pid; fi"
+                val resumeJoyose = "pids=\$(pgrep -f joyose); if [ ! -z \"\$pids\" ]; then for p in \$pids; do kill -CONT \$p; done; fi"
                 executeRootCommand("Resume Joyose (Xiaomi Throttler)", resumeJoyose)
             }
         }
@@ -154,8 +154,9 @@ object HardwareThermalControl {
     fun getGpuFrequency(): String {
         if (!isRootAvailable()) return "-- MHz"
         try {
-            // Use root execution to bypass Android strict sysfs permissions
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/class/kgsl/kgsl-3d0/devfreq/cur_freq 2>/dev/null || cat /sys/class/kgsl/kgsl-3d0/gpuclk 2>/dev/null"))
+            // FIXED: Expanded search paths to catch MIUI/HyperOS specific GPU clock files
+            val cmd = "cat /sys/class/kgsl/kgsl-3d0/gpuclk 2>/dev/null || cat /sys/class/kgsl/kgsl-3d0/devfreq/cur_freq 2>/dev/null || cat /sys/kernel/gpu/gpu_clock 2>/dev/null"
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
             val raw = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.trim()
             p.waitFor()
             val hz = raw?.toLongOrNull()
