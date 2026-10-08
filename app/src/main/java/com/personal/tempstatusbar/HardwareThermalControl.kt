@@ -65,11 +65,16 @@ object HardwareThermalControl {
             if (enable) {
                 AppLogger.log("GAMING ENGINE: Peak Performance Engaged")
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
-                executeRootCommand("Freeze Joyose (Xiaomi Throttler)", "killall -STOP joyose")
+                
+                // Advanced PID-based freeze for HyperOS compatibility
+                val stopJoyose = "pid=\$(pidof com.xiaomi.joyose); if [ ! -z \"\$pid\" ]; then kill -STOP \$pid; fi"
+                executeRootCommand("Freeze Joyose (Xiaomi Throttler)", stopJoyose)
             } else {
                 AppLogger.log("GAMING ENGINE: Normal Performance Restored")
                 executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
-                executeRootCommand("Resume Joyose (Xiaomi Throttler)", "killall -CONT joyose")
+                
+                val resumeJoyose = "pid=\$(pidof com.xiaomi.joyose); if [ ! -z \"\$pid\" ]; then kill -CONT \$pid; fi"
+                executeRootCommand("Resume Joyose (Xiaomi Throttler)", resumeJoyose)
             }
         }
     }
@@ -147,19 +152,17 @@ object HardwareThermalControl {
     }
 
     fun getGpuFrequency(): String {
-        val paths = listOf("/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq", "/sys/class/kgsl/kgsl-3d0/gpuclk")
-        for (path in paths) {
-            try {
-                val f = File(path)
-                if (f.exists()) {
-                    val raw = f.readText().trim()
-                    val hz = raw.toLongOrNull()
-                    if (hz != null) {
-                        return if (hz > 1000000) "${hz / 1000000} MHz" else "$hz MHz"
-                    }
-                }
-            } catch (e: Exception) {}
-        }
+        if (!isRootAvailable()) return "-- MHz"
+        try {
+            // Use root execution to bypass Android strict sysfs permissions
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /sys/class/kgsl/kgsl-3d0/devfreq/cur_freq 2>/dev/null || cat /sys/class/kgsl/kgsl-3d0/gpuclk 2>/dev/null"))
+            val raw = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.trim()
+            p.waitFor()
+            val hz = raw?.toLongOrNull()
+            if (hz != null) {
+                return if (hz > 1000000) "${hz / 1000000} MHz" else "$hz MHz"
+            }
+        } catch (e: Exception) {}
         return "-- MHz"
     }
 
