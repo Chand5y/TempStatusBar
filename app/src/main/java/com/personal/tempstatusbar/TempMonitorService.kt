@@ -1,6 +1,8 @@
 package com.personal.tempstatusbar
 
 import android.app.*
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -50,6 +52,48 @@ class TempMonitorService : Service() {
         }
     }
 
+    private val gamingEngineRunnable = object : Runnable {
+        override fun run() {
+            if (isScreenOn && settings.gamingModeEnabled && HardwareThermalControl.isRootAvailable()) {
+                val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+                val time = System.currentTimeMillis()
+                val events = usm.queryEvents(time - 5000, time)
+                var event = UsageEvents.Event()
+                var currentForeground = ""
+                
+                while (events.hasNextEvent()) {
+                    events.getNextEvent(event)
+                    if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                        currentForeground = event.packageName
+                    }
+                }
+
+                if (currentForeground.isNotEmpty()) {
+                    val isGamingApp = settings.gamingApps.contains(currentForeground)
+                    
+                    if (isGamingApp) {
+                        if (lastTemp < settings.gameThrottleTemp) {
+                            HardwareThermalControl.setPeakPerformanceMode(true)
+                            HardwareThermalControl.throttlePrimeCore(false)
+                            HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
+                        } else {
+                            // Hit custom throttle threshold
+                            HardwareThermalControl.setPeakPerformanceMode(false)
+                            HardwareThermalControl.throttlePrimeCore(true)
+                        }
+                    } else {
+                        // Game exited
+                        HardwareThermalControl.setPeakPerformanceMode(false)
+                        if (!isSmartGovernorActive || lastTemp < settings.warningTemp) {
+                            HardwareThermalControl.throttlePrimeCore(false)
+                        }
+                    }
+                }
+            }
+            backgroundHandler.postDelayed(this, 3000L)
+        }
+    }
+
     private val powerRunnable = object : Runnable {
         override fun run() {
             if (isScreenOn && settings.showNotification && settings.showPowerMetrics) {
@@ -76,8 +120,8 @@ class TempMonitorService : Service() {
                         pushNotificationUpdate()
                     }
                 }
-                Intent.ACTION_SCREEN_ON -> { isScreenOn = true; backgroundHandler.post(powerRunnable) }
-                Intent.ACTION_SCREEN_OFF -> { isScreenOn = false; backgroundHandler.removeCallbacks(powerRunnable) }
+                Intent.ACTION_SCREEN_ON -> { isScreenOn = true; backgroundHandler.post(powerRunnable); backgroundHandler.post(gamingEngineRunnable) }
+                Intent.ACTION_SCREEN_OFF -> { isScreenOn = false; backgroundHandler.removeCallbacks(powerRunnable); backgroundHandler.removeCallbacks(gamingEngineRunnable); HardwareThermalControl.setPeakPerformanceMode(false) }
                 "ACTION_TOGGLE_SMART_GOVERNOR" -> {
                     isSmartGovernorActive = intent.getBooleanExtra("state", false)
                 }
@@ -102,6 +146,7 @@ class TempMonitorService : Service() {
         }, Context.RECEIVER_NOT_EXPORTED)
         
         backgroundHandler.post(dbLogRunnable)
+        backgroundHandler.post(gamingEngineRunnable)
     }
 
     private fun triggerDatabaseSnapshot(temp: Int, isCharging: Boolean, screenOn: Boolean) {
@@ -120,17 +165,16 @@ class TempMonitorService : Service() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         val safeTemp = settings.warningTemp - 1
 
-        // 1. Audio/Visual Thermal Overheat Warnings
         if (temp >= settings.warningTemp) {
             HardwareThermalControl.playThermalAlert()
-            if (isSmartGovernorActive) backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
+            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
 
             val muteIntent = PendingIntent.getBroadcast(this, 0, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_MUTE" }, PendingIntent.FLAG_IMMUTABLE)
             val coolIntent = PendingIntent.getBroadcast(this, 1, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_COOLDOWN" }, PendingIntent.FLAG_IMMUTABLE)
 
             val alertNotif = Notification.Builder(this, ALERT_CHANNEL_ID)
                 .setContentTitle("⚠️ OVERHEATING: ${temp}°C")
-                .setContentText(if (isSmartGovernorActive) "Smart Governor Actively Throttling..." else "Hardware limits exceeded.")
+                .setContentText("Hardware limits exceeded.")
                 .setSmallIcon(drawIcon("!"))
                 .setColor(Color.RED)
                 .setOngoing(true)
@@ -145,10 +189,9 @@ class TempMonitorService : Service() {
             if (HardwareThermalControl.isEmergencyCooldownActive) {
                 HardwareThermalControl.clearEmergencyCooldown()
             }
-            if (isSmartGovernorActive) backgroundHandler.post { HardwareThermalControl.throttlePrimeCore(false) }
+            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.throttlePrimeCore(false) }
         }
 
-        // 2. Unified Hardware Charging Evaluator
         if (temp >= settings.cutoffTemp) isThermalCutoff = true
         else if (temp <= settings.resumeTemp) isThermalCutoff = false
 
@@ -163,10 +206,8 @@ class TempMonitorService : Service() {
             val shouldBeThrottled = isThermalCutoff || isPctCutoff
             if (shouldBeThrottled && !HardwareThermalControl.isChargingThrottled) {
                 HardwareThermalControl.setChargingEnabled(false)
-                AppLogger.log("KERNEL: PMIC Blocked (Thermal: $isThermalCutoff, Limit: $isPctCutoff)")
             } else if (!shouldBeThrottled && HardwareThermalControl.isChargingThrottled) {
                 HardwareThermalControl.setChargingEnabled(true)
-                AppLogger.log("KERNEL: PMIC Resumed (Thermal: $isThermalCutoff, Limit: $isPctCutoff)")
             }
         }
     }
