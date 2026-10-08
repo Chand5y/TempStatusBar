@@ -385,6 +385,7 @@ class MainActivity : Activity() {
     private var isCpuTabActive = false
     private val uiHandler = Handler(Looper.getMainLooper())
     private var isPaused = false
+    private var isSmartGovernorEnabled = false
     
     private var downX = 0f
     private var downY = 0f
@@ -418,14 +419,24 @@ class MainActivity : Activity() {
         } catch (t: Throwable) { AppLogger.handleFatalCrash(t) }
     }
 
-    private fun styleControl(view: View) {
-        val accentColor = ColorStateList.valueOf(Color.parseColor("#2196F3"))
+    private fun styleControl(view: View, isDark: Boolean) {
+        val accentColor = Color.parseColor("#2196F3")
+        val accentTrack = Color.parseColor("#90CAF9")
+        
+        val offThumb = if (isDark) Color.parseColor("#BDBDBD") else Color.parseColor("#FAFAFA")
+        val offTrack = if (isDark) Color.parseColor("#424242") else Color.parseColor("#BDBDBD")
+
+        val states = arrayOf(
+            intArrayOf(android.R.attr.state_checked),
+            intArrayOf(-android.R.attr.state_checked)
+        )
+
         if (view is SeekBar) {
-            view.progressTintList = accentColor
-            view.thumbTintList = accentColor
+            view.progressTintList = ColorStateList.valueOf(accentColor)
+            view.thumbTintList = ColorStateList.valueOf(accentColor)
         } else if (view is Switch) {
-            view.thumbTintList = accentColor
-            view.trackTintList = ColorStateList.valueOf(Color.parseColor("#90CAF9"))
+            view.thumbTintList = ColorStateList(states, intArrayOf(accentColor, offThumb))
+            view.trackTintList = ColorStateList(states, intArrayOf(accentTrack, offTrack))
         }
     }
 
@@ -788,7 +799,7 @@ class MainActivity : Activity() {
         warnLabel = txt("🔔 Warning Sound Alert: ${settings.warningTemp}°C", 14f, tPri); c3.addView(warnLabel)
         warnS = SeekBar(this).apply { 
             max = 13; progress = settings.warningTemp - 35; setPadding(0,10,0,20)
-            styleControl(this)
+            styleControl(this, isDark)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
                     val v = 35 + p; settings.warningTemp = v; warnLabel.text = "🔔 Warning Sound Alert: $v°C"
@@ -803,7 +814,7 @@ class MainActivity : Activity() {
         cutoffLabel = txt("🛑 Cut Off Charging (PMIC): ${settings.cutoffTemp}°C", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(cutoffLabel)
         cutS = SeekBar(this).apply { 
             max = 12; progress = settings.cutoffTemp - 38; setPadding(0,10,0,20)
-            styleControl(this)
+            styleControl(this, isDark)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
                     val v = 38 + p; settings.cutoffTemp = v; cutoffLabel.text = "🛑 Cut Off Charging (PMIC): $v°C"
@@ -819,7 +830,7 @@ class MainActivity : Activity() {
         resumeLabel = txt("🔄 Resume Charging: ${settings.resumeTemp}°C", 14f, tPri).apply { setPadding(0,10,0,0) }; c3.addView(resumeLabel)
         resS = SeekBar(this).apply { 
             max = 13; progress = settings.resumeTemp - 32; setPadding(0,10,0,10)
-            styleControl(this)
+            styleControl(this, isDark)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
                     var v = 32 + p
@@ -837,8 +848,8 @@ class MainActivity : Activity() {
 
         val c4 = card(cBg)
         c4.addView(txt("⚙️ NOTIFICATION PREFERENCES", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
-        val s1 = Switch(this).apply { text = "📱 Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; styleControl(this); setOnCheckedChangeListener { v, c -> haptic(v); settings.showNotification = c; startMonitorService() } }
-        val s2 = Switch(this).apply { text = "⚡ Show Real-Time Wattage View"; setTextColor(tPri); isChecked = settings.showPowerMetrics; styleControl(this); setOnCheckedChangeListener { v, c -> haptic(v); settings.showPowerMetrics = c; startMonitorService() } }
+        val s1 = Switch(this).apply { text = "📱 Show Status Bar Notification"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.showNotification; styleControl(this, isDark); setOnCheckedChangeListener { v, c -> haptic(v); settings.showNotification = c; startMonitorService() } }
+        val s2 = Switch(this).apply { text = "⚡ Show Real-Time Wattage View"; setTextColor(tPri); isChecked = settings.showPowerMetrics; styleControl(this, isDark); setOnCheckedChangeListener { v, c -> haptic(v); settings.showPowerMetrics = c; startMonitorService() } }
         c4.addView(s1); c4.addView(s2)
         lay.addView(c4)
 
@@ -873,13 +884,13 @@ class MainActivity : Activity() {
         val rootTag = if (!hasRoot) " (Root Required)" else ""
         cLimiter.addView(txt("⚡ SMART CHARGE LIMITER$rootTag", 12f, Color.GRAY).apply { setPadding(0,0,0,20) })
 
-        val swLimiter = Switch(this).apply { text = "Enable Charge Limiter"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.chargeLimitEnabled; styleControl(this) }
+        val swLimiter = Switch(this).apply { text = "Enable Charge Limiter"; setTextColor(tPri); setPadding(0,0,0,15); isChecked = settings.chargeLimitEnabled; styleControl(this, isDark) }
         cLimiter.addView(swLimiter)
 
         maxChargeLabel = txt("🛑 Cut Off Charging At: ${settings.chargeLimitMax}%", 14f, tPri).apply { setPadding(0,10,0,0) }
         maxChargeS = SeekBar(this).apply { 
             max = 50; progress = settings.chargeLimitMax - 50; setPadding(0,10,0,20)
-            styleControl(this)
+            styleControl(this, isDark)
             setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
                     val v = 50 + p; settings.chargeLimitMax = v; maxChargeLabel.text = "🛑 Cut Off Charging At: $v%"
@@ -897,7 +908,7 @@ class MainActivity : Activity() {
         resChargeLabel = txt("🔄 Resume Charging At: ${settings.chargeLimitResume}%", 14f, tPri).apply { setPadding(0,10,0,0) }
         resChargeS = SeekBar(this).apply { 
             max = 50; progress = settings.chargeLimitResume - 40; setPadding(0,10,0,10)
-            styleControl(this)
+            styleControl(this, isDark)
             setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
                     var v = 40 + p
@@ -939,12 +950,11 @@ class MainActivity : Activity() {
         val tPri = if (isDark) Color.WHITE else Color.BLACK
         val rootTag = if (!hasRoot) " (Root Required)" else ""
 
-        // NEW: GAMING PERFORMANCE ENGINE
         val cGame = card(cBg) { showModal("Gaming Performance Engine", "This powerful engine overrides the system governor to maintain PEAK performance (locking prime cores and freezing Xiaomi's Joyose throttler) until your exact target temperature is breached.\n\nWhile a gaming app is running, it will automatically banish all non-exempt background apps to the Silver Efficiency Cores to free up processing power.") }
         cGame.addView(txt("🎮 GAMING PERFORMANCE ENGINE$rootTag", 12f, Color.parseColor("#FF9800"), true).apply { setPadding(0,0,0,20) })
         
         val sgGameSwitch = Switch(this).apply {
-            text = "Enable Gaming Optimizations"; setTextColor(tPri); isChecked = settings.gamingModeEnabled; styleControl(this)
+            text = "Enable Gaming Optimizations"; setTextColor(tPri); isChecked = settings.gamingModeEnabled; styleControl(this, isDark)
             setOnCheckedChangeListener { v, c -> haptic(v); settings.gamingModeEnabled = c; startMonitorService() }
         }
         cGame.addView(sgGameSwitch)
@@ -954,7 +964,7 @@ class MainActivity : Activity() {
         
         throttleS = SeekBar(this).apply { 
             max = 10; progress = settings.gameThrottleTemp - 35; setPadding(0,10,0,25)
-            styleControl(this)
+            styleControl(this, isDark)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
                     val v = 35 + p; settings.gameThrottleTemp = v; throttleLabel.text = "Target Peak Temp (Throttle Threshold): $v°C"
@@ -967,10 +977,11 @@ class MainActivity : Activity() {
         cGame.addView(throttleS)
 
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f }
-        btnRow.addView(createBtn("SELECT GAMES", Color.parseColor("#2196F3")) { showAppSelectionDialog("Select Gaming Apps", true) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin=10 } })
-        btnRow.addView(createBtn("EXEMPT APPS", Color.parseColor("#4CAF50")) { showAppSelectionDialog("Select Important Background Apps", false) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin=10 } })
+        val sGameBtn = createBtn("SELECT GAMES", Color.parseColor("#2196F3")) { showAppSelectionDialog("Select Gaming Apps", true) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin=10 } }
+        val exAppBtn = createBtn("EXEMPT APPS", Color.parseColor("#4CAF50")) { showAppSelectionDialog("Select Important Background Apps", false) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin=10 } }
+        btnRow.addView(sGameBtn); btnRow.addView(exAppBtn)
         cGame.addView(btnRow)
-        if (!hasRoot) cGame.alpha = 0.4f
+        if (!hasRoot) { cGame.alpha = 0.4f; sgGameSwitch.isEnabled=false; throttleS.isEnabled=false; sGameBtn.isEnabled=false; exAppBtn.isEnabled=false }
         lay.addView(cGame)
 
         val rCard = card(cBg) { if(hasRoot) showRamDetailsModal() else Toast.makeText(this,"Root Required", Toast.LENGTH_SHORT).show() }
@@ -1064,7 +1075,7 @@ class MainActivity : Activity() {
         val c2 = card(cBg)
         c2.addView(txt("LIVE FPS METRE OVERLAY", 12f, Color.GRAY).apply { setPadding(0, 0, 0, 10) })
         val sFps = Switch(this).apply {
-            text = "Show Temperature on Pill"; setTextColor(tPri); setPadding(0,0,0,20); styleControl(this)
+            text = "Show Temperature on Pill"; setTextColor(tPri); setPadding(0,0,0,20); styleControl(this, isDark)
             isChecked = sharedPrefs.getBoolean("showTempInFpsOverlay", false)
             setOnCheckedChangeListener { v, c -> haptic(v); sharedPrefs.edit().putBoolean("showTempInFpsOverlay", c).apply() }
         }
