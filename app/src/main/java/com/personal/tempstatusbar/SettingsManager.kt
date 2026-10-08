@@ -37,4 +37,21 @@ class SettingsManager(context: Context) {
     var chargeLimitResume: Int
         get() = prefs.getInt("chargeLimitResume", 75)
         set(value) = prefs.edit().putInt("chargeLimitResume", value).apply()
+
+    // --- GAMING ENGINE PREFS ---
+    var gamingModeEnabled: Boolean
+        get() = prefs.getBoolean("gamingModeEnabled", false)
+        set(value) = prefs.edit().putBoolean("gamingModeEnabled", value).apply()
+
+    var gameThrottleTemp: Int
+        get() = prefs.getInt("gameThrottleTemp", 41)
+        set(value) = prefs.edit().putInt("gameThrottleTemp", value).apply()
+
+    var gamingApps: Set<String>
+        get() = prefs.getStringSet("gamingApps", emptySet()) ?: emptySet()
+        set(value) = prefs.edit().putStringSet("gamingApps", value).apply()
+
+    var exemptApps: Set<String>
+        get() = prefs.getStringSet("exemptApps", emptySet()) ?: emptySet()
+        set(value) = prefs.edit().putStringSet("exemptApps", value).apply()
 }
