@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <application
         android:allowBackup="true"
@@ -17,7 +19,7 @@
         android:label="Temp Monitor"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
-        
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -29,43 +31,26 @@
             </intent-filter>
         </activity>
 
-        <service 
-            android:name=".TempMonitorService" 
+        <service
+            android:name=".TempMonitorService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-            
-        <service 
-            android:name=".FpsOverlayService" 
+
+        <service
+            android:name=".FpsOverlayService"
             android:exported="false"
             android:foregroundServiceType="specialUse" />
+
         <service
-    android:name=".NetworkInfoTileService"
-    android:label="Phone Info (Network)"
-    android:icon="@drawable/ic_network_tile"
-    android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
-    android:exported="true">
-    <intent-filter>
-        <action android:name="android.service.quicksettings.action.QS_TILE" />
-    </intent-filter>
-</service>
-        
-        
-        <service
-            android:name=".FpsTileService"
-            android:exported="true"
-            android:icon="@drawable/ic_app_logo"
-            android:label="FPS Overlay"
-            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            android:name=".NetworkInfoTileService"
+            android:label="Phone Info (Network)"
+            android:icon="@drawable/ic_network_tile"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
-
-        <receiver android:name=".ThermalActionReceiver" android:exported="false">
-            <intent-filter>
-                <action android:name="ACTION_MUTE" />
-                <action android:name="ACTION_COOLDOWN" />
-            </intent-filter>
-        </receiver>
+        
     </application>
 </manifest>
