@@ -42,6 +42,17 @@
             android:foregroundServiceType="specialUse" />
 
         <service
+            android:name=".FpsTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_app_logo"
+            android:label="FPS Overlay"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
             android:name=".NetworkInfoTileService"
             android:label="Phone Info (Network)"
             android:icon="@drawable/ic_network_tile"
@@ -52,5 +63,14 @@
             </intent-filter>
         </service>
         
+        <receiver 
+            android:name=".ThermalActionReceiver" 
+            android:exported="false">
+            <intent-filter>
+                <action android:name="ACTION_MUTE" />
+                <action android:name="ACTION_COOLDOWN" />
+            </intent-filter>
+        </receiver>
+
     </application>
 </manifest>
