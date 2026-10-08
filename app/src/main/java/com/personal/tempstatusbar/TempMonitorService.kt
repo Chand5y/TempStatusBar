@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.graphics.*
 import android.graphics.drawable.Icon
 import android.os.*
+import kotlin.concurrent.thread
 import kotlin.math.abs
 
 class TempMonitorService : Service() {
@@ -34,6 +35,8 @@ class TempMonitorService : Service() {
 
     private var isThermalCutoff = false
     private var isPctCutoff = false
+    
+    private var gpuLogCounter = 0
 
     private val iconSize = 64
     private val cachedBitmap = Bitmap.createBitmap(iconSize, iconSize, Bitmap.Config.ARGB_8888)
@@ -72,6 +75,22 @@ class TempMonitorService : Service() {
                     val isGamingApp = settings.gamingApps.contains(currentForeground)
                     
                     if (isGamingApp) {
+                        
+                        // Dedicated GPU Diagnostics Tracker (Logs every ~6 seconds)
+                        gpuLogCounter++
+                        if (gpuLogCounter >= 2) {
+                            thread {
+                                val gpuLoad = HardwareThermalControl.getGpuUsage()
+                                val gpuFreq = HardwareThermalControl.getGpuFrequency()
+                                val primeCoreFreq = HardwareThermalControl.getCoreFrequencies().getOrNull(7) ?: "Offline"
+                                backgroundHandler.post {
+                                    AppLogger.log("📊 GPU DIAGNOSTICS -> Load: $gpuLoad | Clock: $gpuFreq | CPU C7: $primeCoreFreq")
+                                }
+                            }
+                            gpuLogCounter = 0
+                        }
+
+                        // Gaming Mode Throttle Logic
                         if (lastTemp < settings.gameThrottleTemp) {
                             HardwareThermalControl.setPeakPerformanceMode(true)
                             HardwareThermalControl.throttlePrimeCore(false)
