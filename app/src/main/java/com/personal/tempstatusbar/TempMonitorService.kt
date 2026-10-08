@@ -76,7 +76,6 @@ class TempMonitorService : Service() {
                     
                     if (isGamingApp) {
                         
-                        // Dedicated GPU Diagnostics Tracker (Logs every ~6 seconds)
                         gpuLogCounter++
                         if (gpuLogCounter >= 2) {
                             thread {
@@ -90,10 +89,10 @@ class TempMonitorService : Service() {
                             gpuLogCounter = 0
                         }
 
-                        // Gaming Mode Throttle Logic
                         if (lastTemp < settings.gameThrottleTemp) {
                             HardwareThermalControl.setPeakPerformanceMode(true)
-                            HardwareThermalControl.throttlePrimeCore(false)
+                            // Forces unthrottle constantly to fight back against the OS
+                            HardwareThermalControl.forceUnthrottlePrimeCore()
                             HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
                         } else {
                             HardwareThermalControl.setPeakPerformanceMode(false)
@@ -168,7 +167,8 @@ class TempMonitorService : Service() {
     }
 
     private fun triggerDatabaseSnapshot(temp: Int, isCharging: Boolean, screenOn: Boolean) {
-        backgroundHandler.post {
+        // Runs on an isolated thread to prevent the 'top' command from deadlocking the tracker loop!
+        thread {
             val chargeType = if (isCharging) "Charging AC" else "Discharging (Battery)"
             val hasRoot = HardwareThermalControl.isRootAvailable()
             val details = if (hasRoot) {
