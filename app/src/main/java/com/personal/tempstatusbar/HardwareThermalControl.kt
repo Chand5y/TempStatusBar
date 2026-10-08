@@ -10,6 +10,7 @@ import android.os.Vibrator
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import kotlin.concurrent.thread
 
 data class RamProc(val name: String, val sizeMb: Int, val pid: Int)
 data class ProcessData(val pid: Int, val name: String, val cpu: String)
@@ -25,6 +26,7 @@ object HardwareThermalControl {
     private var isMuted = false
     private var cachedRootState: Boolean? = null
     private var lastRootCheckTime = 0L
+    private var isPeakPerformanceActive = false
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -39,32 +41,71 @@ object HardwareThermalControl {
             return false
         }
         var exitCode = -1
-        var stdout = ""
-        var stderr = ""
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-            stdout = process.inputStream.bufferedReader().readText().trim()
-            stderr = process.errorStream.bufferedReader().readText().trim()
             exitCode = process.waitFor()
-            
-            AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode | OUT: ${stdout.take(40)} | ERR: ${stderr.take(40)}")
+            AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
             return exitCode == 0
-        } catch (e: Exception) {
-            AppLogger.log("KERNEL CRASH during [$action]: ${e.message}")
-            return false
-        }
+        } catch (e: Exception) { return false }
     }
 
     fun forceRefreshRate(hz: Int) {
-        val cmd = "settings put system peak_refresh_rate $hz; " +
-                  "settings put system min_refresh_rate $hz; " +
-                  "settings put system user_refresh_rate $hz; " +
-                  "settings put secure miui_refresh_rate $hz; " +
-                  "settings put system miui_refresh_rate $hz; " +
-                  "service call SurfaceFlinger 1035 i32 $hz"
+        val cmd = "settings put system peak_refresh_rate $hz; settings put system min_refresh_rate $hz; settings put system user_refresh_rate $hz; settings put secure miui_refresh_rate $hz; settings put system miui_refresh_rate $hz; service call SurfaceFlinger 1035 i32 $hz"
         executeRootCommand("Force Display Refresh to ${hz}Hz", cmd)
     }
 
+    // --- GAMING PERFORMANCE ENGINE ---
+    fun setPeakPerformanceMode(enable: Boolean) {
+        if (!isRootAvailable() || isPeakPerformanceActive == enable) return
+        isPeakPerformanceActive = enable
+        
+        thread {
+            if (enable) {
+                AppLogger.log("GAMING ENGINE: Peak Performance Engaged")
+                executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
+                executeRootCommand("Freeze Joyose (Xiaomi Throttler)", "killall -STOP joyose")
+            } else {
+                AppLogger.log("GAMING ENGINE: Normal Performance Restored")
+                executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
+                executeRootCommand("Resume Joyose (Xiaomi Throttler)", "killall -CONT joyose")
+            }
+        }
+    }
+
+    fun optimizeBackgroundForGaming(exemptPackages: Set<String>, foregroundPkg: String) {
+        if (!isRootAvailable()) return
+        thread {
+            try {
+                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "ps -A -o pid,NAME"))
+                val reader = p.inputStream.bufferedReader()
+                var line: String?
+                val pidsToPin = mutableListOf<Int>()
+                
+                while (reader.readLine().also { line = it } != null) {
+                    val parts = line!!.trim().split(Regex("\\s+"))
+                    if (parts.size >= 2) {
+                        val pid = parts[0].toIntOrNull() ?: continue
+                        val name = parts[1]
+                        
+                        if (name.contains(".") && !name.startsWith("android.") && !name.startsWith("com.android.") && !name.startsWith("com.miui.") && !name.startsWith("com.qualcomm.")) {
+                            val isExempt = exemptPackages.any { name.contains(it) }
+                            val isForeground = name.contains(foregroundPkg)
+                            val isSelf = name.contains("tempstatusbar")
+                            
+                            if (!isExempt && !isForeground && !isSelf) pidsToPin.add(pid)
+                        }
+                    }
+                }
+                
+                if (pidsToPin.isNotEmpty()) {
+                    val pidList = pidsToPin.joinToString(" ")
+                    executeRootCommand("Pin Background Apps to Silver Cores", "for p in $pidList; do taskset -p 0f \$p; done")
+                }
+            } catch (e: Exception) {}
+        }
+    }
+
+    // --- STANDARD SYSTEM CONTROL ---
     fun getHardwareInfo(): String {
         val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(java.util.Locale.getDefault())
         return when {
@@ -114,18 +155,10 @@ object HardwareThermalControl {
     fun setChargingEnabled(enable: Boolean, isManualToggle: Boolean = false) {
         if (isManualToggle) isManualBypassActive = !enable
         val action = if (enable) "Restore Charge" else "Isolate Battery"
-        
-        // Multi-level PMIC injection bridging Android generic, Snapdragon generic, and Xiaomi specific hardware nodes
         val cmd = if (enable) {
-            "echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; " +
-            "echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
-            "echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; " +
-            "echo 0 > /sys/class/qcom-battery/input_suspend 2>/dev/null"
+            "echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 0 > /sys/class/qcom-battery/input_suspend 2>/dev/null"
         } else {
-            "echo 0 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; " +
-            "echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; " +
-            "echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; " +
-            "echo 1 > /sys/class/qcom-battery/input_suspend 2>/dev/null"
+            "echo 0 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 1 > /sys/class/qcom-battery/input_suspend 2>/dev/null"
         }
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
@@ -135,18 +168,13 @@ object HardwareThermalControl {
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
 
     fun setCoreOnline(coreId: Int, online: Boolean) {
-        val action = if (online) "Enable Core $coreId" else "Disable Core $coreId"
-        val cmd = "echo ${if (online) "1" else "0"} > /sys/devices/system/cpu/cpu$coreId/online"
-        executeRootCommand(action, cmd)
+        executeRootCommand(if (online) "Enable Core $coreId" else "Disable Core $coreId", "echo ${if (online) "1" else "0"} > /sys/devices/system/cpu/cpu$coreId/online")
     }
 
     fun throttlePrimeCore(throttle: Boolean) {
         val action = if (throttle) "Throttle Prime Core (C7)" else "Restore Prime Core (C7)"
-        val cmd = if (throttle) {
-            "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
-        } else {
-            "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
-        }
+        val cmd = if (throttle) "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
+                  else "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
         executeRootCommand(action, cmd)
     }
 
@@ -247,5 +275,5 @@ object HardwareThermalControl {
         return list
     }
 
-    fun destroy() { try { setChargingEnabled(true); toneGen?.release(); vibrator?.cancel() } catch (e: Exception) {} }
+    fun destroy() { try { setPeakPerformanceMode(false); setChargingEnabled(true); toneGen?.release(); vibrator?.cancel() } catch (e: Exception) {} }
 }
