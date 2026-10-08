@@ -128,7 +128,6 @@ class TemperatureChartView(context: Context) : View(context) {
             }
         }
 
-        // Dynamic Temperature Gradient: Green < 32, Yellow 32-34, Orange 35-39, Red 40+
         val y40 = padT + plotH - (((40f - minTemp) / tempRange) * plotH)
         val y35 = padT + plotH - (((35f - minTemp) / tempRange) * plotH)
         val y32 = padT + plotH - (((32f - minTemp) / tempRange) * plotH)
@@ -359,6 +358,7 @@ class MainActivity : Activity() {
     private lateinit var resS: SeekBar
     private lateinit var maxChargeS: SeekBar
     private lateinit var resChargeS: SeekBar
+    private lateinit var throttleS: SeekBar
 
     private lateinit var detailTimeText: TextView
     private lateinit var detailBadgesText: TextView
@@ -369,6 +369,7 @@ class MainActivity : Activity() {
     private lateinit var resumeLabel: TextView
     private lateinit var maxChargeLabel: TextView
     private lateinit var resChargeLabel: TextView
+    private lateinit var throttleLabel: TextView
     private lateinit var batteryGraphic: BatteryGraphicView
     private lateinit var livePowerText: TextView
     private lateinit var currentLevelText: TextView
@@ -384,7 +385,6 @@ class MainActivity : Activity() {
     private var isCpuTabActive = false
     private val uiHandler = Handler(Looper.getMainLooper())
     private var isPaused = false
-    private var isSmartGovernorEnabled = false
     
     private var downX = 0f
     private var downY = 0f
@@ -503,6 +503,37 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showAppSelectionDialog(title: String, isGamingAppList: Boolean) {
+        val pm = packageManager
+        thread {
+            try {
+                val installed = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+                    .filter { pm.getLaunchIntentForPackage(it.packageName) != null }
+                    .sortedBy { pm.getApplicationLabel(it).toString() }
+                
+                val appNames = installed.map { pm.getApplicationLabel(it).toString() }.toTypedArray()
+                val pkgNames = installed.map { it.packageName }.toTypedArray()
+                
+                val currentSet = if (isGamingAppList) settings.gamingApps else settings.exemptApps
+                val checkedItems = pkgNames.map { currentSet.contains(it) }.toBooleanArray()
+                val selectedPkgs = currentSet.toMutableSet()
+                
+                uiHandler.post {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle(title)
+                        .setMultiChoiceItems(appNames, checkedItems) { _, which, isChecked ->
+                            if (isChecked) selectedPkgs.add(pkgNames[which]) else selectedPkgs.remove(pkgNames[which])
+                        }
+                        .setPositiveButton("SAVE") { _, _ ->
+                            if (isGamingAppList) settings.gamingApps = selectedPkgs else settings.exemptApps = selectedPkgs
+                            Toast.makeText(this@MainActivity, "Saved ${selectedPkgs.size} apps", Toast.LENGTH_SHORT).show()
+                        }
+                        .setNegativeButton("CANCEL", null).show()
+                }
+            } catch (e: Exception) {}
+        }
+    }
+
     private fun createBtn(t: String, bgCol: Int, onClick: () -> Unit): Button {
         return Button(this).apply {
             text = t; textSize = 11f; setTextColor(Color.WHITE); isAllCaps = false
@@ -599,6 +630,7 @@ class MainActivity : Activity() {
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (currentTabIndex == 0 && (isTouchInside(ev, chartView) || isTouchInside(ev, warnS) || isTouchInside(ev, cutS) || isTouchInside(ev, resS))) return super.dispatchTouchEvent(ev)
         if (currentTabIndex == 1 && (isTouchInside(ev, maxChargeS) || isTouchInside(ev, resChargeS))) return super.dispatchTouchEvent(ev)
+        if (currentTabIndex == 2 && isTouchInside(ev, throttleS)) return super.dispatchTouchEvent(ev)
         if (currentTabIndex == 3 && (isTouchInside(ev, fpsChartView) || isTouchInside(ev, fpsSessionHScroll))) return super.dispatchTouchEvent(ev)
         
         when (ev.action) {
@@ -905,6 +937,41 @@ class MainActivity : Activity() {
         val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 20) }
         val cBg = if (isDark) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F6")
         val tPri = if (isDark) Color.WHITE else Color.BLACK
+        val rootTag = if (!hasRoot) " (Root Required)" else ""
+
+        // NEW: GAMING PERFORMANCE ENGINE
+        val cGame = card(cBg) { showModal("Gaming Performance Engine", "This powerful engine overrides the system governor to maintain PEAK performance (locking prime cores and freezing Xiaomi's Joyose throttler) until your exact target temperature is breached.\n\nWhile a gaming app is running, it will automatically banish all non-exempt background apps to the Silver Efficiency Cores to free up processing power.") }
+        cGame.addView(txt("🎮 GAMING PERFORMANCE ENGINE$rootTag", 12f, Color.parseColor("#FF9800"), true).apply { setPadding(0,0,0,20) })
+        
+        val sgGameSwitch = Switch(this).apply {
+            text = "Enable Gaming Optimizations"; setTextColor(tPri); isChecked = settings.gamingModeEnabled; styleControl(this)
+            setOnCheckedChangeListener { v, c -> haptic(v); settings.gamingModeEnabled = c; startMonitorService() }
+        }
+        cGame.addView(sgGameSwitch)
+
+        throttleLabel = txt("Target Peak Temp (Throttle Threshold): ${settings.gameThrottleTemp}°C", 13f, tPri).apply { setPadding(0,25,0,0) }
+        cGame.addView(throttleLabel)
+        
+        throttleS = SeekBar(this).apply { 
+            max = 10; progress = settings.gameThrottleTemp - 35; setPadding(0,10,0,25)
+            styleControl(this)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) { 
+                    val v = 35 + p; settings.gameThrottleTemp = v; throttleLabel.text = "Target Peak Temp (Throttle Threshold): $v°C"
+                    if (b) s?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) { s?.let { haptic(it) } }
+            })
+        }
+        cGame.addView(throttleS)
+
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f }
+        btnRow.addView(createBtn("SELECT GAMES", Color.parseColor("#2196F3")) { showAppSelectionDialog("Select Gaming Apps", true) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin=10 } })
+        btnRow.addView(createBtn("EXEMPT APPS", Color.parseColor("#4CAF50")) { showAppSelectionDialog("Select Important Background Apps", false) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin=10 } })
+        cGame.addView(btnRow)
+        if (!hasRoot) cGame.alpha = 0.4f
+        lay.addView(cGame)
 
         val rCard = card(cBg) { if(hasRoot) showRamDetailsModal() else Toast.makeText(this,"Root Required", Toast.LENGTH_SHORT).show() }
         val hdRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -920,16 +987,6 @@ class MainActivity : Activity() {
         if (!hasRoot) { cleanBtn.isEnabled=false; cleanBtn.alpha=0.5f }
         ramRow.addView(cleanBtn)
         rCard.addView(ramRow); lay.addView(rCard)
-
-        val rootTag = if (!hasRoot) " (Root Required)" else ""
-        val sgCard = card(cBg) { showModal("Smart Thermal Governor", "Throttles Prime Core (C7) and pins background apps to silver cores when Warning Temp is hit.") }
-        val sgSwitch = Switch(this).apply {
-            text = "Auto-Thermal Smart Governor$rootTag"; setTextColor(tPri); isChecked = isSmartGovernorEnabled; styleControl(this)
-            setOnCheckedChangeListener { v, c -> haptic(v); isSmartGovernorEnabled = c; sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply { putExtra("state", c); setPackage(packageName) }) }
-        }
-        if (!hasRoot) { sgSwitch.isEnabled=false; sgCard.alpha=0.4f }
-        sgCard.addView(sgSwitch)
-        lay.addView(sgCard)
 
         val cCard = card(cBg)
         val cCardHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0,0,0,20) }
