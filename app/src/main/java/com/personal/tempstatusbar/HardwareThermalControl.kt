@@ -47,11 +47,41 @@ object HardwareThermalControl {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             exitCode = process.waitFor()
-            if (action != "Force Prime Core Max") {
+            // Silenced to prevent cluttering the new Deep Diagnostic logs
+            if (action != "Force Prime Core Max" && action != "Deep Hardware Snapshot") {
                 AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
             }
             return exitCode == 0
         } catch (e: Exception) { return false }
+    }
+
+    fun getDeepHardwareSnapshot(): String {
+        if (!isRootAvailable()) return "NO ROOT"
+        try {
+            val cmd = """
+                gl=${'$'}(cat /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage 2>/dev/null | awk '{print ${'$'}1}' || echo '--')
+                gf=${'$'}(cat /sys/class/kgsl/kgsl-3d0/devfreq/cur_freq 2>/dev/null || cat /sys/class/kgsl/kgsl-3d0/gpuclk 2>/dev/null || echo '0')
+                c0=${'$'}(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo '0')
+                c4=${'$'}(cat /sys/devices/system/cpu/cpu4/cpufreq/scaling_cur_freq 2>/dev/null || echo '0')
+                c7=${'$'}(cat /sys/devices/system/cpu/cpu7/cpufreq/scaling_cur_freq 2>/dev/null || echo '0')
+                echo "${'$'}gl|${'$'}gf|${'$'}c0|${'$'}c4|${'$'}c7"
+            """.trimIndent()
+            
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+            val raw = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.trim() ?: return "READ_ERROR"
+            p.waitFor()
+            
+            val parts = raw.split("|")
+            if (parts.size == 5) {
+                val gLoad = parts[0].replace("%", "").trim()
+                val gFreq = (parts[1].toLongOrNull() ?: 0L) / 1000000L
+                val c0Freq = (parts[2].toLongOrNull() ?: 0L) / 1000L
+                val c4Freq = (parts[3].toLongOrNull() ?: 0L) / 1000L
+                val c7Freq = (parts[4].toLongOrNull() ?: 0L) / 1000L
+                return "GPU: $gLoad% @ ${gFreq}MHz | C0: ${c0Freq}MHz | C4: ${c4Freq}MHz | C7: ${c7Freq}MHz"
+            }
+        } catch (e: Exception) {}
+        return "DATA_PARSE_ERROR"
     }
 
     fun forceRefreshRate(hz: Int) {
@@ -66,28 +96,12 @@ object HardwareThermalControl {
         thread {
             if (enable) {
                 AppLogger.log("GAMING ENGINE: Peak Performance Engaged")
-                
-                // 1. Force CPU Gold & Prime cores to max governor
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
-                
-                // 2. Qualcomm Adreno Boost: Turns off GPU idling and forces the hardware bus to stay aggressively active
-                val gpuBoostCmd = "echo 1 > /sys/class/kgsl/kgsl-3d0/devfreq/adreno_boost 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/devfreq/adreno_idler_active 2>/dev/null; echo 1 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null"
-                executeRootCommand("GPU -> Adreno Boost", gpuBoostCmd)
-                
-                // 3. Suspend Xiaomi Throttling Daemons
                 val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
                 executeRootCommand("Freeze Thermal Daemons", stopCmd)
             } else {
                 AppLogger.log("GAMING ENGINE: Normal Performance Restored")
-                
-                // 1. Restore CPU
                 executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
-                
-                // 2. Restore GPU (Turns idling back on to save battery)
-                val gpuRestoreCmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/devfreq/adreno_boost 2>/dev/null; echo 1 > /sys/class/kgsl/kgsl-3d0/devfreq/adreno_idler_active 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null"
-                executeRootCommand("GPU -> Auto Mode", gpuRestoreCmd)
-
-                // 3. Restore Xiaomi Throttling Daemons
                 val resumeCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done"
                 executeRootCommand("Resume Thermal Daemons", resumeCmd)
             }
