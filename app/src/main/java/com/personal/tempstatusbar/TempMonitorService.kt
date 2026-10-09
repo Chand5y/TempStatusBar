@@ -50,7 +50,6 @@ class TempMonitorService : Service() {
                     val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
                     val pwr = if(stats.isCharging) "+${stats.wattage}W" else "-${stats.wattage}W"
                     
-                    // NEW: Reads directly from shared memory
                     val currentFps = HardwareThermalControl.liveFps
                     val fpsStr = if (currentFps > 0) "$currentFps FPS" else "-- FPS"
                     
@@ -103,17 +102,18 @@ class TempMonitorService : Service() {
                     if (isGamingApp) {
                         if (lastTemp < settings.gameThrottleTemp) {
                             HardwareThermalControl.setPeakPerformanceMode(true)
-                            HardwareThermalControl.forceUnthrottlePrimeCore()
+                            // NEW: Uncaps BOTH Prime and Gold cores every 3 seconds
+                            HardwareThermalControl.forceUnthrottleCPU()
                             HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
                         } else {
                             HardwareThermalControl.setPeakPerformanceMode(false)
-                            HardwareThermalControl.throttlePrimeCore(true)
+                            HardwareThermalControl.throttleCPU(true)
                         }
                     } else {
                         HardwareThermalControl.setPeakPerformanceMode(false)
                         HardwareThermalControl.clearGamingOptimization()
                         if (!isSmartGovernorActive || lastTemp < settings.warningTemp) {
-                            HardwareThermalControl.throttlePrimeCore(false)
+                            HardwareThermalControl.throttleCPU(false)
                         }
                     }
                 }
@@ -223,7 +223,7 @@ class TempMonitorService : Service() {
             if (HardwareThermalControl.isEmergencyCooldownActive) {
                 HardwareThermalControl.clearEmergencyCooldown()
             }
-            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.throttlePrimeCore(false) }
+            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.throttleCPU(false) }
         }
 
         if (temp >= settings.cutoffTemp) isThermalCutoff = true
