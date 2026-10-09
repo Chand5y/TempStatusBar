@@ -35,13 +35,28 @@ class TempMonitorService : Service() {
 
     private var isThermalCutoff = false
     private var isPctCutoff = false
-    
-    private var gpuLogCounter = 0
+    private var isCurrentlyGaming = false
 
     private val iconSize = 64
     private val cachedBitmap = Bitmap.createBitmap(iconSize, iconSize, Bitmap.Config.ARGB_8888)
     private val cachedCanvas = Canvas(cachedBitmap)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 38f; textAlign = Paint.Align.CENTER; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+
+    // Unified Deep Diagnostic Logger (Runs every 2 seconds during gameplay)
+    private val deepDiagnosticRunnable = object : Runnable {
+        override fun run() {
+            if (isCurrentlyGaming && isScreenOn) {
+                thread {
+                    val hwSnap = HardwareThermalControl.getDeepHardwareSnapshot()
+                    val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
+                    val pwr = if(stats.isCharging) "+${stats.wattage}W" else "-${stats.wattage}W"
+                    
+                    AppLogger.log("🔎 [DIAGNOSTIC] ${lastTemp}°C | PWR: $pwr | $hwSnap")
+                }
+                backgroundHandler.postDelayed(this, 2000L)
+            }
+        }
+    }
 
     private val dbLogRunnable = object : Runnable {
         override fun run() {
@@ -74,24 +89,17 @@ class TempMonitorService : Service() {
                 if (currentForeground.isNotEmpty()) {
                     val isGamingApp = settings.gamingApps.contains(currentForeground)
                     
+                    if (isGamingApp && !isCurrentlyGaming) {
+                        isCurrentlyGaming = true
+                        backgroundHandler.post(deepDiagnosticRunnable)
+                    } else if (!isGamingApp && isCurrentlyGaming) {
+                        isCurrentlyGaming = false
+                        backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
+                    }
+                    
                     if (isGamingApp) {
-                        
-                        gpuLogCounter++
-                        if (gpuLogCounter >= 2) {
-                            thread {
-                                val gpuLoad = HardwareThermalControl.getGpuUsage()
-                                val gpuFreq = HardwareThermalControl.getGpuFrequency()
-                                val primeCoreFreq = HardwareThermalControl.getCoreFrequencies().getOrNull(7) ?: "Offline"
-                                backgroundHandler.post {
-                                    AppLogger.log("📊 GPU DIAGNOSTICS -> Load: $gpuLoad | Clock: $gpuFreq | CPU C7: $primeCoreFreq")
-                                }
-                            }
-                            gpuLogCounter = 0
-                        }
-
                         if (lastTemp < settings.gameThrottleTemp) {
                             HardwareThermalControl.setPeakPerformanceMode(true)
-                            // Forces unthrottle constantly to fight back against the OS
                             HardwareThermalControl.forceUnthrottlePrimeCore()
                             HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
                         } else {
@@ -138,7 +146,13 @@ class TempMonitorService : Service() {
                     }
                 }
                 Intent.ACTION_SCREEN_ON -> { isScreenOn = true; backgroundHandler.post(powerRunnable); backgroundHandler.post(gamingEngineRunnable) }
-                Intent.ACTION_SCREEN_OFF -> { isScreenOn = false; backgroundHandler.removeCallbacks(powerRunnable); backgroundHandler.removeCallbacks(gamingEngineRunnable); HardwareThermalControl.setPeakPerformanceMode(false) }
+                Intent.ACTION_SCREEN_OFF -> { 
+                    isScreenOn = false; isCurrentlyGaming = false
+                    backgroundHandler.removeCallbacks(powerRunnable)
+                    backgroundHandler.removeCallbacks(gamingEngineRunnable)
+                    backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
+                    HardwareThermalControl.setPeakPerformanceMode(false) 
+                }
                 "ACTION_TOGGLE_SMART_GOVERNOR" -> {
                     isSmartGovernorActive = intent.getBooleanExtra("state", false)
                 }
@@ -167,7 +181,6 @@ class TempMonitorService : Service() {
     }
 
     private fun triggerDatabaseSnapshot(temp: Int, isCharging: Boolean, screenOn: Boolean) {
-        // Runs on an isolated thread to prevent the 'top' command from deadlocking the tracker loop!
         thread {
             val chargeType = if (isCharging) "Charging AC" else "Discharging (Battery)"
             val hasRoot = HardwareThermalControl.isRootAvailable()
@@ -221,6 +234,8 @@ class TempMonitorService : Service() {
         }
 
         if (!HardwareThermalControl.isEmergencyCooldownActive && !HardwareThermalControl.isManualBypassActive) {
+            if (isCurrentlyGaming) return
+
             val shouldBeThrottled = isThermalCutoff || isPctCutoff
             if (shouldBeThrottled && !HardwareThermalControl.isChargingThrottled) {
                 HardwareThermalControl.setChargingEnabled(false)
