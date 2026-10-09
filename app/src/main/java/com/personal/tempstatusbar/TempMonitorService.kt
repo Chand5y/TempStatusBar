@@ -36,16 +36,12 @@ class TempMonitorService : Service() {
     private var isThermalCutoff = false
     private var isPctCutoff = false
     private var isCurrentlyGaming = false
-    
-    // NEW: Variable to hold the bridged FPS data
-    private var latestLiveFps = -1
 
     private val iconSize = 64
     private val cachedBitmap = Bitmap.createBitmap(iconSize, iconSize, Bitmap.Config.ARGB_8888)
     private val cachedCanvas = Canvas(cachedBitmap)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 38f; textAlign = Paint.Align.CENTER; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
 
-    // Unified Deep Diagnostic Logger (Runs every 2 seconds during gameplay)
     private val deepDiagnosticRunnable = object : Runnable {
         override fun run() {
             if (isCurrentlyGaming && isScreenOn) {
@@ -53,7 +49,10 @@ class TempMonitorService : Service() {
                     val hwSnap = HardwareThermalControl.getDeepHardwareSnapshot()
                     val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
                     val pwr = if(stats.isCharging) "+${stats.wattage}W" else "-${stats.wattage}W"
-                    val fpsStr = if (latestLiveFps > 0) "$latestLiveFps FPS" else "-- FPS"
+                    
+                    // NEW: Reads directly from shared memory
+                    val currentFps = HardwareThermalControl.liveFps
+                    val fpsStr = if (currentFps > 0) "$currentFps FPS" else "-- FPS"
                     
                     AppLogger.log("🔎 [DIAGNOSTIC] $fpsStr | ${lastTemp}°C | PWR: $pwr | $hwSnap")
                 }
@@ -160,10 +159,6 @@ class TempMonitorService : Service() {
                 "ACTION_TOGGLE_SMART_GOVERNOR" -> {
                     isSmartGovernorActive = intent.getBooleanExtra("state", false)
                 }
-                // NEW: Receiver bridge for the FPS data
-                "ACTION_FPS_UPDATE" -> {
-                    latestLiveFps = intent.getIntExtra("live_fps", -1)
-                }
             }
         }
     }
@@ -182,7 +177,6 @@ class TempMonitorService : Service() {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction("ACTION_TOGGLE_SMART_GOVERNOR")
-            addAction("ACTION_FPS_UPDATE") // Registers the receiver to listen for the broadcast
         }, Context.RECEIVER_NOT_EXPORTED)
         
         backgroundHandler.post(dbLogRunnable)
