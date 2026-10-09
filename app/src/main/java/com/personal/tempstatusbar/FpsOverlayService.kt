@@ -32,7 +32,6 @@ class FpsOverlayService : Service() {
     private var foregroundApp = "Active App"
     private val handler = Handler(Looper.getMainLooper())
 
-    // Non-Root FPS Fallback Variables
     private var nonRootFrameCount = 0
     private var nonRootLastTime = 0L
     private var nonRootCurrentFps = 0
@@ -219,6 +218,11 @@ class FpsOverlayService : Service() {
                     if (fpsRaw != null && fpsRaw > 0) fpsReadings.add(fpsRaw)
                     if (tempRaw != null && tempRaw > 0) tempReadings.add(tempRaw)
                 }
+
+                // NEW: Broadcast the live FPS to the Thermal Service Logger
+                val broadcastIntent = Intent("ACTION_FPS_UPDATE")
+                broadcastIntent.putExtra("live_fps", fpsRaw ?: -1)
+                sendBroadcast(broadcastIntent)
 
                 handler.post {
                     if (isServiceActive) {
