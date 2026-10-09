@@ -219,10 +219,8 @@ class FpsOverlayService : Service() {
                     if (tempRaw != null && tempRaw > 0) tempReadings.add(tempRaw)
                 }
 
-                // NEW: Broadcast the live FPS to the Thermal Service Logger
-                val broadcastIntent = Intent("ACTION_FPS_UPDATE")
-                broadcastIntent.putExtra("live_fps", fpsRaw ?: -1)
-                sendBroadcast(broadcastIntent)
+                // NEW: Direct memory write bypassing Android's intent broadcast limits
+                HardwareThermalControl.liveFps = fpsRaw ?: -1
 
                 handler.post {
                     if (isServiceActive) {
