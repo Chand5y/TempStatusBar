@@ -24,7 +24,6 @@ object HardwareThermalControl {
     var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
     
-    // NEW: Direct memory bridge for FPS
     var liveFps = -1
     
     private var isMuted = false
@@ -32,7 +31,6 @@ object HardwareThermalControl {
     private var lastRootCheckTime = 0L
     
     private var isPeakPerformanceActive = false
-    private var isPrimeCoreThrottled: Boolean? = null
     private var lastOptimizedGame = ""
 
     fun init(context: Context) {
@@ -51,7 +49,8 @@ object HardwareThermalControl {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             exitCode = process.waitFor()
-            if (action != "Force Prime Core Max" && action != "Deep Hardware Snapshot") {
+            // Silence the repeating CPU/Diagnostic logs to keep the text file clean
+            if (action != "Force CPU Max" && action != "Deep Hardware Snapshot") {
                 AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
             }
             return exitCode == 0
@@ -99,20 +98,43 @@ object HardwareThermalControl {
         thread {
             if (enable) {
                 AppLogger.log("GAMING ENGINE: Peak Performance Engaged")
+                
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
+                
+                // NEW: Inject Qualcomm Adreno Boost to wake the GPU from its 305MHz sleep
+                val gpuBoostCmd = "echo 1 > /sys/class/kgsl/kgsl-3d0/devfreq/adreno_boost 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/devfreq/adreno_idler_active 2>/dev/null; echo 1 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null"
+                executeRootCommand("GPU -> Adreno Boost", gpuBoostCmd)
+                
                 val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
                 executeRootCommand("Freeze Thermal Daemons", stopCmd)
             } else {
                 AppLogger.log("GAMING ENGINE: Normal Performance Restored")
+                
                 executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
+                
+                val gpuRestoreCmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/devfreq/adreno_boost 2>/dev/null; echo 1 > /sys/class/kgsl/kgsl-3d0/devfreq/adreno_idler_active 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null"
+                executeRootCommand("GPU -> Auto Mode", gpuRestoreCmd)
+                
                 val resumeCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done"
                 executeRootCommand("Resume Thermal Daemons", resumeCmd)
             }
         }
     }
 
-    fun forceUnthrottlePrimeCore() {
-        executeRootCommand("Force Prime Core Max", "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq")
+    // NEW: Uncaps BOTH the Prime Core (C7) and the Gold Cores (C4-C6) simultaneously
+    fun forceUnthrottleCPU() {
+        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq"
+        executeRootCommand("Force CPU Max", cmd)
+    }
+
+    // NEW: Safely throttles the hardware back down if limits are hit
+    fun throttleCPU(throttle: Boolean) {
+        if (throttle) {
+            val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq"
+            executeRootCommand("Throttle CPU", cmd)
+        } else {
+            forceUnthrottleCPU()
+        }
     }
 
     fun optimizeBackgroundForGaming(exemptPackages: Set<String>, foregroundPkg: String) {
@@ -233,18 +255,9 @@ object HardwareThermalControl {
         executeRootCommand(if (online) "Enable Core $coreId" else "Disable Core $coreId", "echo ${if (online) "1" else "0"} > /sys/devices/system/cpu/cpu$coreId/online")
     }
 
-    fun throttlePrimeCore(throttle: Boolean) {
-        if (isPrimeCoreThrottled == throttle) return
-        isPrimeCoreThrottled = throttle
-        val action = if (throttle) "Throttle Prime Core (C7)" else "Restore Prime Core (C7)"
-        val cmd = if (throttle) "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
-                  else "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
-        executeRootCommand(action, cmd)
-    }
-
     fun applySmartThermalGovernor(context: Context) {
         if (!isRootAvailable()) return
-        throttlePrimeCore(true)
+        throttleCPU(true)
         val procs = getKernelProcessSnapshot(context)
         procs.forEach { p ->
             val cpuVal = p.cpu.toFloatOrNull() ?: 0f
