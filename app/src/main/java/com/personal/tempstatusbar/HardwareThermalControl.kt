@@ -47,7 +47,7 @@ object HardwareThermalControl {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             exitCode = process.waitFor()
-            if (action != "Force Prime Core Max") { // Prevent spamming the log every 3 seconds
+            if (action != "Force Prime Core Max") {
                 AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
             }
             return exitCode == 0
@@ -70,11 +70,9 @@ object HardwareThermalControl {
                 // 1. Force CPU Gold & Prime cores to max governor
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 
-                // 2. Force GPU to absolute max frequency and performance governor
-                val gpuMaxCmd = "echo performance > /sys/class/kgsl/kgsl-3d0/devfreq/governor; maxf=\$(cat /sys/class/kgsl/kgsl-3d0/devfreq/max_freq); echo \$maxf > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq"
-                executeRootCommand("GPU -> Max Performance", gpuMaxCmd)
-
-                // 3. Suspend Xiaomi Throttling Daemons
+                // Removed the forced GPU Max override. Restoring trust to Qualcomm's native msm-adreno-tz governor for stable frame pacing.
+                
+                // 2. Suspend Xiaomi Throttling Daemons
                 val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
                 executeRootCommand("Freeze Thermal Daemons", stopCmd)
             } else {
@@ -83,11 +81,7 @@ object HardwareThermalControl {
                 // 1. Restore CPU
                 executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 
-                // 2. Restore GPU (Setting min_freq to 0 forces the kernel to auto-correct to the lowest available idle hardware state)
-                val gpuRestoreCmd = "echo msm-adreno-tz > /sys/class/kgsl/kgsl-3d0/devfreq/governor; echo 0 > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq"
-                executeRootCommand("GPU -> Auto (msm-adreno-tz)", gpuRestoreCmd)
-
-                // 3. Restore Xiaomi Throttling Daemons
+                // 2. Restore Xiaomi Throttling Daemons
                 val resumeCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done"
                 executeRootCommand("Resume Thermal Daemons", resumeCmd)
             }
