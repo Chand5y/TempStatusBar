@@ -23,6 +23,10 @@ object HardwareThermalControl {
     var isChargingThrottled = false; private set
     var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
+    
+    // NEW: Direct memory bridge for FPS
+    var liveFps = -1
+    
     private var isMuted = false
     private var cachedRootState: Boolean? = null
     private var lastRootCheckTime = 0L
@@ -47,7 +51,6 @@ object HardwareThermalControl {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             exitCode = process.waitFor()
-            // Silenced to prevent cluttering the new Deep Diagnostic logs
             if (action != "Force Prime Core Max" && action != "Deep Hardware Snapshot") {
                 AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
             }
