@@ -24,6 +24,7 @@ object HardwareThermalControl {
     var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
     
+    // DIRECT MEMORY BRIDGE FOR LIVE FPS
     var liveFps = -1
     
     private var isMuted = false
@@ -31,6 +32,7 @@ object HardwareThermalControl {
     private var lastRootCheckTime = 0L
     
     private var isPeakPerformanceActive = false
+    private var isPrimeCoreThrottled: Boolean? = null
     private var lastOptimizedGame = ""
 
     fun init(context: Context) {
@@ -49,6 +51,7 @@ object HardwareThermalControl {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             exitCode = process.waitFor()
+            // Silenced repeating commands to keep the log clean
             if (action != "Force CPU Max" && action != "Deep Hardware Snapshot") {
                 AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
             }
@@ -90,53 +93,48 @@ object HardwareThermalControl {
         executeRootCommand("Force Display Refresh to ${hz}Hz", cmd)
     }
 
-    
-        fun setPeakPerformanceMode(enable: Boolean) {
+    fun setPeakPerformanceMode(enable: Boolean) {
         if (!isRootAvailable() || isPeakPerformanceActive == enable) return
         isPeakPerformanceActive = enable
         
         thread {
             if (enable) {
+                // THE NUCLEAR OVERRIDE
                 AppLogger.log("GAMING ENGINE: NUCLEAR PERFORMANCE ENGAGED")
                 
-                // 1. Blind the Kernel Thermal Zones
+                // 1. Blind Kernel Thermal Zones
                 val killThermalsCmd = "for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > \$z 2>/dev/null; done"
                 executeRootCommand("Disable Kernel Thermals", killThermalsCmd)
 
-                // 2. Force GPU to Power Level 0 (Maximum Hardware Clock)
+                // 2. Force GPU to Power Level 0 (Maximum)
                 val gpuNuclearCmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null"
                 executeRootCommand("GPU -> Nuclear Power Level", gpuNuclearCmd)
 
                 // 3. Maximize CPU Governors
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 
-                // 4. Kill Xiaomi Daemons
+                // 4. Kill Software Daemons
                 val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
                 executeRootCommand("Freeze Thermal Daemons", stopCmd)
             } else {
                 AppLogger.log("GAMING ENGINE: Normal Performance Restored")
                 
-                // 1. Restore Kernel Thermal Zones
                 val restoreThermalsCmd = "for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > \$z 2>/dev/null; done"
                 executeRootCommand("Enable Kernel Thermals", restoreThermalsCmd)
 
-                // 2. Restore GPU Power Levels
                 val gpuRestoreCmd = "echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null"
                 executeRootCommand("GPU -> Auto Mode", gpuRestoreCmd)
                 
-                // 3. Restore CPU Governors
                 executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 
                 val cpuRestoreCmd = "cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq"
                 executeRootCommand("Restore CPU Min Freq", cpuRestoreCmd)
 
-                // 4. Resume Xiaomi Daemons
                 val resumeCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done"
                 executeRootCommand("Resume Thermal Daemons", resumeCmd)
             }
         }
-        }
-        
+    }
 
     fun forceUnthrottleCPU() {
         val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
@@ -186,9 +184,7 @@ object HardwareThermalControl {
         }
     }
 
-    fun clearGamingOptimization() {
-        lastOptimizedGame = ""
-    }
+    fun clearGamingOptimization() { lastOptimizedGame = "" }
 
     fun getHardwareInfo(): String {
         val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(java.util.Locale.getDefault())
