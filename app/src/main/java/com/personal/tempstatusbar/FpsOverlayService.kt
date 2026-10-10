@@ -219,7 +219,7 @@ class FpsOverlayService : Service() {
                     if (tempRaw != null && tempRaw > 0) tempReadings.add(tempRaw)
                 }
 
-                // NEW: Direct memory write bypassing Android's intent broadcast limits
+                // DIRECT MEMORY WRITE
                 HardwareThermalControl.liveFps = fpsRaw ?: -1
 
                 handler.post {
