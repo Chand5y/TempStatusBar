@@ -59,13 +59,14 @@ class FpsOverlayService : Service() {
 
         activeOverlay?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
 
+        // NEW: Reduced textSize and padding for a smaller visual footprint
         overlayView = TextView(this).apply {
             text = "TAP TO START"
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 10.5f
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding(45, 18, 45, 18)
+            setPadding(35, 12, 35, 12)
         }
         updatePillStyle(false)
 
@@ -94,12 +95,13 @@ class FpsOverlayService : Service() {
     private fun updatePillStyle(recording: Boolean) {
         overlayView.background = GradientDrawable().apply {
             cornerRadius = 100f
+            // NEW: Lowered hex opacity to #99 (~60%) for a more transparent pill
             if (recording) {
-                setColor(Color.parseColor("#E6E53935"))
+                setColor(Color.parseColor("#99E53935"))
             } else {
-                setColor(Color.parseColor("#E643A047"))
+                setColor(Color.parseColor("#9943A047"))
             }
-            setStroke(3, Color.parseColor("#4DFFFFFF"))
+            setStroke(3, Color.parseColor("#33FFFFFF"))
         }
     }
 
@@ -219,7 +221,6 @@ class FpsOverlayService : Service() {
                     if (tempRaw != null && tempRaw > 0) tempReadings.add(tempRaw)
                 }
 
-                // DIRECT MEMORY WRITE
                 HardwareThermalControl.liveFps = fpsRaw ?: -1
 
                 handler.post {
