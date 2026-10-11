@@ -102,8 +102,11 @@ class TempMonitorService : Service() {
                     if (isGamingApp) {
                         if (lastTemp < settings.gameThrottleTemp) {
                             HardwareThermalControl.setPeakPerformanceMode(true)
-                            // NEW: Uncaps BOTH Prime and Gold cores every 3 seconds
+                            
+                            // NEW: Continuously forces both CPU and GPU to max every 3 seconds to defeat Xiaomi's background throttling
                             HardwareThermalControl.forceUnthrottleCPU()
+                            HardwareThermalControl.forceUnthrottleGPU()
+                            
                             HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
                         } else {
                             HardwareThermalControl.setPeakPerformanceMode(false)
