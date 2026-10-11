@@ -51,8 +51,8 @@ object HardwareThermalControl {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             exitCode = process.waitFor()
-            // Silenced repeating commands to keep the log clean
-            if (action != "Force CPU Max" && action != "Deep Hardware Snapshot") {
+            // Silence the 3-second heartbeat loops to keep the log clean
+            if (action != "Force CPU Max" && action != "GPU -> Nuclear Power Level" && action != "Deep Hardware Snapshot") {
                 AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
             }
             return exitCode == 0
@@ -99,16 +99,14 @@ object HardwareThermalControl {
         
         thread {
             if (enable) {
-                // THE NUCLEAR OVERRIDE
                 AppLogger.log("GAMING ENGINE: NUCLEAR PERFORMANCE ENGAGED")
                 
                 // 1. Blind Kernel Thermal Zones
                 val killThermalsCmd = "for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > \$z 2>/dev/null; done"
                 executeRootCommand("Disable Kernel Thermals", killThermalsCmd)
 
-                // 2. Force GPU to Power Level 0 (Maximum)
-                val gpuNuclearCmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null"
-                executeRootCommand("GPU -> Nuclear Power Level", gpuNuclearCmd)
+                // 2. Force GPU to Power Level 0
+                forceUnthrottleGPU()
 
                 // 3. Maximize CPU Governors
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
@@ -139,6 +137,12 @@ object HardwareThermalControl {
     fun forceUnthrottleCPU() {
         val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
         executeRootCommand("Force CPU Max", cmd)
+    }
+
+    // NEW: Function to continuously loop the GPU lock
+    fun forceUnthrottleGPU() {
+        val gpuNuclearCmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null"
+        executeRootCommand("GPU -> Nuclear Power Level", gpuNuclearCmd)
     }
 
     fun throttleCPU(throttle: Boolean) {
@@ -250,10 +254,12 @@ object HardwareThermalControl {
     fun setChargingEnabled(enable: Boolean, isManualToggle: Boolean = false) {
         if (isManualToggle) isManualBypassActive = !enable
         val action = if (enable) "Restore Charge" else "Isolate Battery"
+        
+        // NEW: Targets Xiaomi dual-cell paths and appends a safe exit code to prevent I/O thread stutter
         val cmd = if (enable) {
-            "echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 0 > /sys/class/qcom-battery/input_suspend 2>/dev/null"
+            "echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
         } else {
-            "echo 0 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 1 > /sys/class/qcom-battery/input_suspend 2>/dev/null"
+            "echo 0 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
         }
         executeRootCommand(action, cmd)
         isChargingThrottled = !enable
