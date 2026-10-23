@@ -49,12 +49,22 @@ object HardwareThermalControl {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             exitCode = process.waitFor()
-            // Silence repetitive loop commands to keep the log extremely clean
-            if (action != "Force CPU Max" && action != "GPU -> Nuclear Power Level" && action != "Deep Hardware Snapshot") {
+            if (action != "Deep Hardware Snapshot") {
                 AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
             }
             return exitCode == 0
         } catch (e: Exception) { return false }
+    }
+
+    // PERFECTED: Single, bundled, zero-latency heartbeat that does not wait for an exit code or log anything.
+    fun enforceNuclearHeartbeat() {
+        if (!isRootAvailable()) return
+        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null; " +
+                  "cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null; " +
+                  "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null"
+        try {
+            Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+        } catch (e: Exception) {}
     }
 
     fun getDeepHardwareSnapshot(): String {
@@ -93,46 +103,18 @@ object HardwareThermalControl {
         thread {
             if (enable) {
                 AppLogger.log("GAMING ENGINE: NUCLEAR PERFORMANCE ENGAGED")
-                
-                // 1. Blind Kernel Thermal Zones
                 executeRootCommand("Disable Kernel Thermals", "for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > \$z 2>/dev/null; done")
-
-                // 2. Force GPU to Power Level 0
-                forceUnthrottleGPU()
-
-                // 3. Maximize CPU Governors
+                executeRootCommand("GPU -> Nuclear Power Level", "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null")
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
-                
-                // 4. Kill Software Daemons
                 executeRootCommand("Freeze Thermal Daemons", "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done")
             } else {
                 AppLogger.log("GAMING ENGINE: Normal Performance Restored")
-                
                 executeRootCommand("Enable Kernel Thermals", "for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > \$z 2>/dev/null; done")
                 executeRootCommand("GPU -> Auto Mode", "echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null")
                 executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 executeRootCommand("Restore CPU Min Freq", "cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq")
                 executeRootCommand("Resume Thermal Daemons", "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done")
             }
-        }
-    }
-
-    fun forceUnthrottleCPU() {
-        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
-        executeRootCommand("Force CPU Max", cmd)
-    }
-
-    fun forceUnthrottleGPU() {
-        val gpuNuclearCmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null"
-        executeRootCommand("GPU -> Nuclear Power Level", gpuNuclearCmd)
-    }
-
-    fun throttleCPU(throttle: Boolean) {
-        if (throttle) {
-            val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
-            executeRootCommand("Throttle CPU", cmd)
-        } else {
-            forceUnthrottleCPU()
         }
     }
 
@@ -186,8 +168,6 @@ object HardwareThermalControl {
     fun setChargingEnabled(enable: Boolean, isManualToggle: Boolean = false) {
         if (isManualToggle) isManualBypassActive = !enable
         val action = if (enable) "Restore Charge" else "Isolate Battery"
-        
-        // NEW: Handles Xiaomi dual-cell paths and appends 'exit 0' to prevent system I/O stutters
         val cmd = if (enable) {
             "echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
         } else {
@@ -199,18 +179,6 @@ object HardwareThermalControl {
 
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
-
-    fun applySmartThermalGovernor(context: Context) {
-        if (!isRootAvailable()) return
-        throttleCPU(true)
-        val procs = getKernelProcessSnapshot(context)
-        procs.forEach { p ->
-            val cpuVal = p.cpu.toFloatOrNull() ?: 0f
-            if (cpuVal > 5.0f && !p.name.contains(context.packageName) && !p.name.contains("Android System") && !p.name.contains("Display Compositor")) {
-                executeRootCommand("Pin PID: ${p.pid}", "taskset -p 0f ${p.pid}")
-            }
-        }
-    }
 
     fun playThermalAlert() {
         if (isMuted) return
