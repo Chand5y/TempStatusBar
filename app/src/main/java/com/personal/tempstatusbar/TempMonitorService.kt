@@ -49,10 +49,8 @@ class TempMonitorService : Service() {
                     val hwSnap = HardwareThermalControl.getDeepHardwareSnapshot()
                     val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
                     val pwr = if(stats.isCharging) "+${stats.wattage}W" else "-${stats.wattage}W"
-                    
                     val currentFps = HardwareThermalControl.liveFps
                     val fpsStr = if (currentFps > 0) "$currentFps FPS" else "-- FPS"
-                    
                     AppLogger.log("🔎 [DIAGNOSTIC] $fpsStr | ${lastTemp}°C | PWR: $pwr | $hwSnap")
                 }
                 backgroundHandler.postDelayed(this, 2000L)
@@ -72,12 +70,13 @@ class TempMonitorService : Service() {
         }
     }
 
+    // PERFECTED STATE MACHINE: Clean, lightweight polling
     private val gamingEngineRunnable = object : Runnable {
         override fun run() {
             if (isScreenOn && settings.gamingModeEnabled && HardwareThermalControl.isRootAvailable()) {
                 val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
                 val time = System.currentTimeMillis()
-                val events = usm.queryEvents(time - 5000, time)
+                val events = usm.queryEvents(time - 3000, time)
                 var event = UsageEvents.Event()
                 var currentForeground = ""
                 
@@ -91,29 +90,26 @@ class TempMonitorService : Service() {
                 if (currentForeground.isNotEmpty()) {
                     val isGamingApp = settings.gamingApps.contains(currentForeground)
                     
-                    if (isGamingApp && !isCurrentlyGaming) {
-                        isCurrentlyGaming = true
-                        backgroundHandler.post(deepDiagnosticRunnable)
-                    } else if (!isGamingApp && isCurrentlyGaming) {
-                        isCurrentlyGaming = false
-                        backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
-                    }
-                    
                     if (isGamingApp) {
-                        if (lastTemp < settings.gameThrottleTemp) {
+                        if (!isCurrentlyGaming) {
+                            // STATE TRANSITION: Entering Game (Heavy Setup Once)
+                            isCurrentlyGaming = true
                             HardwareThermalControl.setPeakPerformanceMode(true)
-                            HardwareThermalControl.forceUnthrottleCPU()
-                            HardwareThermalControl.forceUnthrottleGPU()
                             HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
-                        } else {
-                            HardwareThermalControl.setPeakPerformanceMode(false)
-                            HardwareThermalControl.throttleCPU(true)
+                            backgroundHandler.post(deepDiagnosticRunnable)
+                        }
+                        
+                        // CONTINUOUS HEARTBEAT: Silent, zero-latency override
+                        if (lastTemp < settings.gameThrottleTemp) {
+                            HardwareThermalControl.enforceNuclearHeartbeat()
                         }
                     } else {
-                        HardwareThermalControl.setPeakPerformanceMode(false)
-                        HardwareThermalControl.clearGamingOptimization()
-                        if (!isSmartGovernorActive || lastTemp < settings.warningTemp) {
-                            HardwareThermalControl.throttleCPU(false)
+                        if (isCurrentlyGaming) {
+                            // STATE TRANSITION: Exiting Game (Cleanup Once)
+                            isCurrentlyGaming = false
+                            backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
+                            HardwareThermalControl.setPeakPerformanceMode(false)
+                            HardwareThermalControl.clearGamingOptimization()
                         }
                     }
                 }
@@ -150,14 +146,14 @@ class TempMonitorService : Service() {
                 }
                 Intent.ACTION_SCREEN_ON -> { isScreenOn = true; backgroundHandler.post(powerRunnable); backgroundHandler.post(gamingEngineRunnable) }
                 Intent.ACTION_SCREEN_OFF -> { 
-                    isScreenOn = false; isCurrentlyGaming = false
+                    isScreenOn = false; 
+                    if (isCurrentlyGaming) {
+                        isCurrentlyGaming = false
+                        HardwareThermalControl.setPeakPerformanceMode(false) 
+                    }
                     backgroundHandler.removeCallbacks(powerRunnable)
                     backgroundHandler.removeCallbacks(gamingEngineRunnable)
                     backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
-                    HardwareThermalControl.setPeakPerformanceMode(false) 
-                }
-                "ACTION_TOGGLE_SMART_GOVERNOR" -> {
-                    isSmartGovernorActive = intent.getBooleanExtra("state", false)
                 }
             }
         }
@@ -176,7 +172,6 @@ class TempMonitorService : Service() {
             addAction(Intent.ACTION_BATTERY_CHANGED)
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
-            addAction("ACTION_TOGGLE_SMART_GOVERNOR")
         }, Context.RECEIVER_NOT_EXPORTED)
         
         backgroundHandler.post(dbLogRunnable)
@@ -201,7 +196,6 @@ class TempMonitorService : Service() {
 
         if (temp >= settings.warningTemp) {
             HardwareThermalControl.playThermalAlert()
-            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
 
             val muteIntent = PendingIntent.getBroadcast(this, 0, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_MUTE" }, PendingIntent.FLAG_IMMUTABLE)
             val coolIntent = PendingIntent.getBroadcast(this, 1, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_COOLDOWN" }, PendingIntent.FLAG_IMMUTABLE)
@@ -223,7 +217,6 @@ class TempMonitorService : Service() {
             if (HardwareThermalControl.isEmergencyCooldownActive) {
                 HardwareThermalControl.clearEmergencyCooldown()
             }
-            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.throttleCPU(false) }
         }
 
         if (temp >= settings.cutoffTemp) isThermalCutoff = true
