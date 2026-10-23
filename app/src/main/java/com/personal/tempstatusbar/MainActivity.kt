@@ -48,7 +48,7 @@ class MainActivity : Activity() {
                 val gpuFreq = HardwareThermalControl.getGpuFrequency()
                 val cores = HardwareThermalControl.getCoreFrequencies()
                 val coresFormatted = if (cores.size >= 8) {
-                    "C0-C3 (Silver): ${cores[0]}  |  C4-C6 (Gold): ${cores[4]}\nC7 (Prime):${cores[7]}"
+                    "C0-C3 (Silver): ${cores[0]}  |  C4-C6 (Gold): ${cores[4]}\nC7 (Prime): ${cores[7]}"
                 } else {
                     cores.joinToString(" | ")
                 }
