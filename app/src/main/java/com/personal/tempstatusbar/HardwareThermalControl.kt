@@ -23,14 +23,15 @@ object HardwareThermalControl {
     var isChargingThrottled = false; private set
     var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
-    
+
     var liveFps = -1
-    
+
     private var isMuted = false
     private var cachedRootState: Boolean? = null
     private var lastRootCheckTime = 0L
-    
+
     private var isPeakPerformanceActive = false
+    private var isPrimeCoreThrottled: Boolean? = null
     private var lastOptimizedGame = ""
 
     fun init(context: Context) {
@@ -49,19 +50,23 @@ object HardwareThermalControl {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             exitCode = process.waitFor()
-            if (action != "Deep Hardware Snapshot") {
+            if (action != "Force CPU Max" && action != "GPU -> Nuclear Power Level" && action != "Deep Hardware Snapshot") {
                 AppLogger.log("KERNEL ACTION: $action | EXIT: $exitCode")
             }
             return exitCode == 0
         } catch (e: Exception) { return false }
     }
 
-    // PERFECTED: Single, bundled, zero-latency heartbeat that does not wait for an exit code or log anything.
+    // Single, non-blocking shell call to keep CPU & GPU locked at max without I/O stutter
     fun enforceNuclearHeartbeat() {
         if (!isRootAvailable()) return
-        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null; " +
+        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null; " +
+                  "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null; " +
+                  "cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq 2>/dev/null; " +
                   "cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null; " +
-                  "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null"
+                  "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null; " +
+                  "echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; " +
+                  "echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null"
         try {
             Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
         } catch (e: Exception) {}
@@ -78,11 +83,11 @@ object HardwareThermalControl {
                 c7=${'$'}(cat /sys/devices/system/cpu/cpu7/cpufreq/scaling_cur_freq 2>/dev/null || echo '0')
                 echo "${'$'}gl|${'$'}gf|${'$'}c0|${'$'}c4|${'$'}c7"
             """.trimIndent()
-            
+
             val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
             val raw = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.trim() ?: return "READ_ERROR"
             p.waitFor()
-            
+
             val parts = raw.split("|")
             if (parts.size == 5) {
                 val gLoad = parts[0].replace("%", "").trim()
@@ -96,15 +101,20 @@ object HardwareThermalControl {
         return "DATA_PARSE_ERROR"
     }
 
+    fun forceRefreshRate(hz: Int) {
+        val cmd = "settings put system peak_refresh_rate $hz; settings put system min_refresh_rate $hz; settings put system user_refresh_rate $hz; settings put secure miui_refresh_rate $hz; settings put system miui_refresh_rate $hz; service call SurfaceFlinger 1035 i32 $hz"
+        executeRootCommand("Force Display Refresh to ${hz}Hz", cmd)
+    }
+
     fun setPeakPerformanceMode(enable: Boolean) {
         if (!isRootAvailable() || isPeakPerformanceActive == enable) return
         isPeakPerformanceActive = enable
-        
+
         thread {
             if (enable) {
                 AppLogger.log("GAMING ENGINE: NUCLEAR PERFORMANCE ENGAGED")
                 executeRootCommand("Disable Kernel Thermals", "for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > \$z 2>/dev/null; done")
-                executeRootCommand("GPU -> Nuclear Power Level", "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null")
+                forceUnthrottleGPU()
                 executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
                 executeRootCommand("Freeze Thermal Daemons", "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done")
             } else {
@@ -118,6 +128,29 @@ object HardwareThermalControl {
         }
     }
 
+    fun forceUnthrottleCPU() {
+        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
+        executeRootCommand("Force CPU Max", cmd)
+    }
+
+    fun forceUnthrottlePrimeCore() = forceUnthrottleCPU()
+
+    fun forceUnthrottleGPU() {
+        val gpuNuclearCmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null"
+        executeRootCommand("GPU -> Nuclear Power Level", gpuNuclearCmd)
+    }
+
+    fun throttleCPU(throttle: Boolean) {
+        if (throttle) {
+            val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
+            executeRootCommand("Throttle CPU", cmd)
+        } else {
+            forceUnthrottleCPU()
+        }
+    }
+
+    fun throttlePrimeCore(throttle: Boolean) = throttleCPU(throttle)
+
     fun optimizeBackgroundForGaming(exemptPackages: Set<String>, foregroundPkg: String) {
         if (!isRootAvailable() || lastOptimizedGame == foregroundPkg) return
         lastOptimizedGame = foregroundPkg
@@ -127,18 +160,18 @@ object HardwareThermalControl {
                 val reader = p.inputStream.bufferedReader()
                 var line: String?
                 val pidsToPin = mutableListOf<Int>()
-                
+
                 while (reader.readLine().also { line = it } != null) {
                     val parts = line!!.trim().split(Regex("\\s+"))
                     if (parts.size >= 2) {
                         val pid = parts[0].toIntOrNull() ?: continue
                         val name = parts[1]
-                        
+
                         if (name.contains(".") && !name.startsWith("android.") && !name.startsWith("com.android.") && !name.startsWith("com.miui.") && !name.startsWith("com.qualcomm.")) {
                             val isExempt = exemptPackages.any { name.contains(it) }
                             val isForeground = name.contains(foregroundPkg)
                             val isSelf = name.contains("tempstatusbar")
-                            
+
                             if (!isExempt && !isForeground && !isSelf) pidsToPin.add(pid)
                         }
                     }
@@ -152,6 +185,55 @@ object HardwareThermalControl {
     }
 
     fun clearGamingOptimization() { lastOptimizedGame = "" }
+
+    fun getHardwareInfo(): String {
+        val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(java.util.Locale.getDefault())
+        return when {
+            soc.contains("SM8250") -> "Snapdragon 870"
+            soc.contains("SM8350") -> "Snapdragon 888"
+            soc.contains("SM8450") -> "Snapdragon 8 Gen 1"
+            soc.contains("SM8475") -> "Snapdragon 8+ Gen 1"
+            soc.contains("SM8550") -> "Snapdragon 8 Gen 2"
+            else -> soc
+        }
+    }
+
+    fun getGpuUsage(): String {
+        val paths = listOf("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage", "/sys/class/kgsl/kgsl-3d0/devfreq/gpu_load", "/sys/class/kgsl/kgsl-3d0/gpubusy")
+        for (path in paths) {
+            try {
+                val f = File(path)
+                if (f.exists()) {
+                    val raw = f.readText().trim()
+                    if (raw.contains(" ")) {
+                        val parts = raw.split(" ")
+                        if (parts.size == 2) {
+                            val busy = parts[0].toFloatOrNull() ?: 0f
+                            val total = parts[1].toFloatOrNull() ?: 1f
+                            return "${((busy / total) * 100).toInt()}%"
+                        }
+                    }
+                    return "${raw.replace("%", "")}%"
+                }
+            } catch (e: Exception) {}
+        }
+        return "--%"
+    }
+
+    fun getGpuFrequency(): String {
+        if (!isRootAvailable()) return "-- MHz"
+        try {
+            val cmd = "cat /sys/class/kgsl/kgsl-3d0/gpuclk 2>/dev/null || cat /sys/class/kgsl/kgsl-3d0/devfreq/cur_freq 2>/dev/null || cat /sys/kernel/gpu/gpu_clock 2>/dev/null"
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+            val raw = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.trim()
+            p.waitFor()
+            val hz = raw?.toLongOrNull()
+            if (hz != null) {
+                return if (hz > 1000000) "${hz / 1000000} MHz" else "$hz MHz"
+            }
+        } catch (e: Exception) {}
+        return "-- MHz"
+    }
 
     fun isRootAvailable(): Boolean {
         val now = System.currentTimeMillis()
@@ -180,6 +262,26 @@ object HardwareThermalControl {
     fun forceEmergencyCooldown() { isEmergencyCooldownActive = true; setChargingEnabled(false) }
     fun clearEmergencyCooldown() { isEmergencyCooldownActive = false }
 
+    fun setCoreOnline(coreId: Int, online: Boolean) {
+        executeRootCommand(if (online) "Enable Core $coreId" else "Disable Core $coreId", "echo ${if (online) "1" else "0"} > /sys/devices/system/cpu/cpu$coreId/online")
+    }
+
+    fun applySmartThermalGovernor(context: Context) {
+        if (!isRootAvailable()) return
+        throttleCPU(true)
+        val procs = getKernelProcessSnapshot(context)
+        procs.forEach { p ->
+            val cpuVal = p.cpu.toFloatOrNull() ?: 0f
+            if (cpuVal > 5.0f && !p.name.contains(context.packageName) && !p.name.contains("Android System") && !p.name.contains("Display Compositor")) {
+                pinProcessToEfficiencyCores(p.pid)
+            }
+        }
+    }
+
+    fun killProcess(pid: Int) { executeRootCommand("Kill Process PID: $pid", "kill -9 $pid") }
+    fun pinProcessToEfficiencyCores(pid: Int) { executeRootCommand("Pin to Cores 0-3 PID: $pid", "taskset -p 0f $pid") }
+    fun clearRamCaches() { executeRootCommand("Clear RAM Caches", "echo 3 > /proc/sys/vm/drop_caches") }
+
     fun playThermalAlert() {
         if (isMuted) return
         try { toneGen?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 1500) } catch (e: Exception) {}
@@ -187,6 +289,47 @@ object HardwareThermalControl {
     }
     fun muteAlarm() { isMuted = true; try { toneGen?.stopTone(); vibrator?.cancel() } catch (e: Exception) {} }
     fun resetMute() { isMuted = false }
+
+    fun getCoreFrequencies(): List<String> {
+        val freqs = mutableListOf<String>()
+        for (i in 0..7) {
+            try {
+                val f = File("/sys/devices/system/cpu/cpu$i/cpufreq/scaling_cur_freq")
+                if (f.exists()) freqs.add("${f.readText().trim().toInt() / 1000} MHz") else freqs.add("Offline")
+            } catch (e: Exception) { freqs.add("Offline") }
+        }
+        return freqs
+    }
+
+    fun getRamUsage(context: Context): String {
+        val mi = ActivityManager.MemoryInfo()
+        (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mi)
+        val tMb = mi.totalMem / 1048576L
+        val uMb = tMb - (mi.availMem / 1048576L)
+        return "Used: ${uMb}MB / Total: ${tMb}MB\n(${((uMb.toDouble()/tMb)*100).toInt()}% Load)"
+    }
+
+    fun getDetailedRam(): List<RamProc> {
+        if (!isRootAvailable()) return emptyList()
+        val list = mutableListOf<RamProc>()
+        try {
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys meminfo | grep -A 20 'Total PSS by process:'"))
+            val reader = BufferedReader(InputStreamReader(p.inputStream))
+            var line: String?
+            val reg = Regex("""([\d,]+)K:\s+([\w\.]+)\s+\(pid\s+(\d+)\)""")
+            while (reader.readLine().also { line = it } != null) {
+                if (line!!.contains("OOM adjustment:")) break
+                reg.find(line!!)?.let {
+                    val mb = it.groupValues[1].replace(",", "").toIntOrNull()?.div(1024) ?: 0
+                    val pid = it.groupValues[3].toInt()
+                    val friendly = AppLabelHelper.getAppName(appContext ?: return@let, it.groupValues[2], pid)
+                    if (mb > 10) list.add(RamProc(friendly, mb, pid))
+                }
+            }
+            p.waitFor()
+        } catch (e: Exception) {}
+        return list.sortedByDescending { it.sizeMb }
+    }
 
     fun getKernelProcessSnapshot(context: Context): List<ProcessData> {
         val list = mutableListOf<ProcessData>()
