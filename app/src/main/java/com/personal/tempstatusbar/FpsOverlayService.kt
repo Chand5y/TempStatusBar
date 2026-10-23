@@ -59,14 +59,14 @@ class FpsOverlayService : Service() {
 
         activeOverlay?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
 
-        // NEW: Reduced textSize and padding for a smaller visual footprint
         overlayView = TextView(this).apply {
             text = "TAP TO START"
             setTextColor(Color.WHITE)
-            textSize = 10.5f
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            textSize = 11f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = Gravity.CENTER
-            setPadding(35, 12, 35, 12)
+            setPadding(38, 14, 38, 14)
+            setShadowLayer(3f, 0f, 1f, Color.parseColor("#80000000"))
         }
         updatePillStyle(false)
 
@@ -95,13 +95,12 @@ class FpsOverlayService : Service() {
     private fun updatePillStyle(recording: Boolean) {
         overlayView.background = GradientDrawable().apply {
             cornerRadius = 100f
-            // NEW: Lowered hex opacity to #99 (~60%) for a more transparent pill
+            setColor(Color.parseColor("#B3121212")) 
             if (recording) {
-                setColor(Color.parseColor("#99E53935"))
+                setStroke(3, Color.parseColor("#80E53935")) 
             } else {
-                setColor(Color.parseColor("#9943A047"))
+                setStroke(3, Color.parseColor("#8043A047")) 
             }
-            setStroke(3, Color.parseColor("#33FFFFFF"))
         }
     }
 
