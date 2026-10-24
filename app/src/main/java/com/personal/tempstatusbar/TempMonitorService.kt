@@ -40,7 +40,10 @@ class TempMonitorService : Service() {
     private val iconSize = 64
     private val cachedBitmap = Bitmap.createBitmap(iconSize, iconSize, Bitmap.Config.ARGB_8888)
     private val cachedCanvas = Canvas(cachedBitmap)
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 38f; textAlign = Paint.Align.CENTER; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; textSize = 38f; textAlign = Paint.Align.CENTER
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+    }
 
     private val deepDiagnosticRunnable = object : Runnable {
         override fun run() {
@@ -48,7 +51,7 @@ class TempMonitorService : Service() {
                 thread {
                     val hwSnap = HardwareThermalControl.getDeepHardwareSnapshot()
                     val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
-                    val pwr = if(stats.isCharging) "+${stats.wattage}W" else "-${stats.wattage}W"
+                    val pwr = if (stats.isCharging) "+${stats.wattage}W" else "-${stats.wattage}W"
                     val currentFps = HardwareThermalControl.liveFps
                     val fpsStr = if (currentFps > 0) "$currentFps FPS" else "-- FPS"
                     AppLogger.log("🔎 [DIAGNOSTIC] $fpsStr | ${lastTemp}°C | PWR: $pwr | $hwSnap")
@@ -70,16 +73,15 @@ class TempMonitorService : Service() {
         }
     }
 
-    // PERFECTED STATE MACHINE: Clean, lightweight polling
     private val gamingEngineRunnable = object : Runnable {
         override fun run() {
             if (isScreenOn && settings.gamingModeEnabled && HardwareThermalControl.isRootAvailable()) {
                 val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
                 val time = System.currentTimeMillis()
-                val events = usm.queryEvents(time - 3000, time)
-                var event = UsageEvents.Event()
+                val events = usm.queryEvents(time - 5000, time)
+                val event = UsageEvents.Event()
                 var currentForeground = ""
-                
+
                 while (events.hasNextEvent()) {
                     events.getNextEvent(event)
                     if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
@@ -89,27 +91,27 @@ class TempMonitorService : Service() {
 
                 if (currentForeground.isNotEmpty()) {
                     val isGamingApp = settings.gamingApps.contains(currentForeground)
-                    
+
                     if (isGamingApp) {
                         if (!isCurrentlyGaming) {
-                            // STATE TRANSITION: Entering Game (Heavy Setup Once)
                             isCurrentlyGaming = true
                             HardwareThermalControl.setPeakPerformanceMode(true)
                             HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
                             backgroundHandler.post(deepDiagnosticRunnable)
                         }
-                        
-                        // CONTINUOUS HEARTBEAT: Silent, zero-latency override
                         if (lastTemp < settings.gameThrottleTemp) {
-                            HardwareThermalControl.enforceNuclearHeartbeat()
-                        }
-                    } else {
-                        if (isCurrentlyGaming) {
-                            // STATE TRANSITION: Exiting Game (Cleanup Once)
-                            isCurrentlyGaming = false
-                            backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
+                            HardwareThermalControl.enforceNuclearHeartbeat(if (lastTemp > 0) lastTemp else 37)
+                        } else {
                             HardwareThermalControl.setPeakPerformanceMode(false)
-                            HardwareThermalControl.clearGamingOptimization()
+                            HardwareThermalControl.throttleCPU(true)
+                        }
+                    } else if (isCurrentlyGaming) {
+                        isCurrentlyGaming = false
+                        backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
+                        HardwareThermalControl.setPeakPerformanceMode(false)
+                        HardwareThermalControl.clearGamingOptimization()
+                        if (!isSmartGovernorActive || lastTemp < settings.warningTemp) {
+                            HardwareThermalControl.throttleCPU(false)
                         }
                     }
                 }
@@ -144,16 +146,21 @@ class TempMonitorService : Service() {
                         pushNotificationUpdate()
                     }
                 }
-                Intent.ACTION_SCREEN_ON -> { isScreenOn = true; backgroundHandler.post(powerRunnable); backgroundHandler.post(gamingEngineRunnable) }
-                Intent.ACTION_SCREEN_OFF -> { 
-                    isScreenOn = false; 
-                    if (isCurrentlyGaming) {
-                        isCurrentlyGaming = false
-                        HardwareThermalControl.setPeakPerformanceMode(false) 
-                    }
+                Intent.ACTION_SCREEN_ON -> {
+                    isScreenOn = true
+                    backgroundHandler.post(powerRunnable)
+                    backgroundHandler.post(gamingEngineRunnable)
+                }
+                Intent.ACTION_SCREEN_OFF -> {
+                    isScreenOn = false
+                    isCurrentlyGaming = false
                     backgroundHandler.removeCallbacks(powerRunnable)
                     backgroundHandler.removeCallbacks(gamingEngineRunnable)
                     backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
+                    HardwareThermalControl.setPeakPerformanceMode(false)
+                }
+                "ACTION_TOGGLE_SMART_GOVERNOR" -> {
+                    isSmartGovernorActive = intent.getBooleanExtra("state", false)
                 }
             }
         }
@@ -172,8 +179,9 @@ class TempMonitorService : Service() {
             addAction(Intent.ACTION_BATTERY_CHANGED)
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
+            addAction("ACTION_TOGGLE_SMART_GOVERNOR")
         }, Context.RECEIVER_NOT_EXPORTED)
-        
+
         backgroundHandler.post(dbLogRunnable)
         backgroundHandler.post(gamingEngineRunnable)
     }
@@ -196,6 +204,7 @@ class TempMonitorService : Service() {
 
         if (temp >= settings.warningTemp) {
             HardwareThermalControl.playThermalAlert()
+            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
 
             val muteIntent = PendingIntent.getBroadcast(this, 0, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_MUTE" }, PendingIntent.FLAG_IMMUTABLE)
             val coolIntent = PendingIntent.getBroadcast(this, 1, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_COOLDOWN" }, PendingIntent.FLAG_IMMUTABLE)
@@ -217,6 +226,7 @@ class TempMonitorService : Service() {
             if (HardwareThermalControl.isEmergencyCooldownActive) {
                 HardwareThermalControl.clearEmergencyCooldown()
             }
+            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.throttleCPU(false) }
         }
 
         if (temp >= settings.cutoffTemp) isThermalCutoff = true
@@ -254,13 +264,13 @@ class TempMonitorService : Service() {
 
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val bypassStr = if (HardwareThermalControl.isManualBypassActive && stats.isCharging) "\n🛡️ BYPASS" else ""
-        
+
         val bodyText = if (settings.showPowerMetrics) {
-            if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)$bypassStr" 
+            if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)$bypassStr"
             else if (isThermalCutoff || isPctCutoff) "🛑 Charging Paused by Limits"
             else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)$bypassStr"
-        } else { 
-            if (stats.isCharging) "⚡ Charging$bypassStr" else "🔋 Discharging$bypassStr" 
+        } else {
+            if (stats.isCharging) "⚡ Charging$bypassStr" else "🔋 Discharging$bypassStr"
         }
 
         val notif = Notification.Builder(this, CHANNEL_ID)
@@ -290,7 +300,7 @@ class TempMonitorService : Service() {
             .setContentTitle("Thermal Monitor Active")
             .setSmallIcon(drawIcon("--"))
             .build()
-            
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
@@ -306,7 +316,7 @@ class TempMonitorService : Service() {
         HardwareThermalControl.destroy()
         handlerThread.quitSafely()
     }
-    
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createChannels() {
