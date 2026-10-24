@@ -24,7 +24,7 @@ object HardwareThermalControl {
     var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
 
-    var liveFps = -1
+    @Volatile var liveFps = -1
 
     private var isMuted = false
     private var cachedRootState: Boolean? = null
@@ -57,16 +57,24 @@ object HardwareThermalControl {
         } catch (e: Exception) { return false }
     }
 
-    // Single, non-blocking shell call to keep CPU & GPU locked at max without I/O stutter
-    fun enforceNuclearHeartbeat() {
+    // Bundled, non-blocking heartbeat: prevents 305MHz GPU drop, 60Hz display drop, and 43°C overvolt spike
+    fun enforceNuclearHeartbeat(currentTemp: Int = 37) {
         if (!isRootAvailable()) return
-        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null; " +
-                  "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null; " +
-                  "cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq 2>/dev/null; " +
-                  "cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null; " +
-                  "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null; " +
-                  "echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; " +
-                  "echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null"
+        val c7Max = if (currentTemp >= 41) "2745600" else "3187200"
+        val gpuMinPwr = if (currentTemp >= 41) "1" else "0"
+        val cmd = """
+            echo $c7Max > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
+            echo 2457600 > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
+            cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq 2>/dev/null
+            cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null
+            echo $gpuMinPwr > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+            settings put system peak_refresh_rate 120 2>/dev/null
+            settings put system min_refresh_rate 120 2>/dev/null
+            settings put system user_refresh_rate 120 2>/dev/null
+            settings put secure miui_refresh_rate 120 2>/dev/null
+        """.trimIndent()
         try {
             Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
         } catch (e: Exception) {}
@@ -102,7 +110,8 @@ object HardwareThermalControl {
     }
 
     fun forceRefreshRate(hz: Int) {
-        val cmd = "settings put system peak_refresh_rate $hz; settings put system min_refresh_rate $hz; settings put system user_refresh_rate $hz; settings put secure miui_refresh_rate $hz; settings put system miui_refresh_rate $hz; service call SurfaceFlinger 1035 i32 $hz"
+        val modeId = if (hz >= 120) 0 else 1
+        val cmd = "settings put system peak_refresh_rate $hz; settings put system min_refresh_rate $hz; settings put system user_refresh_rate $hz; settings put secure miui_refresh_rate $hz; settings put system miui_refresh_rate $hz; service call SurfaceFlinger 1035 i32 $modeId"
         executeRootCommand("Force Display Refresh to ${hz}Hz", cmd)
     }
 
@@ -113,23 +122,55 @@ object HardwareThermalControl {
         thread {
             if (enable) {
                 AppLogger.log("GAMING ENGINE: NUCLEAR PERFORMANCE ENGAGED")
-                executeRootCommand("Disable Kernel Thermals", "for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > \$z 2>/dev/null; done")
+
+                // 1. Blind Kernel Thermal Zones & Lock Xiaomi sconfig to Benchmark Mode (10)
+                val killThermalsCmd = """
+                    for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > ${'$'}z 2>/dev/null; done
+                    chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+                    echo 10 > /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+                    chmod 0444 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+                """.trimIndent()
+                executeRootCommand("Disable Kernel Thermals", killThermalsCmd)
+
+                // 2. Force GPU to Power Level 0
                 forceUnthrottleGPU()
-                executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
-                executeRootCommand("Freeze Thermal Daemons", "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done")
+
+                // 3. Set Governors & Enforce 120Hz Display
+                executeRootCommand("Governor -> Performance", "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
+                forceRefreshRate(120)
+
+                // 4. Freeze Xiaomi Thermal & PowerKeeper Daemons (prevents 60Hz thermal drop)
+                val stopCmd = "for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
+                executeRootCommand("Freeze Thermal Daemons", stopCmd)
             } else {
                 AppLogger.log("GAMING ENGINE: Normal Performance Restored")
-                executeRootCommand("Enable Kernel Thermals", "for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > \$z 2>/dev/null; done")
+
+                val restoreThermalsCmd = """
+                    chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+                    echo 0 > /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+                    for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > ${'$'}z 2>/dev/null; done
+                """.trimIndent()
+                executeRootCommand("Enable Kernel Thermals", restoreThermalsCmd)
+
                 executeRootCommand("GPU -> Auto Mode", "echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null")
                 executeRootCommand("Governor -> Schedutil", "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor")
-                executeRootCommand("Restore CPU Min Freq", "cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq")
-                executeRootCommand("Resume Thermal Daemons", "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done")
+
+                val cpuRestoreCmd = """
+                    cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null
+                    cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null
+                    cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
+                    cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
+                """.trimIndent()
+                executeRootCommand("Restore CPU Min Freq", cpuRestoreCmd)
+
+                val resumeCmd = "for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done"
+                executeRootCommand("Resume Thermal Daemons", resumeCmd)
             }
         }
     }
 
     fun forceUnthrottleCPU() {
-        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
+        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; echo 2457600 > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
         executeRootCommand("Force CPU Max", cmd)
     }
 
@@ -141,6 +182,8 @@ object HardwareThermalControl {
     }
 
     fun throttleCPU(throttle: Boolean) {
+        if (isPrimeCoreThrottled == throttle) return
+        isPrimeCoreThrottled = throttle
         if (throttle) {
             val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
             executeRootCommand("Throttle CPU", cmd)
