@@ -16,9 +16,9 @@ import java.io.InputStreamReader
 import kotlin.concurrent.thread
 
 class FpsOverlayService : Service() {
-    companion object { 
-        var isRunning = false 
-        private var activeOverlay: View? = null 
+    companion object {
+        var isRunning = false
+        private var activeOverlay: View? = null
     }
 
     private lateinit var windowManager: WindowManager
@@ -59,13 +59,14 @@ class FpsOverlayService : Service() {
 
         activeOverlay?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
 
+        // Sleek, compact glassmorphic pill
         overlayView = TextView(this).apply {
             text = "TAP TO START"
             setTextColor(Color.WHITE)
-            textSize = 11f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            textSize = 10.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding(38, 14, 38, 14)
+            setPadding(32, 11, 32, 11)
             setShadowLayer(3f, 0f, 1f, Color.parseColor("#80000000"))
         }
         updatePillStyle(false)
@@ -83,23 +84,23 @@ class FpsOverlayService : Service() {
         setupTouchListener(params)
         windowManager.addView(overlayView, params)
         activeOverlay = overlayView
-        
+
         if (!HardwareThermalControl.isRootAvailable()) {
             nonRootLastTime = System.currentTimeMillis()
             Choreographer.getInstance().postFrameCallback(frameCallback)
         }
-        
+
         startHardwarePoller()
     }
 
     private fun updatePillStyle(recording: Boolean) {
         overlayView.background = GradientDrawable().apply {
             cornerRadius = 100f
-            setColor(Color.parseColor("#B3121212")) 
+            setColor(Color.parseColor("#88121212")) // 53% translucent dark charcoal glass
             if (recording) {
-                setStroke(3, Color.parseColor("#80E53935")) 
+                setStroke(2, Color.parseColor("#B3E53935"))
             } else {
-                setStroke(3, Color.parseColor("#8043A047")) 
+                setStroke(2, Color.parseColor("#B343A047"))
             }
         }
     }
@@ -113,7 +114,7 @@ class FpsOverlayService : Service() {
             if (!isMoved) {
                 overlayView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                 if (isRecording) endAndSaveSession()
-                activeOverlay?.let { try { windowManager.removeView(it) } catch(e:Exception){} }
+                activeOverlay?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
                 activeOverlay = null
                 stopSelf()
             }
@@ -162,7 +163,7 @@ class FpsOverlayService : Service() {
             tempReadings.clear()
             sessionStartTime = System.currentTimeMillis()
             updatePillStyle(true)
-            
+
             if (HardwareThermalControl.isRootAvailable()) {
                 thread {
                     try {
@@ -193,7 +194,7 @@ class FpsOverlayService : Service() {
             while (isServiceActive) {
                 val showTemp = prefs.getBoolean("showTempInFpsOverlay", false)
                 val hasRoot = HardwareThermalControl.isRootAvailable()
-                
+
                 var fpsRaw: Int? = null
                 var tempRaw: Int? = null
 
@@ -212,7 +213,7 @@ class FpsOverlayService : Service() {
                 } else {
                     fpsRaw = nonRootCurrentFps
                     val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                    tempRaw = batteryIntent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, 0)?.div(10)
+                    tempRaw = batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)?.div(10)
                 }
 
                 if (isRecording) {
@@ -256,7 +257,7 @@ class FpsOverlayService : Service() {
         super.onDestroy()
         isServiceActive = false
         isRunning = false
-        activeOverlay?.let { try { windowManager.removeView(it) } catch(e:Exception){} }
+        activeOverlay?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
         activeOverlay = null
     }
 }
