@@ -11,8 +11,8 @@ android {
         applicationId "com.personal.tempstatusbar"
         minSdk 26
         targetSdk 34
-        versionCode 4
-        versionName "2.2"
+        versionCode 5
+        versionName "2.3"
     }
 
     buildTypes {
@@ -31,14 +31,21 @@ android {
         jvmTarget = '17'
     }
 
+    // Includes both ../Icons (capital I) and ../icons so Linux builds always bundle your PNGs
     sourceSets {
         main {
-            assets.srcDirs += ['../icons', 'src/main/assets']
+            if (file('../Icons').exists()) {
+                assets.srcDirs += ['../Icons']
+            }
+            if (file('../icons').exists()) {
+                assets.srcDirs += ['../icons']
+            }
+            assets.srcDirs += ['src/main/assets']
         }
     }
 
     preBuild.doFirst {
-        def customAppIcon = file('../icons/AppIcon.png')
+        def customAppIcon = file('../Icons/AppIcon.png').exists() ? file('../Icons/AppIcon.png') : file('../icons/AppIcon.png')
         if (customAppIcon.exists()) {
             def resDir = file("src/main/res")
             if (resDir.exists()) {
@@ -72,7 +79,6 @@ android {
             }
         }
 
-        // Ensure AndroidManifest.xml has @mipmap/ic_launcher and QUERY_ALL_PACKAGES for Add Games picker
         def manifestFile = file("src/main/AndroidManifest.xml")
         if (manifestFile.exists()) {
             def text = manifestFile.getText("UTF-8")
