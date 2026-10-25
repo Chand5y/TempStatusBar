@@ -56,7 +56,7 @@ class TempMonitorService : Service() {
                     val fpsStr = if (currentFps > 0) "$currentFps FPS" else "-- FPS"
                     AppLogger.log("🔎 [DIAGNOSTIC] $fpsStr | ${lastTemp}°C | PWR: $pwr | $hwSnap")
                 }
-                backgroundHandler.postDelayed(this, 2000L)
+                backgroundHandler.postDelayed(this, 4000L)
             }
         }
     }
@@ -73,39 +73,46 @@ class TempMonitorService : Service() {
         }
     }
 
+    // Reliable Game Detection: Uses Root window focus + UsageEvents so BGMI is never missed after 5 seconds!
     private val gamingEngineRunnable = object : Runnable {
         override fun run() {
             if (isScreenOn && settings.gamingModeEnabled && HardwareThermalControl.isRootAvailable()) {
-                val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-                val time = System.currentTimeMillis()
-                val events = usm.queryEvents(time - 5000, time)
-                val event = UsageEvents.Event()
-                var currentForeground = ""
+                var currentForeground = HardwareThermalControl.getForegroundPackageRoot()
 
-                while (events.hasNextEvent()) {
-                    events.getNextEvent(event)
-                    if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
-                        currentForeground = event.packageName
+                if (currentForeground.isEmpty()) {
+                    val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+                    val time = System.currentTimeMillis()
+                    val events = usm.queryEvents(time - 15000, time)
+                    val event = UsageEvents.Event()
+                    while (events.hasNextEvent()) {
+                        events.getNextEvent(event)
+                        if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                            currentForeground = event.packageName
+                        }
                     }
                 }
 
                 if (currentForeground.isNotEmpty()) {
-                    val isGamingApp = settings.gamingApps.contains(currentForeground)
+                    val targetGames = settings.gamingApps
+                    val isGamingApp = targetGames.any { currentForeground.contains(it, ignoreCase = true) }
 
                     if (isGamingApp) {
                         if (!isCurrentlyGaming) {
                             isCurrentlyGaming = true
+                            AppLogger.log("🎮 [GAME DETECTED] Foreground: $currentForeground -> Engaging Turbo Mode")
                             HardwareThermalControl.setPeakPerformanceMode(true)
                             HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
+                            backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
                             backgroundHandler.post(deepDiagnosticRunnable)
                         }
                         if (lastTemp < settings.gameThrottleTemp) {
                             HardwareThermalControl.enforceNuclearHeartbeat(if (lastTemp > 0) lastTemp else 37)
                         } else {
+                            AppLogger.log("⚠️ [THERMAL CAP] Battery reached ${lastTemp}°C (Cap: ${settings.gameThrottleTemp}°C)")
                             HardwareThermalControl.setPeakPerformanceMode(false)
                             HardwareThermalControl.throttleCPU(true)
                         }
-                    } else if (isCurrentlyGaming) {
+                    } else if (isCurrentlyGaming && !currentForeground.contains("tempstatusbar")) {
                         isCurrentlyGaming = false
                         backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
                         HardwareThermalControl.setPeakPerformanceMode(false)
@@ -116,7 +123,7 @@ class TempMonitorService : Service() {
                     }
                 }
             }
-            backgroundHandler.postDelayed(this, 3000L)
+            backgroundHandler.postDelayed(this, 2500L)
         }
     }
 
@@ -133,7 +140,6 @@ class TempMonitorService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 Intent.ACTION_POWER_DISCONNECTED -> {
-                    // Fail-safe: whenever charger is unplugged, restore all charging nodes to normal so next plug-in always charges!
                     if (HardwareThermalControl.isManualBypassActive || HardwareThermalControl.isChargingThrottled) {
                         AppLogger.log("🔌 [FAIL-SAFE] Charger unplugged — resetting charging nodes to normal")
                         HardwareThermalControl.setChargingEnabled(true, isManualToggle = true)
@@ -146,7 +152,6 @@ class TempMonitorService : Service() {
                     val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
                     val pct = if (scale > 0) (level * 100 / scale.toFloat()).toInt() else 0
 
-                    // If cable was unplugged, auto-release manual bypass so next charge is never blocked
                     if (plugged == 0 && lastPlugged > 0 && HardwareThermalControl.isManualBypassActive) {
                         HardwareThermalControl.setChargingEnabled(true, isManualToggle = true)
                     }
@@ -231,7 +236,9 @@ class TempMonitorService : Service() {
 
         if (temp >= settings.warningTemp) {
             HardwareThermalControl.playThermalAlert()
-            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
+            if (isSmartGovernorActive && !settings.gamingModeEnabled && !HardwareThermalControl.isPeakPerformanceActive) {
+                backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
+            }
 
             val muteIntent = PendingIntent.getBroadcast(this, 0, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_MUTE" }, PendingIntent.FLAG_IMMUTABLE)
             val coolIntent = PendingIntent.getBroadcast(this, 1, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_COOLDOWN" }, PendingIntent.FLAG_IMMUTABLE)
@@ -249,13 +256,14 @@ class TempMonitorService : Service() {
             manager?.notify(ALERT_NOTIF_ID, alertNotif)
         } else if (temp <= safeTemp) {
             manager?.cancel(ALERT_NOTIF_ID)
-            // FIXED: Explicitly cancels vibration AND tone when temperature drops to safe level!
             HardwareThermalControl.stopThermalAlert()
             HardwareThermalControl.resetMute()
             if (HardwareThermalControl.isEmergencyCooldownActive) {
                 HardwareThermalControl.clearEmergencyCooldown()
             }
-            if (isSmartGovernorActive && !settings.gamingModeEnabled) backgroundHandler.post { HardwareThermalControl.throttleCPU(false) }
+            if (isSmartGovernorActive && !settings.gamingModeEnabled && !HardwareThermalControl.isPeakPerformanceActive) {
+                backgroundHandler.post { HardwareThermalControl.throttleCPU(false) }
+            }
         }
 
         if (temp >= settings.cutoffTemp) isThermalCutoff = true
@@ -269,7 +277,7 @@ class TempMonitorService : Service() {
         }
 
         if (!HardwareThermalControl.isEmergencyCooldownActive && !HardwareThermalControl.isManualBypassActive) {
-            if (isCurrentlyGaming) return
+            if (isCurrentlyGaming || HardwareThermalControl.isPeakPerformanceActive) return
 
             val shouldBeThrottled = isThermalCutoff || isPctCutoff
             if (shouldBeThrottled && !HardwareThermalControl.isChargingThrottled) {
