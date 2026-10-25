@@ -61,7 +61,21 @@ object HardwareThermalControl {
         }
     }
 
-    // Loads qs_fps.png or qs_info.png from Icons/ or icons/ and converts it into a true transparent alpha-mask silhouette[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span)
+    // Detects the current foreground package reliably using Root window focus (never misses games after 5s)
+    fun getForegroundPackageRoot(): String {
+        if (!isRootAvailable()) return ""
+        return try {
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp|topResumedActivity'"))
+            val out = BufferedReader(InputStreamReader(p.inputStream)).readText()
+            p.waitFor()
+            val regex = Regex("""([a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+)/""")
+            val matches = regex.findAll(out).map { it.groupValues[1] }.toList()
+            matches.firstOrNull { !it.contains("systemui") && !it.contains("tempstatusbar") } ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
     fun loadQuickTileIcon(context: Context, exactFileName: String): Icon? {
         try {
             val candidates = listOf(exactFileName, "Icons/$exactFileName", "icons/$exactFileName")
@@ -92,7 +106,6 @@ object HardwareThermalControl {
             val pixels = IntArray(w * h)
             scaled.getPixels(pixels, 0, w, 0, 0, w, h)
 
-            // 1. Flood-fill remove outer background starting from all four edges
             val c0 = pixels[0]
             val bgR = Color.red(c0)
             val bgG = Color.green(c0)
@@ -140,7 +153,6 @@ object HardwareThermalControl {
                 if (y + 1 < h) enqueue(x, y + 1)
             }
 
-            // 2. Measure remaining foreground luminance distribution to prevent solid-box rendering[span_2](start_span)[span_2](end_span)
             var nonBgCount = 0
             var lumSum = 0L
             for (i in pixels.indices) {
@@ -162,7 +174,6 @@ object HardwareThermalControl {
                     val px = pixels[i]
                     val lum = (Color.red(px) * 299 + Color.green(px) * 587 + Color.blue(px) * 114) / 1000
 
-                    // If the icon has an internal container box (fillRatio > 0.48), isolate only the bright symbol inside it
                     if (fillRatio > 0.48f) {
                         val delta = lum - avgLum
                         if (delta <= 18) {
@@ -185,7 +196,6 @@ object HardwareThermalControl {
         }
     }
 
-    // Pinned sort: selected apps appear first at the top, followed by unselected apps alphabetically
     fun getInstalledUserApps(context: Context, selectedSet: Set<String> = emptySet()): List<AppEntry> {
         val pm = context.packageManager
         val map = linkedMapOf<String, String>()
@@ -384,20 +394,34 @@ object HardwareThermalControl {
         return executeVerifiedCommand(action, command)
     }
 
-    private fun buildCpuCeilingUnlockScript(c7MaxKhz: String = "3187200", c7MinKhz: String = "2457600"): String {
+    // Locks CPU frequency nodes with chmod 0444 (Read-Only) when lockReadOnly=true so PowerHAL/mi_thermald cannot drop C7 back to 1516800!
+    private fun buildCpuCeilingUnlockScript(
+        c7MaxKhz: String = "3187200",
+        c7MinKhz: String = "2457600",
+        lockReadOnly: Boolean = true
+    ): String {
+        val lockPerm = if (lockReadOnly) "0444" else "0644"
         return """
             chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
             echo "0:1804800 1:1804800 2:1804800 3:1804800 4:2419200 5:2419200 6:2419200 7:$c7MaxKhz" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
             echo "7:$c7MaxKhz" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
-            for c in /sys/class/thermal/cooling_device*/cur_state; do echo 0 > ${'$'}c 2>/dev/null; done
-            chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq 2>/dev/null
-            chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq 2>/dev/null
-            echo $c7MaxKhz > /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq 2>/dev/null
-            echo $c7MaxKhz > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
-            echo $c7MinKhz > /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq 2>/dev/null
-            echo $c7MinKhz > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
-            echo 2419200 > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null
-            echo 2419200 > /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq 2>/dev/null
+            chmod $lockPerm /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            for c in /sys/class/thermal/cooling_device*/cur_state; do
+                chmod 0644 ${'$'}c 2>/dev/null
+                echo 0 > ${'$'}c 2>/dev/null
+            done
+            for p in /sys/devices/system/cpu/cpufreq/policy7 /sys/devices/system/cpu/cpu7/cpufreq; do
+                chmod 0644 ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                echo $c7MaxKhz > ${'$'}p/scaling_max_freq 2>/dev/null
+                echo $c7MinKhz > ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod $lockPerm ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+            done
+            for p in /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpu4/cpufreq; do
+                chmod 0644 ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                echo 2419200 > ${'$'}p/scaling_max_freq 2>/dev/null
+                echo 2419200 > ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod $lockPerm ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+            done
         """.trimIndent()
     }
 
@@ -405,13 +429,24 @@ object HardwareThermalControl {
         isGpuPeakLocked = lockTo670Mhz
         thread {
             if (lockTo670Mhz) {
-                val cmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel"
+                val cmd = """
+                    chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel
+                    chmod 0444 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+                """.trimIndent()
                 val ok = executeVerifiedCommand("Lock GPU Peak (670 MHz)", cmd, "/sys/class/kgsl/kgsl-3d0/min_pwrlevel", "0")
                 isGpuPeakLocked = ok
                 val freqNow = getGpuFrequency()
                 onVerified?.invoke(isGpuPeakLocked, freqNow)
             } else {
-                val cmd = "echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel"
+                val cmd = """
+                    chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+                    echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel
+                    echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel
+                """.trimIndent()
                 executeVerifiedCommand("Unlock GPU to Dynamic Auto (305-670 MHz)", cmd, "/sys/class/kgsl/kgsl-3d0/min_pwrlevel", "6")
                 isGpuPeakLocked = false
                 val freqNow = getGpuFrequency()
@@ -424,19 +459,21 @@ object HardwareThermalControl {
         setGpuPeakLock(true)
     }
 
+    // 2-Second Heartbeat: Keeps CPU/GPU read-only locks & 120Hz SurfaceFlinger mode active during gameplay
     fun enforceNuclearHeartbeat(currentTemp: Int = 37) {
         if (!isRootAvailable()) return
-        val c7Max = if (currentTemp >= 41) "2745600" else "3187200"
-        val gpuMinPwr = if (currentTemp >= 41) "1" else "0"
+        val c7Max = if (currentTemp >= 42) "2745600" else "3187200"
+        val gpuMinPwr = if (currentTemp >= 42) "1" else "0"
         val cmd = """
-            ${buildCpuCeilingUnlockScript(c7Max, "2457600")}
+            for d in joyose mi_thermald thermal-engine; do p=${'$'}(pidof ${'$'}d); if [ ! -z "${'$'}p" ]; then kill -STOP ${'$'}p 2>/dev/null; fi; done
+            ${buildCpuCeilingUnlockScript(c7Max, "2457600", lockReadOnly = true)}
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null
             echo $gpuMinPwr > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
-            settings put system peak_refresh_rate 120 2>/dev/null
-            settings put system min_refresh_rate 120 2>/dev/null
-            settings put system user_refresh_rate 120 2>/dev/null
-            settings put secure miui_refresh_rate 120 2>/dev/null
+            chmod 0444 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+            service call SurfaceFlinger 1035 i32 0 >/dev/null 2>&1
+            cmd power set-fixed-performance-mode-enabled true >/dev/null 2>&1
         """.trimIndent()
         try {
             Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
@@ -475,7 +512,14 @@ object HardwareThermalControl {
     fun forceRefreshRate(hz: Int) {
         thread {
             val modeId = if (hz >= 120) 0 else 1
-            val cmd = "settings put system peak_refresh_rate $hz; settings put system min_refresh_rate $hz; settings put system user_refresh_rate $hz; settings put secure miui_refresh_rate $hz; settings put system miui_refresh_rate $hz; service call SurfaceFlinger 1035 i32 $modeId"
+            val cmd = """
+                settings put system peak_refresh_rate $hz
+                settings put system min_refresh_rate $hz
+                settings put system user_refresh_rate $hz
+                settings put secure miui_refresh_rate $hz
+                settings put system miui_refresh_rate $hz
+                service call SurfaceFlinger 1035 i32 $modeId
+            """.trimIndent()
             executeVerifiedCommand("Force Display Refresh to ${hz}Hz", cmd)
         }
     }
@@ -488,9 +532,17 @@ object HardwareThermalControl {
             if (enable) {
                 AppLogger.log("🚀 TURBO MODE: MAXIMUM HARDWARE PERFORMANCE ENGAGED")
 
-                val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
-                executeVerifiedCommand("Freeze Xiaomi Thermal Daemons", stopCmd)
+                // 1. Freeze Xiaomi thermal daemons & powerkeeper (stops 60Hz drop at 37°C)
+                val stopCmd = """
+                    for d in joyose mi_thermald thermal-engine; do
+                        p=${'$'}(pidof ${'$'}d)
+                        if [ ! -z "${'$'}p" ]; then kill -STOP ${'$'}p 2>/dev/null; fi
+                    done
+                    cmd power set-fixed-performance-mode-enabled true 2>/dev/null
+                """.trimIndent()
+                executeVerifiedCommand("Freeze Thermal Daemons & Enable Fixed Perf Mode", stopCmd)
 
+                // 2. Disable all 91 kernel thermal zones & lock sconfig to 10 (Read-Only)
                 val killThermalsCmd = """
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > ${'$'}z 2>/dev/null; done
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
@@ -499,20 +551,24 @@ object HardwareThermalControl {
                 """.trimIndent()
                 executeVerifiedCommand("Lock Thermal sconfig -> 10", killThermalsCmd, "/sys/class/thermal/thermal_message/sconfig", "10")
 
+                // 3. Set CPU Governors to Performance first
                 executeVerifiedCommand(
-                    "Unlock Prime Core 3.18GHz Ceiling",
-                    buildCpuCeilingUnlockScript("3187200", "2457600"),
-                    "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq",
-                    "3187200"
-                )
-
-                setGpuPeakLock(true)
-                executeVerifiedCommand(
-                    "CPU Policy4 Governor -> Performance",
+                    "CPU Governors -> Performance",
                     "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor",
                     "/sys/devices/system/cpu/cpufreq/policy4/scaling_governor",
                     "performance"
                 )
+
+                // 4. Unlock Prime Core 3.18GHz & Gold Cores 2.42GHz AND lock files Read-Only (0444)
+                executeVerifiedCommand(
+                    "Lock Prime Core 3.18GHz Ceiling (Read-Only)",
+                    buildCpuCeilingUnlockScript("3187200", "2457600", lockReadOnly = true),
+                    "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq",
+                    "3187200"
+                )
+
+                // 5. Lock Adreno 650 GPU to 670 MHz (Power Level 0) & Force 120Hz Display
+                setGpuPeakLock(true)
                 forceRefreshRate(120)
             } else {
                 AppLogger.log("🌱 TURBO MODE: Balanced Performance Restored")
@@ -520,45 +576,55 @@ object HardwareThermalControl {
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                     echo 0 > /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > ${'$'}z 2>/dev/null; done
+                    cmd power set-fixed-performance-mode-enabled false 2>/dev/null
                 """.trimIndent()
                 executeVerifiedCommand("Restore Kernel Thermals", restoreThermalsCmd)
+
                 setGpuPeakLock(false)
-                executeVerifiedCommand(
-                    "CPU Governors -> Schedutil",
-                    "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor",
-                    "/sys/devices/system/cpu/cpufreq/policy4/scaling_governor",
-                    "schedutil"
-                )
+
                 val cpuRestoreCmd = """
+                    chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+                    for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpufreq/policy7 /sys/devices/system/cpu/cpu4/cpufreq /sys/devices/system/cpu/cpu7/cpufreq; do
+                        chmod 0644 ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                    done
+                    echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null
+                    echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null
+                    echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor 2>/dev/null
                     cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null
                     cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null
                     cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
                     cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
                 """.trimIndent()
-                executeVerifiedCommand("Restore CPU Min/Max Freqs", cpuRestoreCmd)
-                val resumeCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done"
+                executeVerifiedCommand("Restore CPU Governors & Min/Max Freqs", cpuRestoreCmd)
+
+                val resumeCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p 2>/dev/null; fi; done"
                 executeVerifiedCommand("Resume Xiaomi Thermal Daemons", resumeCmd)
             }
         }
     }
 
     fun forceUnthrottleCPU() {
-        executeRootCommand("Force CPU Max", buildCpuCeilingUnlockScript("3187200", "2457600"))
+        executeRootCommand("Force CPU Max", buildCpuCeilingUnlockScript("3187200", "2457600", lockReadOnly = true))
     }
 
     fun forceUnthrottlePrimeCore() = forceUnthrottleCPU()
 
     fun throttleCPU(throttle: Boolean) {
+        if (isPrimeCoreThrottled == throttle) return
         isPrimeCoreThrottled = throttle
         thread {
             if (throttle) {
                 val minF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
-                val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq"
+                val cmd = """
+                    chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq 2>/dev/null
+                    echo $minF > /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq
+                    echo $minF > /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq
+                """.trimIndent()
                 executeVerifiedCommand("Throttle Prime Core (C7)", cmd, "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq", minF)
             } else {
                 val maxF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq")
                 val minF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
-                val cmd = buildCpuCeilingUnlockScript(maxF, minF)
+                val cmd = buildCpuCeilingUnlockScript(maxF, minF, lockReadOnly = isPeakPerformanceActive)
                 executeVerifiedCommand("Unthrottle Prime Core (C7)", cmd, "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq", maxF)
             }
         }
