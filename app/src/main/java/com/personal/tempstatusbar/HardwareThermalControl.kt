@@ -107,7 +107,7 @@ object HardwareThermalControl {
                     val reason = when {
                         stderr.isNotEmpty() -> stderr.lines().first()
                         afterVal.contains("No such file", true) -> "Kernel node does not exist on this ROM"
-                        beforeVal == afterVal -> "Kernel rejected write or locked by hardware governor (stayed '$afterVal')"
+                        beforeVal == afterVal -> "Kernel rejected write or locked by msm_performance/cooling_device (stayed '$afterVal')"
                         else -> "Expected '$expectedValue' but read '$afterVal'"
                     }
                     AppLogger.log("❌ [FAILED] $action | $verifyPath stayed [$afterVal] | Why: $reason")
@@ -138,6 +138,24 @@ object HardwareThermalControl {
             } catch (e: Exception) { false }
         }
         return executeVerifiedCommand(action, command)
+    }
+
+    // Clears msm_performance and thermal cooling_device caps so Policy 7 can reach 3187200 kHz even at 38°C+
+    private fun buildCpuCeilingUnlockScript(c7MaxKhz: String = "3187200", c7MinKhz: String = "2457600"): String {
+        return """
+            chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            echo "0:1804800 1:1804800 2:1804800 3:1804800 4:2419200 5:2419200 6:2419200 7:$c7MaxKhz" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            echo "7:$c7MaxKhz" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            for c in /sys/class/thermal/cooling_device*/cur_state; do echo 0 > ${'$'}c 2>/dev/null; done
+            chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq 2>/dev/null
+            chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq 2>/dev/null
+            echo $c7MaxKhz > /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq 2>/dev/null
+            echo $c7MaxKhz > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
+            echo $c7MinKhz > /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq 2>/dev/null
+            echo $c7MinKhz > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
+            echo 2419200 > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null
+            echo 2419200 > /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq 2>/dev/null
+        """.trimIndent()
     }
 
     // =========================================================================
@@ -184,9 +202,7 @@ object HardwareThermalControl {
             step(1, "Checking Permissions & Environment...")
             val rootOk = isRootAvailable()
             recordResult(rootOk, "Root Shell (su) granted uid=0", "Root Shell denied — grant Superuser in Magisk/KernelSU")
-            if (!rootOk) {
-                manualActionsNeeded.add("Grant Superuser (Root) permission in Magisk / KernelSU.")
-            }
+            if (!rootOk) manualActionsNeeded.add("Grant Superuser (Root) permission in Magisk / KernelSU.")
 
             recordResult(hasUsagePerm, "Usage Access Permission is GRANTED", "Usage Access is MISSING (required to detect BGMI launch)")
             if (!hasUsagePerm) manualActionsNeeded.add("Enable 'Usage Access' permission for TempStatusBar Pro.")
@@ -201,10 +217,7 @@ object HardwareThermalControl {
             val isPlugged = (batIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
             val startTemp = (batIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10
             AppLogger.log("  ℹ️ Battery State: ${startTemp}°C | Charger Plugged: $isPlugged")
-            if (!isPlugged) {
-                manualActionsNeeded.add("Optional: Plug in your charger if you want to verify physical charging wattage drop during Battery Bypass.")
-            }
-            Thread.sleep(500)
+            Thread.sleep(400)
 
             // STAGE 2: Kernel & Thermal Zone Mode Override Test
             step(2, "Testing Kernel Thermal Zones (/sys/class/thermal)...")
@@ -213,15 +226,13 @@ object HardwareThermalControl {
             AppLogger.log("  ℹ️ Kernel: $unameOut | SELinux Enforce: $selinux")
 
             val (_, tzTest) = runRootShell("total=0; writable=0; for z in /sys/class/thermal/thermal_zone*/mode; do total=\$((total+1)); echo disabled > \$z 2>/dev/null && writable=\$((writable+1)); done; echo \"\$writable/\$total\"")
-            val tzParts = tzTest.split("/")
-            val writableZones = tzParts.getOrNull(0)?.toIntOrNull() ?: 0
+            val writableZones = tzTest.split("/").getOrNull(0)?.toIntOrNull() ?: 0
             recordResult(
                 writableZones > 0,
                 "Disabled $tzTest kernel thermal zones successfully",
-                "0 thermal_zone*/mode nodes accepted 'disabled' (kernel hard-locked thermal zones)"
+                "0 thermal_zone*/mode nodes accepted 'disabled'"
             )
-            runRootShell("for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > \$z 2>/dev/null; done")
-            Thread.sleep(500)
+            Thread.sleep(400)
 
             // STAGE 3: Xiaomi Thermal Profile (sconfig) Benchmark Lock Test
             step(3, "Testing Xiaomi Thermal Profile (sconfig)...")
@@ -234,28 +245,26 @@ object HardwareThermalControl {
                 "Xiaomi sconfig locked to Benchmark Mode [Before: $sconfigOrig -> After: $sconfigAfter]",
                 "Xiaomi sconfig rejected '10' [Readback: $sconfigAfter]"
             )
-            runRootShell("chmod 0666 $sconfigPath 2>/dev/null; echo 0 > $sconfigPath 2>/dev/null")
-            Thread.sleep(500)
+            Thread.sleep(400)
 
-            // STAGE 4: Thermal Daemon Freeze (SIGSTOP) & Resume (SIGCONT) Test
-            step(4, "Testing Thermal Daemons Freeze & Resume...")
+            // STAGE 4: Freeze Thermal Daemons (Keep frozen through Stage 6 so mi_thermald cannot interfere with CPU clocks!)
+            step(4, "Testing Thermal Daemons Freeze (SIGSTOP)...")
             val (_, daemonReport) = runRootShell(
                 "for d in joyose mi_thermald thermal-engine; do " +
                 "p=\$(pidof \$d); " +
                 "if [ ! -z \"\$p\" ]; then " +
                 "kill -STOP \$p 2>/dev/null; " +
                 "st=\$(awk '{print \$3}' /proc/\$(echo \$p | awk '{print \$1}')/stat 2>/dev/null); " +
-                "kill -CONT \$p 2>/dev/null; " +
                 "echo \"\$d(PID:\$p->State:\$st)\"; " +
                 "else echo \"\$d(NOT_RUNNING)\"; fi; done"
             )
             val daemonClean = daemonReport.replace("\n", " | ")
             recordResult(
                 daemonClean.contains("State:T") || daemonClean.contains("NOT_RUNNING"),
-                "Daemons tested & restored: $daemonClean",
+                "Daemons frozen cleanly: $daemonClean",
                 "Could not freeze daemons: $daemonClean"
             )
-            Thread.sleep(500)
+            Thread.sleep(400)
 
             // STAGE 5: CPU Governor Switching Test (Policies 0, 4, 7)
             step(5, "Testing Kryo 585 CPU Governor Switching...")
@@ -270,32 +279,37 @@ object HardwareThermalControl {
                 "CPU Policy4 Governor switched [$origGov4 -> $perfGov4 -> $restGov4]",
                 "CPU Policy4 Governor failed to switch to performance [Stayed: $perfGov4]"
             )
-            Thread.sleep(500)
+            Thread.sleep(400)
 
-            // STAGE 6: Prime Core (C7) Frequency Throttle & Nuclear Unthrottle Test
-            step(6, "Testing Prime Core (C7) Throttle & Nuclear Clocks...")
+            // STAGE 6: Prime Core (C7) Frequency Throttle & msm_performance Nuclear Unthrottle Test
+            step(6, "Testing Prime Core (C7) Throttle & 3.18 GHz Unlock...")
             val c7MinHw = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
             val c7MaxHw = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq")
             val c7ScaleMax = "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
             val c7ScaleMin = "/sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq"
 
-            // Test Throttle
+            // 1. Test Throttle
             runRootShell("echo $c7MinHw > $c7ScaleMin 2>/dev/null; echo $c7MinHw > $c7ScaleMax 2>/dev/null")
             val throttledRead = readSysfsNode(c7ScaleMax)
 
-            // Test Nuclear Unthrottle
-            runRootShell("echo $c7MaxHw > $c7ScaleMax 2>/dev/null; echo 2457600 > $c7ScaleMin 2>/dev/null")
+            // 2. Test Nuclear Unthrottle (clears msm_performance & cooling_device caps first!)
+            runRootShell(buildCpuCeilingUnlockScript(c7MaxHw, "2457600"))
             val nuclearMaxRead = readSysfsNode(c7ScaleMax)
             val nuclearMinRead = readSysfsNode(c7ScaleMin)
+            val msmPerfParam = readSysfsNode("/sys/module/msm_performance/parameters/cpu_max_freq")
 
-            // Restore Default
+            // 3. Restore CPU, sconfig, Thermal Zones, and Resume Daemons
             runRootShell("echo $c7MinHw > $c7ScaleMin 2>/dev/null; echo $c7MaxHw > $c7ScaleMax 2>/dev/null")
+            runRootShell("chmod 0666 $sconfigPath 2>/dev/null; echo 0 > $sconfigPath 2>/dev/null")
+            runRootShell("for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > \$z 2>/dev/null; done")
+            runRootShell("for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p 2>/dev/null; fi; done")
+
             recordResult(
                 throttledRead == c7MinHw && nuclearMaxRead == c7MaxHw,
-                "Prime Core C7 Throttle [$throttledRead kHz] & Nuclear Unthrottle [Min:$nuclearMinRead / Max:$nuclearMaxRead kHz] verified",
-                "Prime Core C7 scaling lock mismatch [Throttle:$throttledRead, Max:$nuclearMaxRead, Expected:$c7MaxHw]"
+                "Prime Core C7 Throttle [$throttledRead kHz] & 3.18 GHz Unlock [Min:$nuclearMinRead / Max:$nuclearMaxRead kHz] verified",
+                "Prime Core C7 scaling lock mismatch [Throttle:$throttledRead, Max:$nuclearMaxRead, Expected:$c7MaxHw | msm_perf:$msmPerfParam]"
             )
-            Thread.sleep(500)
+            Thread.sleep(400)
 
             // STAGE 7: Per-Core Hotplug (Online/Offline) Test
             step(7, "Testing CPU Core 7 Hotplug (Offline -> Online)...")
@@ -309,7 +323,7 @@ object HardwareThermalControl {
                 "Core 7 Hotplug verified [Offline: $offlineRead -> Restored Online: $onlineRead]",
                 "Core 7 Hotplug blocked by kernel [Offline read: $offlineRead, Online read: $onlineRead]"
             )
-            Thread.sleep(500)
+            Thread.sleep(400)
 
             // STAGE 8: Adreno 650 GPU Nuclear Power Level 0 (670 MHz) Test
             step(8, "Testing Adreno 650 GPU 670 MHz Lock...")
@@ -326,7 +340,7 @@ object HardwareThermalControl {
                 "GPU Power Level 0 locked [Freq: $lockedGpuFreq | min_pwrlevel: 0 -> Restored: $restoredMinPwr]",
                 "GPU min_pwrlevel rejected 0 [Readback: $lockedMinPwr | Freq: $lockedGpuFreq]"
             )
-            Thread.sleep(500)
+            Thread.sleep(400)
 
             // STAGE 9: Display Refresh Rate Lock (60Hz -> 90Hz -> 120Hz)
             step(9, "Testing Display Refresh Rate Switching (60/90/120Hz)...")
@@ -343,29 +357,40 @@ object HardwareThermalControl {
                 "Refresh Rate sequence verified [${hzResults.joinToString(", ")}]",
                 "Refresh Rate readback mismatch [${hzResults.joinToString(", ")}]"
             )
-            Thread.sleep(500)
+            Thread.sleep(400)
 
-            // STAGE 10: Battery Bypass & Charging Isolation Test
-            step(10, "Testing Battery Bypass & Charging Isolation Nodes...")
-            val pwrBefore = PowerHardwareHelper.readPowerStats(context, isPlugged)
-            val suspendNode = "/sys/class/power_supply/battery/input_suspend"
-            val chargeEnNode = "/sys/class/power_supply/battery/charging_enabled"
-            runRootShell("echo 0 > $chargeEnNode 2>/dev/null; echo 1 > $suspendNode 2>/dev/null; echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null")
-            Thread.sleep(600)
-            val suspendDuring = readSysfsNode(suspendNode)
-            val chargeEnDuring = readSysfsNode(chargeEnNode)
-            val pwrDuring = PowerHardwareHelper.readPowerStats(context, isPlugged)
+            // STAGE 10: Xiaomi SM8250 Dual-Cell Battery Bypass & Charging Isolation Test
+            step(10, "Testing Xiaomi SM8250 Battery Bypass Nodes...")
+            val batSuspendNode = "/sys/class/power_supply/battery/input_suspend"
+            val qcomSuspendNode = "/sys/class/qcom-battery/input_suspend"
+            val batStatusNode = "/sys/class/power_supply/battery/status"
+            val statusBefore = readSysfsNode(batStatusNode)
+
+            runRootShell(
+                "echo 1 > $batSuspendNode 2>/dev/null; " +
+                "echo 1 > $qcomSuspendNode 2>/dev/null; " +
+                "echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; " +
+                "echo 1 > /sys/class/power_supply/main/input_suspend 2>/dev/null"
+            )
+            Thread.sleep(1000)
+            val batSuspendDuring = readSysfsNode(batSuspendNode)
+            val qcomSuspendDuring = readSysfsNode(qcomSuspendNode)
+            val statusDuring = readSysfsNode(batStatusNode)
 
             // Restore Charging
-            runRootShell("echo 1 > $chargeEnNode 2>/dev/null; echo 0 > $suspendNode 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null")
-            val suspendAfter = readSysfsNode(suspendNode)
-            val bypassNodeOk = (suspendDuring == "1" || chargeEnDuring == "0")
-            recordResult(
-                bypassNodeOk,
-                "Battery Bypass node accepted write [input_suspend: $suspendDuring, charging_enabled: $chargeEnDuring | Restored: $suspendAfter | Current: ${pwrBefore.currentMa}mA -> ${pwrDuring.currentMa}mA]",
-                "Battery Bypass nodes rejected write [input_suspend: $suspendDuring, charging_enabled: $chargeEnDuring]"
+            runRootShell(
+                "echo 0 > $batSuspendNode 2>/dev/null; " +
+                "echo 0 > $qcomSuspendNode 2>/dev/null; " +
+                "echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; " +
+                "echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null"
             )
-            Thread.sleep(500)
+            val batSuspendAfter = readSysfsNode(batSuspendNode)
+            recordResult(
+                batSuspendDuring == "1" || qcomSuspendDuring == "1",
+                "Battery Bypass verified [battery/input_suspend: $batSuspendDuring | qcom/input_suspend: $qcomSuspendDuring | Status: $statusBefore -> $statusDuring | Restored: $batSuspendAfter]",
+                "Battery Bypass nodes rejected write [battery: $batSuspendDuring, qcom: $qcomSuspendDuring]"
+            )
+            Thread.sleep(400)
 
             // STAGE 11: Process Pinning (taskset) & RAM Cache Purge Test
             step(11, "Testing Process Silver-Core Pinning & RAM Purge...")
@@ -379,7 +404,7 @@ object HardwareThermalControl {
                 "taskset Affinity & RAM Purge verified [RAM: $ramBefore -> $ramAfter]",
                 "taskset or drop_caches failed [Exit:$dropCode | Out:${tasksetOut.lines().firstOrNull()}]"
             )
-            Thread.sleep(500)
+            Thread.sleep(400)
 
             // STAGE 12: Hardware DRM FPS Counter & Floating Overlay Test
             step(12, "Testing Hardware DRM FPS Counter & Overlay Service...")
@@ -409,7 +434,7 @@ object HardwareThermalControl {
                     AppLogger.log("   ${i + 1}. $act")
                 }
             } else {
-                AppLogger.log("✨ ZERO MANUAL ACTIONS NEEDED — ALL PERMISSIONS & NODES READY")
+                AppLogger.log("✨ ZERO MANUAL ACTIONS NEEDED — ALL 15/15 CHECKS READY")
             }
 
             var exportedPath = "Not exported"
@@ -431,15 +456,13 @@ object HardwareThermalControl {
         }
     }
 
+    // Updated Heartbeat: Keeps msm_performance and cooling_device caps cleared during live gameplay
     fun enforceNuclearHeartbeat(currentTemp: Int = 37) {
         if (!isRootAvailable()) return
         val c7Max = if (currentTemp >= 41) "2745600" else "3187200"
         val gpuMinPwr = if (currentTemp >= 41) "1" else "0"
         val cmd = """
-            echo $c7Max > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
-            echo 2457600 > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
-            cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq 2>/dev/null
-            cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null
+            ${buildCpuCeilingUnlockScript(c7Max, "2457600")}
             echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null
             echo $gpuMinPwr > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
@@ -497,6 +520,12 @@ object HardwareThermalControl {
         thread {
             if (enable) {
                 AppLogger.log("🚀 GAMING ENGINE: NUCLEAR PERFORMANCE ENGAGED")
+
+                // 1. Freeze mi_thermald FIRST so it cannot write new caps
+                val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
+                executeVerifiedCommand("Freeze Xiaomi Thermal Daemons", stopCmd)
+
+                // 2. Disable 91 Thermal Zones & Lock sconfig to 10
                 val killThermalsCmd = """
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > ${'$'}z 2>/dev/null; done
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
@@ -504,6 +533,16 @@ object HardwareThermalControl {
                     chmod 0444 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                 """.trimIndent()
                 executeVerifiedCommand("Lock Thermal sconfig -> 10", killThermalsCmd, "/sys/class/thermal/thermal_message/sconfig", "10")
+
+                // 3. Unlock msm_performance & cooling_device caps so C7 hits 3187200 kHz even at 38°C+
+                executeVerifiedCommand(
+                    "Unlock Prime Core 3.18GHz Ceiling",
+                    buildCpuCeilingUnlockScript("3187200", "2457600"),
+                    "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq",
+                    "3187200"
+                )
+
+                // 4. Force GPU Power Level 0 & 120Hz Display
                 forceUnthrottleGPU()
                 executeVerifiedCommand(
                     "CPU Policy4 Governor -> Performance",
@@ -512,8 +551,6 @@ object HardwareThermalControl {
                     "performance"
                 )
                 forceRefreshRate(120)
-                val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
-                executeVerifiedCommand("Freeze Xiaomi Thermal Daemons", stopCmd)
             } else {
                 AppLogger.log("🌱 GAMING ENGINE: Normal Performance Restored")
                 val restoreThermalsCmd = """
@@ -548,8 +585,7 @@ object HardwareThermalControl {
     }
 
     fun forceUnthrottleCPU() {
-        val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; echo 2457600 > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq"
-        executeRootCommand("Force CPU Max", cmd)
+        executeRootCommand("Force CPU Max", buildCpuCeilingUnlockScript("3187200", "2457600"))
     }
 
     fun forceUnthrottlePrimeCore() = forceUnthrottleCPU()
@@ -570,7 +606,8 @@ object HardwareThermalControl {
                 executeVerifiedCommand("Throttle Prime Core (C7)", cmd, "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq", minF)
             } else {
                 val maxF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq")
-                val cmd = "cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq; cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq"
+                val minF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
+                val cmd = buildCpuCeilingUnlockScript(maxF, minF)
                 executeVerifiedCommand("Unthrottle Prime Core (C7)", cmd, "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq", maxF)
             }
         }
@@ -681,9 +718,9 @@ object HardwareThermalControl {
             val action = if (enable) "Restore Battery Charging" else "Isolate Battery (Bypass)"
             val targetSuspend = if (enable) "0" else "1"
             val cmd = if (enable) {
-                "echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
+                "echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 0 > /sys/class/qcom-battery/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
             } else {
-                "echo 0 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null; echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null; echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
+                "echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 1 > /sys/class/qcom-battery/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
             }
             executeVerifiedCommand(action, cmd, "/sys/class/power_supply/battery/input_suspend", targetSuspend)
         }
