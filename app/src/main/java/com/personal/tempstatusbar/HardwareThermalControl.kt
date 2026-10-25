@@ -2,8 +2,13 @@ package com.personal.tempstatusbar
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.drawable.Icon
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
@@ -13,10 +18,12 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 import kotlin.concurrent.thread
+import kotlin.math.abs
 
 data class RamProc(val name: String, val sizeMb: Int, val pid: Int)
 data class ProcessData(val pid: Int, val name: String, val cpu: String)
 data class CoreStatus(val coreId: Int, val online: Boolean, val freqText: String)
+data class AppEntry(val label: String, val packageName: String)
 
 object HardwareThermalControl {
     private var toneGen: ToneGenerator? = null
@@ -52,6 +59,112 @@ object HardwareThermalControl {
             }
             AppLogger.log("⚙️ [INIT] SoC: ${getHardwareInfo()} | Android ${Build.VERSION.RELEASE} | Root: ${if (root) "GRANTED (uid=0)" else "DENIED"}")
         }
+    }
+
+    // Converts qs_fps.png or qs_info.png into a true Alpha-Mask Silhouette so Android Quick Settings never draws a solid white square!
+    fun loadQuickTileIcon(context: Context, exactFileName: String): Icon? {
+        try {
+            val candidates = listOf(exactFileName, "icons/$exactFileName")
+            var raw: Bitmap? = null
+            for (path in candidates) {
+                try {
+                    context.assets.open(path).use { stream ->
+                        raw = BitmapFactory.decodeStream(stream)
+                    }
+                    if (raw != null) break
+                } catch (e: Exception) {}
+            }
+            val src = raw ?: return null
+            val w = src.width
+            val h = src.height
+            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val pixels = IntArray(w * h)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+
+            val corner = pixels[0]
+            val cornerLum = (Color.red(corner) + Color.green(corner) + Color.blue(corner)) / 3
+
+            for (i in pixels.indices) {
+                val px = pixels[i]
+                val a = Color.alpha(px)
+                if (a < 30) {
+                    pixels[i] = Color.TRANSPARENT
+                } else {
+                    val lum = (Color.red(px) + Color.green(px) + Color.blue(px)) / 3
+                    // Strip background based on distance from corner luminance
+                    val diff = abs(lum - cornerLum)
+                    if (diff < 38) {
+                        pixels[i] = Color.TRANSPARENT
+                    } else {
+                        val alpha = (diff * 2).coerceIn(80, 255)
+                        pixels[i] = Color.argb(alpha, 255, 255, 255)
+                    }
+                }
+            }
+            out.setPixels(pixels, 0, w, 0, 0, w, h)
+            return Icon.createWithBitmap(out)
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    // Discovers ALL user-installed apps & games on Android 11-15 using Launcher Intents + Root 'pm list packages -3' fallback
+    fun getInstalledUserApps(context: Context): List<AppEntry> {
+        val pm = context.packageManager
+        val map = linkedMapOf<String, String>()
+
+        // 1. Query all launchable apps via MAIN/LAUNCHER intent
+        try {
+            val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+            }
+            val resolves = pm.queryIntentActivities(mainIntent, 0)
+            for (ri in resolves) {
+                val pkg = ri.activityInfo?.packageName ?: continue
+                if (pkg == context.packageName) continue
+                val label = ri.loadLabel(pm)?.toString()?.trim().takeIf { !it.isNullOrBlank() } ?: pkg
+                map[pkg] = label
+            }
+        } catch (e: Exception) {}
+
+        // 2. Query installed applications
+        try {
+            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            for (ai in apps) {
+                val pkg = ai.packageName
+                if (pkg == context.packageName) continue
+                if ((ai.flags and ApplicationInfo.FLAG_SYSTEM) == 0 || (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0) {
+                    if (!map.containsKey(pkg)) {
+                        val label = pm.getApplicationLabel(ai)?.toString()?.trim().takeIf { !it.isNullOrBlank() } ?: pkg
+                        map[pkg] = label
+                    }
+                }
+            }
+        } catch (e: Exception) {}
+
+        // 3. Root fallback ('pm list packages -3') in case Android 15 package visibility filtered user apps
+        if (isRootAvailable()) {
+            try {
+                val (_, out) = runRootShell("pm list packages -3")
+                for (line in out.lines()) {
+                    val pkg = line.removePrefix("package:").trim()
+                    if (pkg.isNotEmpty() && pkg != context.packageName && !map.containsKey(pkg)) {
+                        val label = try {
+                            val ai = pm.getApplicationInfo(pkg, 0)
+                            pm.getApplicationLabel(ai).toString()
+                        } catch (e: Exception) {
+                            pkg.substringAfterLast(".")
+                                .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                        }
+                        map[pkg] = label
+                    }
+                }
+            } catch (e: Exception) {}
+        }
+
+        return map.entries
+            .map { AppEntry(it.value, it.key) }
+            .sortedBy { it.label.lowercase() }
     }
 
     fun autoAddQuickSettingsTiles(context: Context) {
@@ -300,7 +413,7 @@ object HardwareThermalControl {
 
         thread {
             if (enable) {
-                AppLogger.log("🚀 GAMING ENGINE: NUCLEAR PERFORMANCE ENGAGED")
+                AppLogger.log("🚀 OVERDRIVE ENGINE: MAXIMUM PERFORMANCE ENGAGED")
 
                 val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
                 executeVerifiedCommand("Freeze Xiaomi Thermal Daemons", stopCmd)
@@ -329,7 +442,7 @@ object HardwareThermalControl {
                 )
                 forceRefreshRate(120)
             } else {
-                AppLogger.log("🌱 GAMING ENGINE: Normal Performance Restored")
+                AppLogger.log("🌱 OVERDRIVE ENGINE: Normal Performance Restored")
                 val restoreThermalsCmd = """
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                     echo 0 > /sys/class/thermal/thermal_message/sconfig 2>/dev/null
@@ -476,18 +589,36 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
+    // UPDATED: Uses Idle Pass-Through (keeps USB input alive with 0mA battery charge current if supported) and cleanly restores all nodes
     fun setChargingEnabled(enable: Boolean, isManualToggle: Boolean = false) {
         if (isManualToggle) isManualBypassActive = !enable
         isChargingThrottled = !enable
         thread {
-            val action = if (enable) "Restore Battery Charging" else "Isolate Battery (Bypass)"
-            val targetSuspend = if (enable) "0" else "1"
-            val cmd = if (enable) {
-                "echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
+            if (enable) {
+                val cmd = """
+                    echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null
+                    echo 0 > /sys/class/qcom-battery/input_suspend 2>/dev/null
+                    echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null
+                    echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null
+                    echo 1 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null
+                    echo 1 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null
+                    chmod 0644 /sys/class/power_supply/battery/constant_charge_current 2>/dev/null
+                    echo 6000000 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null
+                    exit 0
+                """.trimIndent()
+                executeVerifiedCommand("Restore Normal Charging", cmd, "/sys/class/power_supply/battery/input_suspend", "0")
             } else {
-                "echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
+                // First try setting constant_charge_current to 0 while keeping USB input connected (Idle Pass-Through)
+                val cmd = """
+                    chmod 0644 /sys/class/power_supply/battery/constant_charge_current 2>/dev/null
+                    echo 0 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null
+                    echo 0 > /sys/class/power_supply/battery/charging_enabled 2>/dev/null
+                    echo 0 > /sys/class/power_supply/battery/battery_charging_enabled 2>/dev/null
+                    echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null
+                    exit 0
+                """.trimIndent()
+                executeVerifiedCommand("Pause Battery Charging", cmd, "/sys/class/power_supply/battery/input_suspend", "1")
             }
-            executeVerifiedCommand(action, cmd, "/sys/class/power_supply/battery/input_suspend", targetSuspend)
         }
     }
 
@@ -620,13 +751,27 @@ object HardwareThermalControl {
         }
     }
 
+    // FIXED: Uses non-repeating waveform (-1) so it never gets stuck vibrating endlessly!
     fun playThermalAlert() {
         if (isMuted) return
-        try { toneGen?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 1500) } catch (e: Exception) {}
-        try { vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 500, 500), 0)) } catch (e: Exception) {}
+        try { toneGen?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 1200) } catch (e: Exception) {}
+        try { vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 400, 250, 400), -1)) } catch (e: Exception) {}
     }
-    fun muteAlarm() { isMuted = true; try { toneGen?.stopTone(); vibrator?.cancel() } catch (e: Exception) {} }
-    fun resetMute() { isMuted = false }
+
+    fun stopThermalAlert() {
+        try { toneGen?.stopTone() } catch (e: Exception) {}
+        try { vibrator?.cancel() } catch (e: Exception) {}
+    }
+
+    fun muteAlarm() {
+        isMuted = true
+        stopThermalAlert()
+    }
+
+    fun resetMute() {
+        isMuted = false
+        stopThermalAlert()
+    }
 
     fun getRamUsage(context: Context): String {
         val mi = ActivityManager.MemoryInfo()
@@ -690,5 +835,5 @@ object HardwareThermalControl {
         return list
     }
 
-    fun destroy() { try { setPeakPerformanceMode(false); setChargingEnabled(true); toneGen?.release(); vibrator?.cancel() } catch (e: Exception) {} }
+    fun destroy() { try { stopThermalAlert(); setPeakPerformanceMode(false); setChargingEnabled(true); toneGen?.release(); vibrator?.cancel() } catch (e: Exception) {} }
 }
