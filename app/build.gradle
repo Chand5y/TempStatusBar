@@ -11,8 +11,8 @@ android {
         applicationId "com.personal.tempstatusbar"
         minSdk 26
         targetSdk 34
-        versionCode 2
-        versionName "2.0"
+        versionCode 3
+        versionName "2.1"
     }
 
     buildTypes {
@@ -31,24 +31,34 @@ android {
         jvmTarget = '17'
     }
 
-    // Bundles the root ../icons folder directly into APK assets (preserving exact capital/small letters)
     sourceSets {
         main {
             assets.srcDirs += ['../icons', 'src/main/assets']
         }
     }
 
-    // Automatically applies ../icons/AppIcon.png as the App Drawer Launcher Icon
+    // Forces ../icons/AppIcon.png as the real Android Launcher & Installer Icon
     preBuild.doFirst {
         def customAppIcon = file('../icons/AppIcon.png')
         if (customAppIcon.exists()) {
+            // 1. Delete adaptive icon XML folders (mipmap-anydpi-v26) that override PNGs with the fire icon
+            def resDir = file("src/main/res")
+            if (resDir.exists()) {
+                resDir.listFiles()?.each { subDir ->
+                    if (subDir.isDirectory() && subDir.name.startsWith("mipmap-anydpi")) {
+                        subDir.deleteDir()
+                    }
+                }
+            }
+
+            // 2. Copy AppIcon.png into all mipmap and drawable folders
             ['mipmap-mdpi', 'mipmap-hdpi', 'mipmap-xhdpi', 'mipmap-xxhdpi', 'mipmap-xxxhdpi', 'drawable'].each { dirName ->
                 def targetDir = file("src/main/res/${dirName}")
                 if (!targetDir.exists()) {
                     targetDir.mkdirs()
                 }
                 targetDir.listFiles()?.each { existingFile ->
-                    if (existingFile.name.startsWith("ic_launcher") && existingFile.name.endsWith(".xml")) {
+                    if (existingFile.name.startsWith("ic_launcher")) {
                         existingFile.delete()
                     }
                 }
@@ -62,6 +72,15 @@ android {
                     into targetDir
                     rename { 'ic_launcher_round.png' }
                 }
+            }
+
+            // 3. Ensure AndroidManifest.xml points to @mipmap/ic_launcher instead of the fire icon
+            def manifestFile = file("src/main/AndroidManifest.xml")
+            if (manifestFile.exists()) {
+                def text = manifestFile.getText("UTF-8")
+                text = text.replaceAll('android:icon="[^"]*"', 'android:icon="@mipmap/ic_launcher"')
+                text = text.replaceAll('android:roundIcon="[^"]*"', 'android:roundIcon="@mipmap/ic_launcher_round"')
+                manifestFile.write(text, "UTF-8")
             }
         }
     }
