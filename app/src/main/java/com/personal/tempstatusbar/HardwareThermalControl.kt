@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.BatteryManager
@@ -18,6 +19,7 @@ import kotlin.concurrent.thread
 
 data class RamProc(val name: String, val sizeMb: Int, val pid: Int)
 data class ProcessData(val pid: Int, val name: String, val cpu: String)
+data class CoreStatus(val coreId: Int, val online: Boolean, val freqText: String)
 
 object HardwareThermalControl {
     private var toneGen: ToneGenerator? = null
@@ -140,7 +142,6 @@ object HardwareThermalControl {
         return executeVerifiedCommand(action, command)
     }
 
-    // Clears msm_performance and thermal cooling_device caps so Policy 7 can reach 3187200 kHz even at 38°C+
     private fun buildCpuCeilingUnlockScript(c7MaxKhz: String = "3187200", c7MinKhz: String = "2457600"): String {
         return """
             chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
@@ -198,16 +199,16 @@ object HardwareThermalControl {
             AppLogger.log("🤖 HANDS-FREE AUTOMATED TEST SUITE STARTED")
             AppLogger.log("📱 Device: ${Build.MANUFACTURER} ${Build.MODEL} (${getHardwareInfo()}) | SDK ${Build.VERSION.SDK_INT}")
 
-            // STAGE 1: Pre-Flight Permissions & Environment Check
+            // STAGE 1: Permissions
             step(1, "Checking Permissions & Environment...")
             val rootOk = isRootAvailable()
             recordResult(rootOk, "Root Shell (su) granted uid=0", "Root Shell denied — grant Superuser in Magisk/KernelSU")
             if (!rootOk) manualActionsNeeded.add("Grant Superuser (Root) permission in Magisk / KernelSU.")
 
-            recordResult(hasUsagePerm, "Usage Access Permission is GRANTED", "Usage Access is MISSING (required to detect BGMI launch)")
+            recordResult(hasUsagePerm, "Usage Access Permission is GRANTED", "Usage Access is MISSING")
             if (!hasUsagePerm) manualActionsNeeded.add("Enable 'Usage Access' permission for TempStatusBar Pro.")
 
-            recordResult(hasOverlayPerm, "Display Over Other Apps (Overlay) is GRANTED", "Overlay Permission is MISSING (required for Floating FPS Pill)")
+            recordResult(hasOverlayPerm, "Display Over Other Apps (Overlay) is GRANTED", "Overlay Permission is MISSING")
             if (!hasOverlayPerm) manualActionsNeeded.add("Enable 'Display over other apps' permission for Floating FPS Pill.")
 
             recordResult(hasNotifPerm, "Status Bar Notification Permission is GRANTED", "Notification Permission is MISSING")
@@ -219,7 +220,7 @@ object HardwareThermalControl {
             AppLogger.log("  ℹ️ Battery State: ${startTemp}°C | Charger Plugged: $isPlugged")
             Thread.sleep(400)
 
-            // STAGE 2: Kernel & Thermal Zone Mode Override Test
+            // STAGE 2: Kernel Thermal Zones
             step(2, "Testing Kernel Thermal Zones (/sys/class/thermal)...")
             val (_, unameOut) = runRootShell("uname -r")
             val selinux = readSysfsNode("/sys/fs/selinux/enforce")
@@ -234,7 +235,7 @@ object HardwareThermalControl {
             )
             Thread.sleep(400)
 
-            // STAGE 3: Xiaomi Thermal Profile (sconfig) Benchmark Lock Test
+            // STAGE 3: Xiaomi sconfig
             step(3, "Testing Xiaomi Thermal Profile (sconfig)...")
             val sconfigPath = "/sys/class/thermal/thermal_message/sconfig"
             val sconfigOrig = readSysfsNode(sconfigPath)
@@ -247,7 +248,7 @@ object HardwareThermalControl {
             )
             Thread.sleep(400)
 
-            // STAGE 4: Freeze Thermal Daemons (Keep frozen through Stage 6 so mi_thermald cannot interfere with CPU clocks!)
+            // STAGE 4: Freeze Daemons
             step(4, "Testing Thermal Daemons Freeze (SIGSTOP)...")
             val (_, daemonReport) = runRootShell(
                 "for d in joyose mi_thermald thermal-engine; do " +
@@ -266,7 +267,7 @@ object HardwareThermalControl {
             )
             Thread.sleep(400)
 
-            // STAGE 5: CPU Governor Switching Test (Policies 0, 4, 7)
+            // STAGE 5: CPU Governor
             step(5, "Testing Kryo 585 CPU Governor Switching...")
             val govPath4 = "/sys/devices/system/cpu/cpufreq/policy4/scaling_governor"
             val origGov4 = readSysfsNode(govPath4)
@@ -281,24 +282,20 @@ object HardwareThermalControl {
             )
             Thread.sleep(400)
 
-            // STAGE 6: Prime Core (C7) Frequency Throttle & msm_performance Nuclear Unthrottle Test
+            // STAGE 6: Prime Core C7 Unlock
             step(6, "Testing Prime Core (C7) Throttle & 3.18 GHz Unlock...")
             val c7MinHw = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
             val c7MaxHw = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq")
             val c7ScaleMax = "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
             val c7ScaleMin = "/sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq"
 
-            // 1. Test Throttle
             runRootShell("echo $c7MinHw > $c7ScaleMin 2>/dev/null; echo $c7MinHw > $c7ScaleMax 2>/dev/null")
             val throttledRead = readSysfsNode(c7ScaleMax)
 
-            // 2. Test Nuclear Unthrottle (clears msm_performance & cooling_device caps first!)
             runRootShell(buildCpuCeilingUnlockScript(c7MaxHw, "2457600"))
             val nuclearMaxRead = readSysfsNode(c7ScaleMax)
             val nuclearMinRead = readSysfsNode(c7ScaleMin)
-            val msmPerfParam = readSysfsNode("/sys/module/msm_performance/parameters/cpu_max_freq")
 
-            // 3. Restore CPU, sconfig, Thermal Zones, and Resume Daemons
             runRootShell("echo $c7MinHw > $c7ScaleMin 2>/dev/null; echo $c7MaxHw > $c7ScaleMax 2>/dev/null")
             runRootShell("chmod 0666 $sconfigPath 2>/dev/null; echo 0 > $sconfigPath 2>/dev/null")
             runRootShell("for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > \$z 2>/dev/null; done")
@@ -307,11 +304,11 @@ object HardwareThermalControl {
             recordResult(
                 throttledRead == c7MinHw && nuclearMaxRead == c7MaxHw,
                 "Prime Core C7 Throttle [$throttledRead kHz] & 3.18 GHz Unlock [Min:$nuclearMinRead / Max:$nuclearMaxRead kHz] verified",
-                "Prime Core C7 scaling lock mismatch [Throttle:$throttledRead, Max:$nuclearMaxRead, Expected:$c7MaxHw | msm_perf:$msmPerfParam]"
+                "Prime Core C7 scaling lock mismatch [Throttle:$throttledRead, Max:$nuclearMaxRead, Expected:$c7MaxHw]"
             )
             Thread.sleep(400)
 
-            // STAGE 7: Per-Core Hotplug (Online/Offline) Test
+            // STAGE 7: Per-Core Hotplug
             step(7, "Testing CPU Core 7 Hotplug (Offline -> Online)...")
             val c7OnlinePath = "/sys/devices/system/cpu/cpu7/online"
             runRootShell("chmod 0644 $c7OnlinePath 2>/dev/null; echo 0 > $c7OnlinePath 2>/dev/null")
@@ -325,7 +322,7 @@ object HardwareThermalControl {
             )
             Thread.sleep(400)
 
-            // STAGE 8: Adreno 650 GPU Nuclear Power Level 0 (670 MHz) Test
+            // STAGE 8: Adreno 650 GPU Lock
             step(8, "Testing Adreno 650 GPU 670 MHz Lock...")
             val gpuMinPwrPath = "/sys/class/kgsl/kgsl-3d0/min_pwrlevel"
             val gpuThmPwrPath = "/sys/class/kgsl/kgsl-3d0/thermal_pwrlevel"
@@ -342,7 +339,7 @@ object HardwareThermalControl {
             )
             Thread.sleep(400)
 
-            // STAGE 9: Display Refresh Rate Lock (60Hz -> 90Hz -> 120Hz)
+            // STAGE 9: Display Refresh Rate
             step(9, "Testing Display Refresh Rate Switching (60/90/120Hz)...")
             val hzResults = mutableListOf<String>()
             listOf(60, 90, 120).forEach { hz ->
@@ -359,40 +356,27 @@ object HardwareThermalControl {
             )
             Thread.sleep(400)
 
-            // STAGE 10: Xiaomi SM8250 Dual-Cell Battery Bypass & Charging Isolation Test
+            // STAGE 10: Battery Bypass
             step(10, "Testing Xiaomi SM8250 Battery Bypass Nodes...")
             val batSuspendNode = "/sys/class/power_supply/battery/input_suspend"
-            val qcomSuspendNode = "/sys/class/qcom-battery/input_suspend"
             val batStatusNode = "/sys/class/power_supply/battery/status"
             val statusBefore = readSysfsNode(batStatusNode)
 
-            runRootShell(
-                "echo 1 > $batSuspendNode 2>/dev/null; " +
-                "echo 1 > $qcomSuspendNode 2>/dev/null; " +
-                "echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; " +
-                "echo 1 > /sys/class/power_supply/main/input_suspend 2>/dev/null"
-            )
+            runRootShell("echo 1 > $batSuspendNode 2>/dev/null; echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/main/input_suspend 2>/dev/null")
             Thread.sleep(1000)
             val batSuspendDuring = readSysfsNode(batSuspendNode)
-            val qcomSuspendDuring = readSysfsNode(qcomSuspendNode)
             val statusDuring = readSysfsNode(batStatusNode)
 
-            // Restore Charging
-            runRootShell(
-                "echo 0 > $batSuspendNode 2>/dev/null; " +
-                "echo 0 > $qcomSuspendNode 2>/dev/null; " +
-                "echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; " +
-                "echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null"
-            )
+            runRootShell("echo 0 > $batSuspendNode 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null")
             val batSuspendAfter = readSysfsNode(batSuspendNode)
             recordResult(
-                batSuspendDuring == "1" || qcomSuspendDuring == "1",
-                "Battery Bypass verified [battery/input_suspend: $batSuspendDuring | qcom/input_suspend: $qcomSuspendDuring | Status: $statusBefore -> $statusDuring | Restored: $batSuspendAfter]",
-                "Battery Bypass nodes rejected write [battery: $batSuspendDuring, qcom: $qcomSuspendDuring]"
+                batSuspendDuring == "1",
+                "Battery Bypass verified [battery/input_suspend: $batSuspendDuring | Status: $statusBefore -> $statusDuring | Restored: $batSuspendAfter]",
+                "Battery Bypass node rejected write [battery: $batSuspendDuring]"
             )
             Thread.sleep(400)
 
-            // STAGE 11: Process Pinning (taskset) & RAM Cache Purge Test
+            // STAGE 11: Process Pinning & RAM Purge
             step(11, "Testing Process Silver-Core Pinning & RAM Purge...")
             val myPid = android.os.Process.myPid()
             val (_, tasksetOut) = runRootShell("taskset -p 0f $myPid 2>&1; taskset -p ff $myPid 2>&1")
@@ -402,11 +386,11 @@ object HardwareThermalControl {
             recordResult(
                 dropCode == 0 && tasksetOut.contains("affinity", true),
                 "taskset Affinity & RAM Purge verified [RAM: $ramBefore -> $ramAfter]",
-                "taskset or drop_caches failed [Exit:$dropCode | Out:${tasksetOut.lines().firstOrNull()}]"
+                "taskset or drop_caches failed [Exit:$dropCode]"
             )
             Thread.sleep(400)
 
-            // STAGE 12: Hardware DRM FPS Counter & Floating Overlay Test
+            // STAGE 12: Hardware DRM FPS Counter
             step(12, "Testing Hardware DRM FPS Counter & Overlay Service...")
             val drmFpsRaw = readSysfsNode("/sys/class/drm/sde-crtc-0/measured_fps")
             val parsedDrmFps = drmFpsRaw.split(Regex("[^0-9]+")).mapNotNull { it.toIntOrNull() }.firstOrNull() ?: -1
@@ -425,7 +409,6 @@ object HardwareThermalControl {
                 "Hardware DRM FPS Counter unreadable [Raw: '$drmFpsRaw' | Bridge: $bridgeFps]"
             )
 
-            // Final Summary & Auto-Export
             AppLogger.log("==========================================")
             AppLogger.log("🏁 AUTOMATED TEST COMPLETE: $passedCount PASSED | $failedCount FAILED")
             if (manualActionsNeeded.isNotEmpty()) {
@@ -456,7 +439,6 @@ object HardwareThermalControl {
         }
     }
 
-    // Updated Heartbeat: Keeps msm_performance and cooling_device caps cleared during live gameplay
     fun enforceNuclearHeartbeat(currentTemp: Int = 37) {
         if (!isRootAvailable()) return
         val c7Max = if (currentTemp >= 41) "2745600" else "3187200"
@@ -521,11 +503,9 @@ object HardwareThermalControl {
             if (enable) {
                 AppLogger.log("🚀 GAMING ENGINE: NUCLEAR PERFORMANCE ENGAGED")
 
-                // 1. Freeze mi_thermald FIRST so it cannot write new caps
                 val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
                 executeVerifiedCommand("Freeze Xiaomi Thermal Daemons", stopCmd)
 
-                // 2. Disable 91 Thermal Zones & Lock sconfig to 10
                 val killThermalsCmd = """
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > ${'$'}z 2>/dev/null; done
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
@@ -534,7 +514,6 @@ object HardwareThermalControl {
                 """.trimIndent()
                 executeVerifiedCommand("Lock Thermal sconfig -> 10", killThermalsCmd, "/sys/class/thermal/thermal_message/sconfig", "10")
 
-                // 3. Unlock msm_performance & cooling_device caps so C7 hits 3187200 kHz even at 38°C+
                 executeVerifiedCommand(
                     "Unlock Prime Core 3.18GHz Ceiling",
                     buildCpuCeilingUnlockScript("3187200", "2457600"),
@@ -542,7 +521,6 @@ object HardwareThermalControl {
                     "3187200"
                 )
 
-                // 4. Force GPU Power Level 0 & 120Hz Display
                 forceUnthrottleGPU()
                 executeVerifiedCommand(
                     "CPU Policy4 Governor -> Performance",
@@ -718,9 +696,9 @@ object HardwareThermalControl {
             val action = if (enable) "Restore Battery Charging" else "Isolate Battery (Bypass)"
             val targetSuspend = if (enable) "0" else "1"
             val cmd = if (enable) {
-                "echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 0 > /sys/class/qcom-battery/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
+                "echo 0 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 0 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
             } else {
-                "echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 1 > /sys/class/qcom-battery/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
+                "echo 1 > /sys/class/power_supply/battery/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null; echo 1 > /sys/class/power_supply/main/input_suspend 2>/dev/null; exit 0"
             }
             executeVerifiedCommand(action, cmd, "/sys/class/power_supply/battery/input_suspend", targetSuspend)
         }
@@ -740,6 +718,54 @@ object HardwareThermalControl {
                 target
             )
         }
+    }
+
+    // FIXED: Reads real kernel /sys/devices/system/cpu/cpuX/online state BEFORE reading shared cluster frequency!
+    fun getCoreStatuses(): List<CoreStatus> {
+        val results = mutableListOf<CoreStatus>()
+        if (isRootAvailable()) {
+            try {
+                val cmd = "for i in 0 1 2 3 4 5 6 7; do " +
+                          "on=\$(cat /sys/devices/system/cpu/cpu\$i/online 2>/dev/null || echo 1); " +
+                          "fr=\$(cat /sys/devices/system/cpu/cpu\$i/cpufreq/scaling_cur_freq 2>/dev/null || echo 0); " +
+                          "echo \"\$i:\$on:\$fr\"; done"
+                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+                val lines = BufferedReader(InputStreamReader(p.inputStream)).readLines()
+                p.waitFor()
+                for (line in lines) {
+                    val parts = line.trim().split(":")
+                    if (parts.size == 3) {
+                        val id = parts[0].toIntOrNull() ?: continue
+                        val isOnline = parts[1].trim() != "0"
+                        val freqKhz = parts[2].trim().toIntOrNull() ?: 0
+                        val freqText = if (!isOnline) "OFFLINE (0 MHz)" else "${freqKhz / 1000} MHz"
+                        results.add(CoreStatus(id, isOnline, freqText))
+                    }
+                }
+                if (results.size == 8) return results
+            } catch (e: Exception) {}
+        }
+
+        for (i in 0..7) {
+            try {
+                val onlineFile = File("/sys/devices/system/cpu/cpu$i/online")
+                val isOnline = if (i == 0) true else if (onlineFile.exists() && onlineFile.canRead()) onlineFile.readText().trim() != "0" else true
+                if (!isOnline) {
+                    results.add(CoreStatus(i, false, "OFFLINE (0 MHz)"))
+                } else {
+                    val f = File("/sys/devices/system/cpu/cpu$i/cpufreq/scaling_cur_freq")
+                    val mhz = if (f.exists()) "${f.readText().trim().toInt() / 1000} MHz" else "Offline"
+                    results.add(CoreStatus(i, true, mhz))
+                }
+            } catch (e: Exception) {
+                results.add(CoreStatus(i, false, "OFFLINE"))
+            }
+        }
+        return results
+    }
+
+    fun getCoreFrequencies(): List<String> {
+        return getCoreStatuses().map { it.freqText }
     }
 
     fun applySmartThermalGovernor(context: Context) {
@@ -762,12 +788,51 @@ object HardwareThermalControl {
         thread { executeVerifiedCommand("Pin PID $pid to Silver Cores (0-3)", "taskset -p 0f $pid") }
     }
 
-    fun clearRamCaches() {
+    // FIXED: Actually force-stops running background user apps (so they restart cold from Recents) AND drops kernel caches!
+    fun clearRamCaches(exemptPackages: Set<String> = emptySet(), onDone: ((Int, Long) -> Unit)? = null) {
         thread {
-            val beforeRam = appContext?.let { getRamUsage(it).replace("\n", " ") } ?: ""
-            val ok = executeVerifiedCommand("Purge Kernel RAM Caches (drop_caches=3)", "sync; echo 3 > /proc/sys/vm/drop_caches")
-            val afterRam = appContext?.let { getRamUsage(it).replace("\n", " ") } ?: ""
-            if (ok) AppLogger.log("🧹 [RAM PURGE RESULT] Before: [$beforeRam] -> After: [$afterRam]")
+            val ctx = appContext ?: return@thread
+            val miBefore = ActivityManager.MemoryInfo()
+            val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            am.getMemoryInfo(miBefore)
+            val availBeforeMb = miBefore.availMem / 1048576L
+
+            val killedApps = mutableListOf<String>()
+            try {
+                val pm = ctx.packageManager
+                // Discover running user apps from meminfo/ps and force-stop them via root
+                val (_, psOut) = runRootShell("ps -A -o NAME")
+                val runningPkgs = psOut.lines()
+                    .map { it.trim() }
+                    .filter { it.contains(".") && !it.startsWith("com.android.") && !it.startsWith("android.") && !it.startsWith("com.miui.") && !it.startsWith("com.qualcomm.") && !it.startsWith("com.xiaomi.") && !it.contains("tempstatusbar") && !it.contains("inputmethod") && !it.contains("gboard") && !it.contains("launcher") && !it.contains("home") }
+                    .distinct()
+
+                val stopCmds = StringBuilder()
+                for (pkg in runningPkgs) {
+                    if (exemptPackages.any { pkg.contains(it) }) continue
+                    try {
+                        val ai = pm.getApplicationInfo(pkg, 0)
+                        if ((ai.flags and ApplicationInfo.FLAG_SYSTEM) == 0) {
+                            stopCmds.append("am force-stop $pkg >/dev/null 2>&1; ")
+                            killedApps.add(pm.getApplicationLabel(ai).toString())
+                        }
+                    } catch (e: Exception) {}
+                }
+                stopCmds.append("am kill-all >/dev/null 2>&1; sync; echo 3 > /proc/sys/vm/drop_caches")
+                executeVerifiedCommand("Force-Stop ${killedApps.size} Bg Apps & Drop Caches", stopCmds.toString())
+            } catch (e: Exception) {
+                executeVerifiedCommand("Purge Kernel RAM Caches", "sync; echo 3 > /proc/sys/vm/drop_caches")
+            }
+
+            Thread.sleep(350)
+            val miAfter = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(miAfter)
+            val availAfterMb = miAfter.availMem / 1048576L
+            val freedMb = (availAfterMb - availBeforeMb).coerceAtLeast(0L)
+
+            val appsListStr = if (killedApps.isNotEmpty()) killedApps.take(8).joinToString(", ") else "Kernel Caches Only"
+            AppLogger.log("🧹 [RAM & APP PURGE] Stopped ${killedApps.size} apps ($appsListStr) | Freed: +${freedMb}MB")
+            onDone?.invoke(killedApps.size, freedMb)
         }
     }
 
@@ -778,17 +843,6 @@ object HardwareThermalControl {
     }
     fun muteAlarm() { isMuted = true; try { toneGen?.stopTone(); vibrator?.cancel() } catch (e: Exception) {} }
     fun resetMute() { isMuted = false }
-
-    fun getCoreFrequencies(): List<String> {
-        val freqs = mutableListOf<String>()
-        for (i in 0..7) {
-            try {
-                val f = File("/sys/devices/system/cpu/cpu$i/cpufreq/scaling_cur_freq")
-                if (f.exists()) freqs.add("${f.readText().trim().toInt() / 1000} MHz") else freqs.add("Offline")
-            } catch (e: Exception) { freqs.add("Offline") }
-        }
-        return freqs
-    }
 
     fun getRamUsage(context: Context): String {
         val mi = ActivityManager.MemoryInfo()
