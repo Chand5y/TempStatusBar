@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.BatteryManager
@@ -29,6 +30,7 @@ object HardwareThermalControl {
     var isChargingThrottled = false; private set
     var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
+    var isGpuPeakLocked = false; private set
     @Volatile var isAutoTestRunning = false; private set
 
     @Volatile var liveFps = -1
@@ -48,7 +50,69 @@ object HardwareThermalControl {
         try { vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator } catch (e: Exception) {}
         thread {
             val root = isRootAvailable()
+            if (root) {
+                val pwrLvl = readSysfsNode("/sys/class/kgsl/kgsl-3d0/min_pwrlevel")
+                isGpuPeakLocked = (pwrLvl == "0")
+                autoAddQuickSettingsTiles(context.applicationContext)
+            }
             AppLogger.log("⚙️ [INIT] SoC: ${getHardwareInfo()} | Android ${Build.VERSION.RELEASE} | Root: ${if (root) "GRANTED (uid=0)" else "DENIED"}")
+        }
+    }
+
+    // Automatically injects all Quick Settings Tiles (FPS Tile & Network Speed Tile) into the system QS panel via Root
+    fun autoAddQuickSettingsTiles(context: Context) {
+        thread {
+            if (!isRootAvailable()) return@thread
+            try {
+                val pm = context.packageManager
+                val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_SERVICES.toLong()))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getPackageInfo(context.packageName, PackageManager.GET_SERVICES)
+                }
+                val tileServices = pkgInfo.services?.filter {
+                    it.permission == "android.permission.BIND_QUICK_SETTINGS_TILE"
+                } ?: emptyList()
+
+                if (tileServices.isEmpty()) return@thread
+
+                val (_, currentTilesRaw) = runRootShell("settings get secure sysui_qs_tiles")
+                val currentTiles = if (currentTilesRaw == "null" || currentTilesRaw.isBlank()) {
+                    "wifi,bt,cell,flashlight,rotation,battery"
+                } else {
+                    currentTilesRaw.trim()
+                }
+
+                val existingList = currentTiles.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+                var modified = false
+
+                for (svc in tileServices) {
+                    val shortName = if (svc.name.startsWith(context.packageName)) {
+                        svc.name.removePrefix(context.packageName)
+                    } else svc.name
+                    val customEntry = "custom(${context.packageName}/$shortName)"
+                    val fullEntry = "custom(${context.packageName}/${svc.name})"
+
+                    val alreadyAdded = existingList.any {
+                        it.equals(customEntry, ignoreCase = true) ||
+                        it.equals(fullEntry, ignoreCase = true) ||
+                        it.contains(svc.name.substringAfterLast("."))
+                    }
+                    if (!alreadyAdded) {
+                        existingList.add(0, customEntry)
+                        modified = true
+                        AppLogger.log("🧩 [QS TILE] Auto-added Quick Settings Tile: ${svc.name.substringAfterLast(".")}")
+                    }
+                }
+
+                if (modified) {
+                    val newTilesString = existingList.joinToString(",")
+                    runRootShell("settings put secure sysui_qs_tiles \"$newTilesString\"")
+                }
+            } catch (e: Exception) {
+                AppLogger.log("⚠️ [QS TILE] Auto-add skipped: ${e.message}")
+            }
         }
     }
 
@@ -159,6 +223,30 @@ object HardwareThermalControl {
         """.trimIndent()
     }
 
+    // Stateful GPU Lock/Unlock method with immediate frequency verification callback
+    fun setGpuPeakLock(lockTo670Mhz: Boolean, onVerified: ((Boolean, String) -> Unit)? = null) {
+        isGpuPeakLocked = lockTo670Mhz
+        thread {
+            if (lockTo670Mhz) {
+                val cmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel"
+                val ok = executeVerifiedCommand("Lock GPU Peak (670 MHz)", cmd, "/sys/class/kgsl/kgsl-3d0/min_pwrlevel", "0")
+                isGpuPeakLocked = ok
+                val freqNow = getGpuFrequency()
+                onVerified?.invoke(isGpuPeakLocked, freqNow)
+            } else {
+                val cmd = "echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel"
+                executeVerifiedCommand("Unlock GPU to Dynamic Auto (305-670 MHz)", cmd, "/sys/class/kgsl/kgsl-3d0/min_pwrlevel", "6")
+                isGpuPeakLocked = false
+                val freqNow = getGpuFrequency()
+                onVerified?.invoke(false, freqNow)
+            }
+        }
+    }
+
+    fun forceUnthrottleGPU() {
+        setGpuPeakLock(true)
+    }
+
     // =========================================================================
     // HANDS-FREE 12-STAGE AUTOMATED DIAGNOSTIC & VERIFICATION SUITE
     // =========================================================================
@@ -206,7 +294,7 @@ object HardwareThermalControl {
             if (!rootOk) manualActionsNeeded.add("Grant Superuser (Root) permission in Magisk / KernelSU.")
 
             recordResult(hasUsagePerm, "Usage Access Permission is GRANTED", "Usage Access is MISSING")
-            if (!hasUsagePerm) manualActionsNeeded.add("Enable 'Usage Access' permission for TempStatusBar Pro.")
+            if (!hasUsagePerm) manualActionsNeeded.add("Enable 'Usage Access' permission for TempStatusBar.")
 
             recordResult(hasOverlayPerm, "Display Over Other Apps (Overlay) is GRANTED", "Overlay Permission is MISSING")
             if (!hasOverlayPerm) manualActionsNeeded.add("Enable 'Display over other apps' permission for Floating FPS Pill.")
@@ -331,6 +419,7 @@ object HardwareThermalControl {
             val lockedMinPwr = readSysfsNode(gpuMinPwrPath)
             val lockedGpuFreq = getGpuFrequency()
             runRootShell("echo 6 > $gpuMinPwrPath 2>/dev/null; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null")
+            isGpuPeakLocked = false
             val restoredMinPwr = readSysfsNode(gpuMinPwrPath)
             recordResult(
                 lockedMinPwr == "0",
@@ -521,7 +610,7 @@ object HardwareThermalControl {
                     "3187200"
                 )
 
-                forceUnthrottleGPU()
+                setGpuPeakLock(true)
                 executeVerifiedCommand(
                     "CPU Policy4 Governor -> Performance",
                     "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor",
@@ -537,12 +626,7 @@ object HardwareThermalControl {
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > ${'$'}z 2>/dev/null; done
                 """.trimIndent()
                 executeVerifiedCommand("Restore Kernel Thermals", restoreThermalsCmd)
-                executeVerifiedCommand(
-                    "GPU -> Auto Dynamic Mode",
-                    "echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel",
-                    "/sys/class/kgsl/kgsl-3d0/min_pwrlevel",
-                    "6"
-                )
+                setGpuPeakLock(false)
                 executeVerifiedCommand(
                     "CPU Governors -> Schedutil",
                     "echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor",
@@ -567,13 +651,6 @@ object HardwareThermalControl {
     }
 
     fun forceUnthrottlePrimeCore() = forceUnthrottleCPU()
-
-    fun forceUnthrottleGPU() {
-        thread {
-            val gpuNuclearCmd = "echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel; echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel"
-            executeVerifiedCommand("GPU -> Nuclear Power Level 0 (670MHz)", gpuNuclearCmd, "/sys/class/kgsl/kgsl-3d0/min_pwrlevel", "0")
-        }
-    }
 
     fun throttleCPU(throttle: Boolean) {
         isPrimeCoreThrottled = throttle
@@ -720,7 +797,6 @@ object HardwareThermalControl {
         }
     }
 
-    // FIXED: Reads real kernel /sys/devices/system/cpu/cpuX/online state BEFORE reading shared cluster frequency!
     fun getCoreStatuses(): List<CoreStatus> {
         val results = mutableListOf<CoreStatus>()
         if (isRootAvailable()) {
@@ -788,7 +864,6 @@ object HardwareThermalControl {
         thread { executeVerifiedCommand("Pin PID $pid to Silver Cores (0-3)", "taskset -p 0f $pid") }
     }
 
-    // FIXED: Actually force-stops running background user apps (so they restart cold from Recents) AND drops kernel caches!
     fun clearRamCaches(exemptPackages: Set<String> = emptySet(), onDone: ((Int, Long) -> Unit)? = null) {
         thread {
             val ctx = appContext ?: return@thread
@@ -800,7 +875,6 @@ object HardwareThermalControl {
             val killedApps = mutableListOf<String>()
             try {
                 val pm = ctx.packageManager
-                // Discover running user apps from meminfo/ps and force-stop them via root
                 val (_, psOut) = runRootShell("ps -A -o NAME")
                 val runningPkgs = psOut.lines()
                     .map { it.trim() }
