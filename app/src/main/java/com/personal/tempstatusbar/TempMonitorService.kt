@@ -132,12 +132,24 @@ class TempMonitorService : Service() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
+                Intent.ACTION_POWER_DISCONNECTED -> {
+                    // Fail-safe: whenever charger is unplugged, restore all charging nodes to normal so next plug-in always charges!
+                    if (HardwareThermalControl.isManualBypassActive || HardwareThermalControl.isChargingThrottled) {
+                        AppLogger.log("🔌 [FAIL-SAFE] Charger unplugged — resetting charging nodes to normal")
+                        HardwareThermalControl.setChargingEnabled(true, isManualToggle = true)
+                    }
+                }
                 Intent.ACTION_BATTERY_CHANGED -> {
                     val currentTemp = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
                     val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
                     val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
                     val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
                     val pct = if (scale > 0) (level * 100 / scale.toFloat()).toInt() else 0
+
+                    // If cable was unplugged, auto-release manual bypass so next charge is never blocked
+                    if (plugged == 0 && lastPlugged > 0 && HardwareThermalControl.isManualBypassActive) {
+                        HardwareThermalControl.setChargingEnabled(true, isManualToggle = true)
+                    }
 
                     handleSafetyAndChargingLimits(currentTemp, pct)
 
@@ -180,6 +192,7 @@ class TempMonitorService : Service() {
         createChannels()
         registerReceiver(receiver, IntentFilter().apply {
             addAction(Intent.ACTION_BATTERY_CHANGED)
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction("ACTION_TOGGLE_SMART_GOVERNOR")
@@ -224,7 +237,7 @@ class TempMonitorService : Service() {
             val coolIntent = PendingIntent.getBroadcast(this, 1, Intent(this, ThermalActionReceiver::class.java).apply { action = "ACTION_COOLDOWN" }, PendingIntent.FLAG_IMMUTABLE)
 
             val alertNotif = Notification.Builder(this, ALERT_CHANNEL_ID)
-                .setContentTitle("⚠️ OVERHEATING: ${temp}°C")
+                .setContentTitle("OVERHEATING: ${temp}°C")
                 .setContentText("Hardware limits exceeded.")
                 .setSmallIcon(drawIcon("!"))
                 .setColor(Color.RED)
@@ -236,6 +249,8 @@ class TempMonitorService : Service() {
             manager?.notify(ALERT_NOTIF_ID, alertNotif)
         } else if (temp <= safeTemp) {
             manager?.cancel(ALERT_NOTIF_ID)
+            // FIXED: Explicitly cancels vibration AND tone when temperature drops to safe level!
+            HardwareThermalControl.stopThermalAlert()
             HardwareThermalControl.resetMute()
             if (HardwareThermalControl.isEmergencyCooldownActive) {
                 HardwareThermalControl.clearEmergencyCooldown()
@@ -277,14 +292,15 @@ class TempMonitorService : Service() {
 
     private fun buildLiveNotification(): Notification {
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
-        val bypassStr = if (HardwareThermalControl.isManualBypassActive && stats.isCharging) "\n🛡️ BYPASS" else ""
+        val bypassStr = if (HardwareThermalControl.isManualBypassActive) " • Pass-Through" else ""
 
         val bodyText = if (settings.showPowerMetrics) {
-            if (stats.isCharging) "⚡ Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)$bypassStr"
-            else if (isThermalCutoff || isPctCutoff) "🛑 Charging Paused by Limits"
-            else "🔋 Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)$bypassStr"
+            if (stats.isCharging) "Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)$bypassStr"
+            else if (HardwareThermalControl.isManualBypassActive) "Pass-Through Active (${abs(stats.currentMa)} mA)"
+            else if (isThermalCutoff || isPctCutoff) "Charging Paused by Limits"
+            else "Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)"
         } else {
-            if (stats.isCharging) "⚡ Charging$bypassStr" else "🔋 Discharging$bypassStr"
+            if (stats.isCharging) "Charging$bypassStr" else "Discharging$bypassStr"
         }
 
         return Notification.Builder(this, CHANNEL_ID)
@@ -318,7 +334,6 @@ class TempMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Read live temperature immediately so startForeground never overwrites the icon with "--"
         val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         if (sticky != null) {
             lastTemp = sticky.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
