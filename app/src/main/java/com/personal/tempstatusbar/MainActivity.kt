@@ -1,19 +1,19 @@
 package com.personal.tempstatusbar
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
-import android.text.InputType
 import android.text.TextUtils
 import android.view.*
 import android.view.animation.DecelerateInterpolator
@@ -55,8 +55,11 @@ class MainActivity : Activity() {
     private lateinit var theme: ThemePalette
     private var currentTabIndex = 0
     private val tabViews = mutableListOf<View>()
-    private val navTabItems = mutableListOf<LinearLayout>()
     private val navTabLabels = mutableListOf<TextView>()
+    private val navTabIcons = mutableListOf<ImageView>()
+    private lateinit var navIndicatorView: View
+    private lateinit var navSegmentedBar: FrameLayout
+    private lateinit var navTabsRow: LinearLayout
 
     // Access Chips
     private lateinit var rootChipLabel: TextView
@@ -78,17 +81,16 @@ class MainActivity : Activity() {
     private var thermalHistoryList = listOf<ThermalPoint>()
 
     // Tab 2: Hardware
-    private lateinit var hwGpuText: TextView
-    private lateinit var hwRamText: TextView
-    private lateinit var gpuLockToggleBtn: LinearLayout
-    private lateinit var gpuLockTitleText: TextView
-    private lateinit var gpuLockSubText: TextView
-    private lateinit var gpuLockIconView: ImageView
     private val coreFreqLabels = mutableListOf<TextView>()
     private val coreSwitches = mutableListOf<Switch?>()
     private var isUpdatingCoreUi = false
 
-    // Tab 3: Gaming
+    // Tab 3: Gaming (Unified with GPU Control)
+    private lateinit var hwGpuText: TextView
+    private lateinit var gpuLockToggleBtn: LinearLayout
+    private lateinit var gpuLockTitleText: TextView
+    private lateinit var gpuLockSubText: TextView
+    private lateinit var gpuLockIconView: ImageView
     private lateinit var fpsGraphView: InteractiveGraphView
     private lateinit var fpsSessionHeader: TextView
     private lateinit var fpsScrubReadout: TextView
@@ -96,6 +98,7 @@ class MainActivity : Activity() {
     private var currentFpsSessionIdx = 0
 
     // Tab 4: Logs
+    private lateinit var hwRamText: TextView
     private lateinit var processContainer: LinearLayout
     private lateinit var logConsoleText: TextView
     private lateinit var logScrollBox: ScrollView
@@ -131,16 +134,20 @@ class MainActivity : Activity() {
                     heroTempText.text = "${temp}°C"
                     heroTempText.setTextColor(getColorForTemperature(temp.toFloat()))
                     heroStateText.text = when {
-                        HardwareThermalControl.isManualBypassActive -> "BYPASS ISOLATED ($level%)"
+                        HardwareThermalControl.isManualBypassActive -> "BYPASS ACTIVE ($level%)"
                         pwr.isCharging -> "CHARGING ($level%)"
                         else -> "DISCHARGING ($level%)"
                     }
                     val sign = if (pwr.isCharging) "+" else "-"
                     heroWattText.text = "$sign${pwr.wattage}W  •  ${abs(pwr.currentMa)} mA"
 
-                    hwGpuText.text = "Adreno 650 Load: $gpuLoad  •  Live Clock: $gpuFreq"
-                    hwRamText.text = ram.replace("\n", "  •  ")
-                    updateGpuLockButtonAppearance()
+                    if (::hwGpuText.isInitialized) {
+                        hwGpuText.text = "Load: $gpuLoad  •  Clock: $gpuFreq"
+                        updateGpuLockButtonAppearance()
+                    }
+                    if (::hwRamText.isInitialized) {
+                        hwRamText.text = ram.replace("\n", "  •  ")
+                    }
 
                     isUpdatingCoreUi = true
                     for (status in coreStatuses) {
@@ -156,7 +163,7 @@ class MainActivity : Activity() {
                     }
                     isUpdatingCoreUi = false
 
-                    if (currentTabIndex == 3) {
+                    if (currentTabIndex == 3 && ::logConsoleText.isInitialized) {
                         logConsoleText.text = AppLogger.getLogs()
                     }
                 }
@@ -189,16 +196,15 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
         }
 
-        val savedTheme = prefs.getString("appThemeModeV2", "DEFAULT") ?: "DEFAULT"
+        val savedTheme = prefs.getString("appThemeModeV3", "DEFAULT") ?: "DEFAULT"
         theme = resolveTheme(savedTheme)
 
-        AppLogger.log("[UI] MainActivity launched | Theme: ${theme.name}")
         buildFullInterface()
         startAndSyncService()
     }
 
     // =========================================================================
-    // CUSTOM PNG ICON LOADER WITH AUTOMATIC GREY BACKGROUND REMOVAL
+    // CORNER-KEY TRANSPARENCY PNG LOADER
     // =========================================================================
     private fun removeSolidCornerBackground(src: Bitmap): Bitmap {
         val w = src.width
@@ -209,7 +215,7 @@ class MainActivity : Activity() {
         out.getPixels(pixels, 0, w, 0, 0, w, h)
 
         val c0 = pixels[0]
-        if (Color.alpha(c0) < 40) return out // Already transparent
+        if (Color.alpha(c0) < 40) return out
 
         val bgR = Color.red(c0)
         val bgG = Color.green(c0)
@@ -224,7 +230,7 @@ class MainActivity : Activity() {
             val dr = abs(Color.red(px) - bgR)
             val dg = abs(Color.green(px) - bgG)
             val db = abs(Color.blue(px) - bgB)
-            return dr <= 42 && dg <= 42 && db <= 42
+            return dr <= 48 && dg <= 48 && db <= 48
         }
 
         fun enqueue(x: Int, y: Int) {
@@ -299,9 +305,7 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(px, px)
             scaleType = ImageView.ScaleType.FIT_CENTER
             val bmp = loadCustomBitmap(exactFileName)
-            if (bmp != null) {
-                setImageBitmap(bmp)
-            }
+            if (bmp != null) setImageBitmap(bmp)
         }
     }
 
@@ -312,7 +316,7 @@ class MainActivity : Activity() {
                 setMargins(0, 0, dp(12), 0)
             }
             background = GradientDrawable().apply {
-                cornerRadius = dp(12).toFloat()
+                cornerRadius = dp(14).toFloat()
                 setColor(theme.pillBg)
             }
             val img = createIconView(exactFileName, iconDp).apply {
@@ -324,51 +328,51 @@ class MainActivity : Activity() {
 
     private fun getColorForTemperature(tempC: Float): Int {
         return when {
-            tempC >= 40f -> Color.parseColor("#EF4444") // High: Red
-            tempC >= 38f -> Color.parseColor("#F97316") // Warm-Moderate: Orange
-            tempC >= 36f -> Color.parseColor("#F59E0B") // Moderate: Yellow-Amber
-            else -> Color.parseColor("#10B981")         // Cool / Normal: Emerald Green
+            tempC >= 40f -> Color.parseColor("#E11D48") // Red
+            tempC >= 38f -> Color.parseColor("#EA580C") // Orange
+            tempC >= 36f -> Color.parseColor("#D97706") // Amber
+            else -> Color.parseColor("#059669")         // Green
         }
     }
 
     // =========================================================================
-    // THEME ENGINE (Default = Bright Colorful Daylight, Aurora, Material You, Dark)
+    // THEME ENGINE
     // =========================================================================
     private fun resolveTheme(mode: String): ThemePalette {
         val sysNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         return when (mode) {
-            "AURORA" -> ThemePalette(
-                name = "Aurora",
-                bgTop = Color.parseColor("#1E1B4B"),
-                bgBottom = Color.parseColor("#311042"),
-                cardBg = Color.parseColor("#2E235C"),
-                cardStroke = Color.parseColor("#6366F1"),
-                pillBg = Color.parseColor("#3B2D72"),
-                navBarBg = Color.parseColor("#241B4B"),
-                textPrimary = Color.parseColor("#FFFFFF"),
-                textSecondary = Color.parseColor("#C7D2FE"),
-                accentPrimary = Color.parseColor("#EC4899"),
-                accentSecondary = Color.parseColor("#8B5CF6"),
-                good = Color.parseColor("#10B981"),
-                warn = Color.parseColor("#F59E0B"),
-                danger = Color.parseColor("#F43F5E"),
-                isLight = false
-            )
             "DARK" -> ThemePalette(
                 name = "Dark",
-                bgTop = Color.parseColor("#0F172A"),
-                bgBottom = Color.parseColor("#1E293B"),
-                cardBg = Color.parseColor("#1E293B"),
-                cardStroke = Color.parseColor("#334155"),
-                pillBg = Color.parseColor("#283548"),
-                navBarBg = Color.parseColor("#0F172A"),
-                textPrimary = Color.parseColor("#F8FAFC"),
-                textSecondary = Color.parseColor("#94A3B8"),
-                accentPrimary = Color.parseColor("#6366F1"),
-                accentSecondary = Color.parseColor("#06B6D4"),
+                bgTop = Color.parseColor("#000000"),
+                bgBottom = Color.parseColor("#000000"),
+                cardBg = Color.parseColor("#0B0B0E"),
+                cardStroke = Color.parseColor("#1C1C22"),
+                pillBg = Color.parseColor("#141418"),
+                navBarBg = Color.parseColor("#09090C"),
+                textPrimary = Color.parseColor("#F4F4F5"),
+                textSecondary = Color.parseColor("#A1A1AA"),
+                accentPrimary = Color.parseColor("#27272A"),
+                accentSecondary = Color.parseColor("#3F3F46"),
                 good = Color.parseColor("#10B981"),
                 warn = Color.parseColor("#F59E0B"),
                 danger = Color.parseColor("#EF4444"),
+                isLight = false
+            )
+            "AURORA" -> ThemePalette(
+                name = "Aurora",
+                bgTop = Color.parseColor("#171126"),
+                bgBottom = Color.parseColor("#210E2E"),
+                cardBg = Color.parseColor("#281C3D"),
+                cardStroke = Color.parseColor("#4C3278"),
+                pillBg = Color.parseColor("#352452"),
+                navBarBg = Color.parseColor("#1A122B"),
+                textPrimary = Color.parseColor("#FAF5FF"),
+                textSecondary = Color.parseColor("#D8B4FE"),
+                accentPrimary = Color.parseColor("#C084FC"),
+                accentSecondary = Color.parseColor("#E879F9"),
+                good = Color.parseColor("#34D399"),
+                warn = Color.parseColor("#FBBF24"),
+                danger = Color.parseColor("#F43F5E"),
                 isLight = false
             )
             "MATERIAL_YOU" -> {
@@ -413,20 +417,21 @@ class MainActivity : Activity() {
                 } else resolveTheme("DEFAULT")
             }
             else -> ThemePalette(
+                // Warm Alabaster & Slate Pearl Default
                 name = "Default",
-                bgTop = Color.parseColor("#EEF2FF"),
-                bgBottom = Color.parseColor("#E0F2FE"),
+                bgTop = Color.parseColor("#F4F3EF"),
+                bgBottom = Color.parseColor("#ECE9E2"),
                 cardBg = Color.parseColor("#FFFFFF"),
-                cardStroke = Color.parseColor("#C7D2FE"),
-                pillBg = Color.parseColor("#EEF2FF"),
-                navBarBg = Color.parseColor("#FFFFFF"),
-                textPrimary = Color.parseColor("#1E1B4B"),
-                textSecondary = Color.parseColor("#475569"),
-                accentPrimary = Color.parseColor("#4F46E5"),
-                accentSecondary = Color.parseColor("#06B6D4"),
-                good = Color.parseColor("#059669"),
-                warn = Color.parseColor("#D97706"),
-                danger = Color.parseColor("#E11D48"),
+                cardStroke = Color.parseColor("#E0DCD3"),
+                pillBg = Color.parseColor("#EBE7DE"),
+                navBarBg = Color.parseColor("#FAF8F4"),
+                textPrimary = Color.parseColor("#262522"),
+                textSecondary = Color.parseColor("#68655E"),
+                accentPrimary = Color.parseColor("#2E2C29"),
+                accentSecondary = Color.parseColor("#4A4641"),
+                good = Color.parseColor("#0D7A53"),
+                warn = Color.parseColor("#C46800"),
+                danger = Color.parseColor("#DC2626"),
                 isLight = true
             )
         }
@@ -448,15 +453,15 @@ class MainActivity : Activity() {
         view.setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    v.animate().scaleX(0.95f).scaleY(0.95f).setDuration(90).setInterpolator(DecelerateInterpolator()).start()
+                    v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(80).setInterpolator(DecelerateInterpolator()).start()
                 }
                 MotionEvent.ACTION_UP -> {
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(200).setInterpolator(OvershootInterpolator(2.2f)).start()
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(180).setInterpolator(OvershootInterpolator(2f)).start()
                     hapticTap(v)
                     onClick()
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(150).start()
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
                 }
             }
             true
@@ -464,12 +469,12 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // MAIN UI LAYOUT (Clean Single-Line Header + Slide-to-Switch Bottom Bar)
+    // MAIN UI FRAMEWORK
     // =========================================================================
     private fun buildFullInterface() {
         tabViews.clear()
-        navTabItems.clear()
         navTabLabels.clear()
+        navTabIcons.clear()
         coreFreqLabels.clear()
         coreSwitches.clear()
 
@@ -490,10 +495,10 @@ class MainActivity : Activity() {
         val mainBody = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            setPadding(dp(16), dp(14), dp(16), 0)
+            setPadding(dp(16), dp(16), dp(16), 0)
         }
 
-        // 1. Clean Single-Line Header Bar (No AppIcon in header, no Auto-Test button)
+        // Header: Clean single-line layout
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -505,22 +510,21 @@ class MainActivity : Activity() {
         titleCol.addView(TextView(this).apply {
             text = "TempStatusBar"
             setTextColor(theme.textPrimary)
-            textSize = 22f
+            textSize = 21f
             isSingleLine = true
             typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
         })
         titleCol.addView(TextView(this).apply {
-            text = "${HardwareThermalControl.getHardwareInfo()}  •  ${theme.name} Theme"
-            setTextColor(theme.accentPrimary)
+            text = "${HardwareThermalControl.getHardwareInfo()}  •  ${theme.name}"
+            setTextColor(theme.accentSecondary)
             textSize = 12f
             isSingleLine = true
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setPadding(0, dp(2), 0, 0)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(0, dp(1), 0, 0)
         })
 
         val themeBtn = createIconPillButton("theme.png", "Theme", isAccent = false) {
-            AppLogger.logUi("Theme Button", "Opened Theme Selector")
-            showThemePickerDialog()
+            showThemeModal()
         }
 
         header.addView(titleCol)
@@ -529,44 +533,63 @@ class MainActivity : Activity() {
 
         addSpace(mainBody, dp(12))
 
-        // 2. Access Status Strip
+        // Permission Status Strip
         val accessRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 4f
         }
         val rPair = createAccessChip("root.png", "ROOT") {
-            AppLogger.logUi("Access Chip", "Tapped ROOT verification chip")
-            thread {
-                val ok = HardwareThermalControl.isRootAvailable()
-                uiHandler.post {
-                    updateAccessChips(ok)
-                    Toast.makeText(this, if (ok) "Root Verified (uid=0)" else "Root Denied", Toast.LENGTH_SHORT).show()
+            showPermissionModal(
+                title = "Root Access",
+                desc = "Grants direct access to the Linux kernel sysfs interface. Required to blind thermal throttling zones, lock CPU/GPU clock speeds, and manage hardware charging bypass.",
+                actionLabel = "Verify Access",
+                onAction = {
+                    thread {
+                        val ok = HardwareThermalControl.isRootAvailable()
+                        uiHandler.post {
+                            updateAccessChips(ok)
+                            Toast.makeText(this@MainActivity, if (ok) "Root access confirmed." else "Root access denied.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
-            }
+            )
         }
         rootChipBox = rPair.first; rootChipLabel = rPair.second
 
         val uPair = createAccessChip("graph.png", "USAGE") {
-            AppLogger.logUi("Access Chip", "Opened Usage Access Settings")
-            startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            showPermissionModal(
+                title = "Usage Access",
+                desc = "Allows the background service to detect when your target games are running so Overdrive performance mode engages automatically.",
+                actionLabel = "Open Settings",
+                onAction = { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+            )
         }
         usageChipBox = uPair.first; usageChipLabel = uPair.second
 
         val nPair = createAccessChip("TemperatureBadge.png", "ICON") {
-            AppLogger.logUi("Access Chip", "Triggered Status Bar Icon Refresh")
-            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
-            } else {
-                settings.showNotification = true
-                startAndSyncService()
-                Toast.makeText(this, "Status Bar Temperature Active", Toast.LENGTH_SHORT).show()
-            }
+            showPermissionModal(
+                title = "Status Bar Notification",
+                desc = "Required by Android to render the live temperature icon and power telemetry in your status bar and notification tray.",
+                actionLabel = "Enable Icon",
+                onAction = {
+                    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+                    } else {
+                        settings.showNotification = true
+                        startAndSyncService()
+                    }
+                }
+            )
         }
         notifChipBox = nPair.first; notifChipLabel = nPair.second
 
         val oPair = createAccessChip("FloatingPill.png", "PILL") {
-            AppLogger.logUi("Access Chip", "Toggled Floating FPS Pill")
-            toggleOverlayPill(!FpsOverlayService.isRunning)
+            showPermissionModal(
+                title = "Screen Overlay",
+                desc = "Allows the interactive FPS counter and temperature pill to float over full-screen games and apps.",
+                actionLabel = "Configure",
+                onAction = { toggleOverlayPill(!FpsOverlayService.isRunning) }
+            )
         }
         overlayChipBox = oPair.first; overlayChipLabel = oPair.second
 
@@ -578,7 +601,7 @@ class MainActivity : Activity() {
 
         addSpace(mainBody, dp(12))
 
-        // 3. Center Tab View Container
+        // Center Content Frame
         val contentFrame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
         }
@@ -594,20 +617,38 @@ class MainActivity : Activity() {
         mainBody.addView(contentFrame)
         root.addView(mainBody)
 
-        // 4. Taller, Interactive Slide-to-Switch Bottom Tab Bar
+        // Bottom Navigation Bar with Curved Pill Slider
         val bottomDockContainer = FrameLayout(this).apply {
-            setPadding(dp(16), dp(8), dp(16), dp(14))
+            setPadding(dp(18), dp(6), dp(18), dp(16))
         }
-        val segmentedPillBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            weightSum = 4f
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+
+        navSegmentedBar = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(64))
             background = GradientDrawable().apply {
                 cornerRadius = dp(32).toFloat()
                 setColor(theme.navBarBg)
-                setStroke(3, theme.cardStroke)
+                setStroke(2, theme.cardStroke)
             }
-            elevation = dp(8).toFloat()
+            elevation = dp(6).toFloat()
+        }
+
+        navIndicatorView = View(this).apply {
+            layoutParams = FrameLayout.LayoutParams(0, dp(52)).apply {
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(theme.accentPrimary, theme.accentSecondary)
+            ).apply {
+                cornerRadius = dp(26).toFloat()
+            }
+        }
+        navSegmentedBar.addView(navIndicatorView)
+
+        navTabsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 4f
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         }
 
         val tabSpecs = listOf(
@@ -618,120 +659,155 @@ class MainActivity : Activity() {
         )
 
         tabSpecs.forEachIndexed { idx, (label, iconFile) ->
-            val tabItem = LinearLayout(this).apply {
+            val item = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                setPadding(dp(6), dp(10), dp(6), dp(10))
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    setMargins(dp(3), 0, dp(3), 0)
-                }
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
             }
-            val iconImg = createIconView(iconFile, 24)
+            val img = createIconView(iconFile, 22)
             val txt = TextView(this).apply {
                 text = label
-                textSize = 12f
-                gravity = Gravity.CENTER
+                textSize = 11.5f
                 isSingleLine = true
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                setPadding(0, dp(4), 0, 0)
+                setPadding(0, dp(2), 0, 0)
             }
-            tabItem.addView(iconImg)
-            tabItem.addView(txt)
-
-            navTabItems.add(tabItem)
+            item.addView(img)
+            item.addView(txt)
+            navTabIcons.add(img)
             navTabLabels.add(txt)
-            segmentedPillBar.addView(tabItem)
+            navTabsRow.addView(item)
         }
 
-        segmentedPillBar.setOnTouchListener { barView, event ->
-            val w = barView.width.toFloat().coerceAtLeast(1f)
-            val targetIdx = ((event.x / w) * 4f).toInt().coerceIn(0, 3)
+        navSegmentedBar.addView(navTabsRow)
+
+        // Interactive Tracking: Follows thumb motion in real time
+        navSegmentedBar.setOnTouchListener { bar, event ->
+            val totalW = bar.width.toFloat().coerceAtLeast(1f)
+            val slotW = totalW / 4f
+            val targetIdx = (event.x / slotW).toInt().coerceIn(0, 3)
+
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    animateIndicatorToPosition(targetIdx, animate = true)
                     if (targetIdx != currentTabIndex) {
-                        hapticTap(barView)
-                        AppLogger.logUi("Bottom Tab", "Switched to [${tabSpecs[targetIdx].first}]")
-                        switchTab(targetIdx, animate = true)
+                        switchTab(targetIdx)
                     } else {
-                        hapticTick(barView)
+                        hapticTick(bar)
                     }
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    val indicatorW = slotW - dp(8)
+                    val rawX = (event.x - indicatorW / 2f).coerceIn(dp(4).toFloat(), totalW - indicatorW - dp(4))
+                    navIndicatorView.x = rawX
                     if (targetIdx != currentTabIndex) {
-                        hapticTick(barView)
-                        AppLogger.logUi("Bottom Tab Slide", "Glided to [${tabSpecs[targetIdx].first}]")
-                        switchTab(targetIdx, animate = true)
+                        hapticTick(bar)
+                        switchTab(targetIdx)
                     }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    animateIndicatorToPosition(currentTabIndex, animate = true)
                     true
                 }
                 else -> true
             }
         }
 
-        bottomDockContainer.addView(segmentedPillBar)
+        bottomDockContainer.addView(navSegmentedBar)
         root.addView(bottomDockContainer)
 
         setContentView(root)
-        switchTab(currentTabIndex, animate = false)
+
+        navSegmentedBar.post {
+            animateIndicatorToPosition(currentTabIndex, animate = false)
+            updateTabHighlightColors(currentTabIndex)
+            tabViews.forEachIndexed { i, v -> v.visibility = if (i == currentTabIndex) View.VISIBLE else View.GONE }
+        }
     }
 
-    private fun switchTab(idx: Int, animate: Boolean) {
-        currentTabIndex = idx
-        tabViews.forEachIndexed { i, v ->
-            if (i == idx) {
-                v.visibility = View.VISIBLE
-                if (animate) {
-                    v.alpha = 0f
-                    v.translationY = 20f
-                    v.animate()
-                        .alpha(1f)
-                        .translationY(0f)
-                        .setDuration(180)
-                        .setInterpolator(DecelerateInterpolator())
-                        .start()
-                }
-            } else {
-                v.visibility = View.GONE
-            }
+    private fun animateIndicatorToPosition(index: Int, animate: Boolean) {
+        val barW = navSegmentedBar.width.toFloat()
+        if (barW <= 0f) return
+        val slotW = barW / 4f
+        val indicatorW = slotW - dp(8)
+        val targetX = (index * slotW) + dp(4)
+
+        val lp = navIndicatorView.layoutParams
+        if (lp.width != indicatorW.roundToInt()) {
+            lp.width = indicatorW.roundToInt()
+            navIndicatorView.layoutParams = lp
         }
 
-        navTabItems.forEachIndexed { i, item ->
-            val active = (i == idx)
-            if (active) {
-                navTabLabels[i].setTextColor(Color.WHITE)
-                item.background = GradientDrawable(
-                    GradientDrawable.Orientation.LEFT_RIGHT,
-                    intArrayOf(theme.accentPrimary, theme.accentSecondary)
-                ).apply {
-                    cornerRadius = dp(24).toFloat()
-                }
-                item.animate().scaleX(1.03f).scaleY(1.03f).setDuration(160).setInterpolator(OvershootInterpolator()).start()
-            } else {
-                navTabLabels[i].setTextColor(theme.textSecondary)
-                item.background = GradientDrawable().apply {
-                    cornerRadius = dp(24).toFloat()
-                    setColor(theme.pillBg)
-                }
-                item.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
-            }
+        if (animate) {
+            navIndicatorView.animate()
+                .x(targetX)
+                .setDuration(220)
+                .setInterpolator(OvershootInterpolator(1.2f))
+                .start()
+        } else {
+            navIndicatorView.x = targetX
         }
+    }
 
-        when (idx) {
+    private fun updateTabHighlightColors(activeIndex: Int) {
+        navTabLabels.forEachIndexed { i, txt ->
+            val active = (i == activeIndex)
+            txt.setTextColor(if (active) Color.WHITE else theme.textSecondary)
+        }
+    }
+
+    // Directional Slide Animation: Slides left/right based on forward/backward movement
+    private fun switchTab(targetIndex: Int) {
+        if (targetIndex == currentTabIndex) return
+        val forward = targetIndex > currentTabIndex
+        val oldIndex = currentTabIndex
+        currentTabIndex = targetIndex
+
+        animateIndicatorToPosition(targetIndex, animate = true)
+        updateTabHighlightColors(targetIndex)
+
+        val oldView = tabViews[oldIndex]
+        val newView = tabViews[targetIndex]
+        val containerW = (oldView.parent as View).width.toFloat()
+
+        oldView.animate()
+            .translationX(if (forward) -containerW * 0.45f else containerW * 0.45f)
+            .alpha(0f)
+            .setDuration(200)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                oldView.visibility = View.GONE
+                oldView.translationX = 0f
+                oldView.alpha = 1f
+            }
+            .start()
+
+        newView.visibility = View.VISIBLE
+        newView.translationX = if (forward) containerW * 0.45f else -containerW * 0.45f
+        newView.alpha = 0f
+        newView.animate()
+            .translationX(0f)
+            .alpha(1f)
+            .setDuration(220)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+
+        when (targetIndex) {
             0 -> loadThermalGraphData()
             2 -> loadFpsGraphData()
             3 -> {
                 refreshProcessesList()
-                logConsoleText.text = AppLogger.getLogs()
-                logScrollBox.post { logScrollBox.fullScroll(View.FOCUS_DOWN) }
+                if (::logConsoleText.isInitialized) {
+                    logConsoleText.text = AppLogger.getLogs()
+                }
             }
         }
     }
 
     // =========================================================================
-    // TAB 1: MONITOR
+    // TAB 1: MONITOR (Thermometer Icon, Smart Scroll Graph, Timestamp Scrubbing)
     // =========================================================================
     private fun buildMonitorTab(): ScrollView {
         val scroll = createScroll()
@@ -742,7 +818,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        heroRow.addView(createIconBadge("battery.png", 28, 48))
+        // Shows thermometer.png for live temperature
+        heroRow.addView(createIconBadge("thermometer.png", 26, 46))
 
         heroTempText = TextView(this).apply {
             text = "--°C"
@@ -766,7 +843,7 @@ class MainActivity : Activity() {
             setTextColor(theme.accentPrimary)
             textSize = 13f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setPadding(0, 4, 0, 0)
+            setPadding(0, dp(3), 0, 0)
         }
         rightCol.addView(heroStateText)
         rightCol.addView(heroWattText)
@@ -776,18 +853,15 @@ class MainActivity : Activity() {
 
         heroCard.addView(createDivider())
 
-        heroCard.addView(createIconSwitchRow("TemperatureBadge.png", "Status Bar Temperature", "Display live battery °C icon in status bar", settings.showNotification) { on ->
-            AppLogger.logUi("Status Bar Temp Switch", if (on) "ENABLED" else "DISABLED")
+        heroCard.addView(createIconSwitchRow("TemperatureBadge.png", "Status Bar Temperature", "Render live temperature icon in device status bar", settings.showNotification) { on ->
             settings.showNotification = on
             startAndSyncService()
         })
-        heroCard.addView(createIconSwitchRow("charging.png", "Notification Power Metrics", "Show live Wattage & mA current in notification", settings.showPowerMetrics) { on ->
-            AppLogger.logUi("Notification Power Metrics Switch", if (on) "ENABLED" else "DISABLED")
+        heroCard.addView(createIconSwitchRow("charging.png", "Live Power Metrics", "Display active Wattage and mA draw in notification", settings.showPowerMetrics) { on ->
             settings.showPowerMetrics = on
             startAndSyncService()
         })
-        heroCard.addView(createIconSwitchRow("battery.png", "Battery Bypass (Pause Charge)", "Isolate battery and run off direct adapter power", HardwareThermalControl.isManualBypassActive) { on ->
-            AppLogger.logUi("Battery Bypass Switch", if (on) "ENGAGED" else "RELEASED")
+        heroCard.addView(createIconSwitchRow("battery.png", "Battery Bypass (Pause Charge)", "Directs power to device hardware without charging battery", HardwareThermalControl.isManualBypassActive) { on ->
             HardwareThermalControl.setChargingEnabled(!on, isManualToggle = true)
             startAndSyncService()
         })
@@ -795,6 +869,7 @@ class MainActivity : Activity() {
 
         addSpace(col, dp(14))
 
+        // Temperature Graph Card with Smart Touch Arbitration
         val graphCard = createCard()
         val gHead = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -805,21 +880,20 @@ class MainActivity : Activity() {
         })
         gHead.addView(TextView(this).apply {
             text = "TEMPERATURE TIMELINE"
-            setTextColor(theme.accentPrimary)
+            setTextColor(theme.accentSecondary)
             textSize = 11.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
-        gHead.addView(createPillButton("Refresh") {
-            AppLogger.logUi("Thermal Graph", "Manual Refresh")
-            loadThermalGraphData()
-        }.apply { setPadding(dp(14), dp(8), dp(14), dp(8)) })
+        gHead.addView(createPillButton("Refresh") { loadThermalGraphData() }.apply {
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+        })
         graphCard.addView(gHead)
 
         tempScrubReadout = TextView(this).apply {
-            text = "Drag across the graph to inspect exact time & temperature"
+            text = "Drag horizontally across curve to scrub history"
             setTextColor(theme.textSecondary)
-            textSize = 12.5f
+            textSize = 12f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             setPadding(0, dp(6), 0, dp(8))
         }
@@ -838,7 +912,7 @@ class MainActivity : Activity() {
         graphCard.addView(tempGraphView)
 
         tempSnapshotBox = TextView(this).apply {
-            text = "Slide your finger along the curve above to inspect recorded CPU activity."
+            text = "Scrub the timeline above to view recorded CPU process snapshots."
             setTextColor(theme.textPrimary)
             textSize = 11.5f
             setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -855,10 +929,10 @@ class MainActivity : Activity() {
 
         addSpace(col, dp(14))
 
+        // Protection Thresholds Card with Rotary Drum Pickers
         val threshCard = createCard()
         threshCard.addView(createSectionLabel("THERMAL & CHARGING PROTECTION"))
-        threshCard.addView(createIconSwitchRow("thermometer.png", "Max Charge % Limiter", "Automatically stop charging at target battery %", settings.chargeLimitEnabled) { on ->
-            AppLogger.logUi("Max Charge % Cutoff Switch", if (on) "ENABLED (${settings.chargeLimitMax}%)" else "DISABLED")
+        threshCard.addView(createIconSwitchRow("thermometer.png", "Charge Level Limiter", "Stops AC charging when battery reaches target level", settings.chargeLimitEnabled) { on ->
             settings.chargeLimitEnabled = on
         })
 
@@ -868,23 +942,20 @@ class MainActivity : Activity() {
         lateinit var resBtn: TextView
 
         warnBtn = createPillButton("Warn: ${settings.warningTemp}°C") {
-            showNumberDialog("Overheat Warning (°C)", settings.warningTemp, 36, 48) { v ->
+            showRotaryDrumModal("Warning Temperature", settings.warningTemp, 36, 48, "°C") { v ->
                 settings.warningTemp = v; warnBtn.text = "Warn: ${v}°C"
-                AppLogger.logUi("Threshold Change", "Warning Temp set to ${v}°C")
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(4), 0) } }
 
         cutBtn = createPillButton("Cutoff: ${settings.cutoffTemp}°C") {
-            showNumberDialog("Charge Cutoff (°C)", settings.cutoffTemp, 37, 48) { v ->
+            showRotaryDrumModal("Charge Cutoff Temperature", settings.cutoffTemp, 37, 48, "°C") { v ->
                 settings.cutoffTemp = v; cutBtn.text = "Cutoff: ${v}°C"
-                AppLogger.logUi("Threshold Change", "Charge Cutoff Temp set to ${v}°C")
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, dp(4), 0) } }
 
         resBtn = createPillButton("Resume: ${settings.resumeTemp}°C") {
-            showNumberDialog("Charge Resume (°C)", settings.resumeTemp, 34, 45) { v ->
+            showRotaryDrumModal("Charge Resume Temperature", settings.resumeTemp, 34, 45, "°C") { v ->
                 settings.resumeTemp = v; resBtn.text = "Resume: ${v}°C"
-                AppLogger.logUi("Threshold Change", "Charge Resume Temp set to ${v}°C")
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, 0, 0) } }
 
@@ -895,17 +966,15 @@ class MainActivity : Activity() {
         lateinit var maxPctBtn: TextView
         lateinit var resPctBtn: TextView
 
-        maxPctBtn = createPillButton("Stop Charge: ${settings.chargeLimitMax}%") {
-            showNumberDialog("Stop Charging At (%)", settings.chargeLimitMax, 60, 100) { v ->
-                settings.chargeLimitMax = v; maxPctBtn.text = "Stop Charge: ${v}%"
-                AppLogger.logUi("Threshold Change", "Max Charge % set to ${v}%")
+        maxPctBtn = createPillButton("Stop Level: ${settings.chargeLimitMax}%") {
+            showRotaryDrumModal("Stop Charge Level", settings.chargeLimitMax, 60, 100, "%") { v ->
+                settings.chargeLimitMax = v; maxPctBtn.text = "Stop Level: ${v}%"
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(4), 0) } }
 
-        resPctBtn = createPillButton("Resume Charge: ${settings.chargeLimitResume}%") {
-            showNumberDialog("Resume Charging At (%)", settings.chargeLimitResume, 50, 95) { v ->
-                settings.chargeLimitResume = v; resPctBtn.text = "Resume Charge: ${v}%"
-                AppLogger.logUi("Threshold Change", "Resume Charge % set to ${v}%")
+        resPctBtn = createPillButton("Resume Level: ${settings.chargeLimitResume}%") {
+            showRotaryDrumModal("Resume Charge Level", settings.chargeLimitResume, 50, 95, "%") { v ->
+                settings.chargeLimitResume = v; resPctBtn.text = "Resume Level: ${v}%"
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, 0, 0) } }
 
@@ -918,75 +987,19 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // TAB 2: HARDWARE
+    // TAB 2: HARDWARE (CPU Cores, Governor, Display Refresh Rate)
     // =========================================================================
     private fun buildHardwareTab(): ScrollView {
         val scroll = createScroll()
         val col = createCol()
-
-        val gpuCard = createCard()
-        gpuCard.addView(createSectionLabel("GRAPHICS & MEMORY ENGINE"))
-        hwGpuText = createBodyText("Polling GPU...")
-        hwRamText = createBodyText("Polling RAM...")
-        gpuCard.addView(hwGpuText)
-        gpuCard.addView(hwRamText)
-
-        addSpace(gpuCard, dp(10))
-
-        gpuLockToggleBtn = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-        }
-        gpuLockIconView = createIconView("charging.png", 26).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply { setMargins(0, 0, dp(12), 0) }
-        }
-        val gpuCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        gpuLockTitleText = TextView(this).apply {
-            textSize = 13.5f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        }
-        gpuLockSubText = TextView(this).apply {
-            textSize = 11.5f
-            setPadding(0, 2, 0, 0)
-        }
-        gpuCol.addView(gpuLockTitleText)
-        gpuCol.addView(gpuLockSubText)
-        gpuLockToggleBtn.addView(gpuLockIconView)
-        gpuLockToggleBtn.addView(gpuCol)
-
-        attachSpringAnimation(gpuLockToggleBtn) {
-            val targetLock = !HardwareThermalControl.isGpuPeakLocked
-            AppLogger.logUi("GPU 670MHz Toggle", if (targetLock) "LOCKING TO 670 MHz" else "UNLOCKING TO AUTO (305-670 MHz)")
-            HardwareThermalControl.setGpuPeakLock(targetLock) { isLockedNow, liveFreq ->
-                uiHandler.post {
-                    updateGpuLockButtonAppearance()
-                    hwGpuText.text = "Adreno 650 Load: ${HardwareThermalControl.getGpuUsage()}  •  Live Clock: $liveFreq"
-                    Toast.makeText(
-                        this,
-                        if (isLockedNow) "GPU Locked at Peak ($liveFreq)" else "GPU Unlocked to Dynamic Auto ($liveFreq)",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
-        }
-        gpuCard.addView(gpuLockToggleBtn)
-        updateGpuLockButtonAppearance()
-        col.addView(gpuCard)
-
-        addSpace(col, dp(14))
 
         val hzCard = createCard()
         hzCard.addView(createSectionLabel("DISPLAY REFRESH RATE"))
         val hzRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f; setPadding(0, dp(10), 0, 0) }
         listOf(60, 90, 120).forEach { hz ->
             hzRow.addView(createPillButton("${hz}Hz") {
-                AppLogger.logUi("Display Refresh Button", "User requested ${hz}Hz lock")
                 HardwareThermalControl.forceRefreshRate(hz)
-                Toast.makeText(this, "Display set to ${hz}Hz", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Display refresh set to ${hz}Hz", Toast.LENGTH_SHORT).show()
             }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, dp(4), 0) } })
         }
         hzCard.addView(hzRow)
@@ -995,15 +1008,13 @@ class MainActivity : Activity() {
         addSpace(col, dp(14))
 
         val cpuCard = createCard()
-        cpuCard.addView(createSectionLabel("KRYO 585 PROCESSOR CORES"))
-        cpuCard.addView(createIconSwitchRow("leaf.png", "Smart Thermal Governor", "Automatically cool down CPU when idle", false) { on ->
-            AppLogger.logUi("Smart Thermal Governor Switch", if (on) "ENABLED" else "DISABLED")
+        cpuCard.addView(createSectionLabel("PROCESSOR ARCHITECTURE & CORES"))
+        cpuCard.addView(createIconSwitchRow("leaf.png", "Smart Thermal Governor", "Dynamically throttles CPU cores during thermal spikes", false) { on ->
             sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply {
                 setPackage(packageName); putExtra("state", on)
             })
         })
-        cpuCard.addView(createIconSwitchRow("processor.png", "Limit Prime Core (C7)", "Cap Prime Core 7 to minimum clock to save power", false) { on ->
-            AppLogger.logUi("Prime Core C7 Throttle Switch", if (on) "THROTTLED" else "UNTHROTTLED")
+        cpuCard.addView(createIconSwitchRow("processor.png", "Prime Core Throttle", "Caps Prime Core 7 clock speed to preserve power", false) { on ->
             HardwareThermalControl.throttlePrimeCore(on)
         })
         cpuCard.addView(createDivider())
@@ -1026,22 +1037,17 @@ class MainActivity : Activity() {
             row.addView(lbl)
 
             if (coreId > 0) {
-                val sw = Switch(this).apply {
-                    isChecked = true
-                    setOnCheckedChangeListener { v, online ->
-                        if (isUpdatingCoreUi) return@setOnCheckedChangeListener
-                        hapticTap(v)
-                        AppLogger.logUi("CPU Core $coreId Switch", if (online) "ONLINE" else "OFFLINE")
-                        HardwareThermalControl.setCoreOnline(coreId, online)
-                    }
+                val sw = createCustomSwitch(checked = true) { online ->
+                    if (isUpdatingCoreUi) return@createCustomSwitch
+                    HardwareThermalControl.setCoreOnline(coreId, online)
                 }
                 coreSwitches.add(sw)
                 row.addView(sw)
             } else {
                 coreSwitches.add(null)
                 row.addView(TextView(this).apply {
-                    text = "ALWAYS ON"
-                    setTextColor(theme.accentPrimary)
+                    text = "BOOT CORE"
+                    setTextColor(theme.accentSecondary)
                     textSize = 10.5f
                     typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                 })
@@ -1054,47 +1060,125 @@ class MainActivity : Activity() {
         return scroll
     }
 
-    private fun updateGpuLockButtonAppearance() {
-        if (!::gpuLockToggleBtn.isInitialized) return
-        val locked = HardwareThermalControl.isGpuPeakLocked
-        if (locked) {
-            gpuLockIconView.setImageBitmap(loadCustomBitmap("charging.png"))
-            gpuLockTitleText.text = "GPU Locked at 670 MHz (Tap to Unlock)"
-            gpuLockTitleText.setTextColor(Color.WHITE)
-            gpuLockSubText.text = "Adreno 650 pinned at Power Level 0 • Zero thermal downclocking"
-            gpuLockSubText.setTextColor(Color.parseColor("#E0F2FE"))
-            gpuLockToggleBtn.background = GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(theme.accentPrimary, theme.accentSecondary)
-            ).apply { cornerRadius = dp(18).toFloat() }
-        } else {
-            gpuLockIconView.setImageBitmap(loadCustomBitmap("leaf.png"))
-            gpuLockTitleText.text = "GPU in Dynamic Auto Mode (Tap to Lock 670 MHz)"
-            gpuLockTitleText.setTextColor(theme.textPrimary)
-            gpuLockSubText.text = "Scales dynamically between 305 MHz and 670 MHz based on load"
-            gpuLockSubText.setTextColor(theme.textSecondary)
-            gpuLockToggleBtn.background = GradientDrawable().apply {
-                cornerRadius = dp(18).toFloat()
-                setColor(theme.pillBg)
-                setStroke(2, theme.cardStroke)
-            }
-        }
-    }
-
     // =========================================================================
-    // TAB 3: GAMING & FPS
+    // TAB 3: GAMING (Unified Overdrive, Adreno GPU Hub, Add Games, Match Records)
     // =========================================================================
     private fun buildGamingTab(): ScrollView {
         val scroll = createScroll()
         val col = createCol()
 
+        // Overdrive & Floating HUD Hub
+        val gameCard = createCard()
+        gameCard.addView(createSectionLabel("OVERDRIVE PERFORMANCE ENGINE"))
+
+        gameCard.addView(createIconSwitchRow("game.png", "Overdrive", "Unlocks CPU clocks, stabilizes GPU frequencies, and pins refresh rate", settings.gamingModeEnabled) { on ->
+            settings.gamingModeEnabled = on
+            if (!on) HardwareThermalControl.setPeakPerformanceMode(false)
+        })
+        gameCard.addView(createIconSwitchRow("FloatingPill.png", "Floating Performance Pill", "Overlays live FPS and battery metrics above active apps", FpsOverlayService.isRunning) { on ->
+            toggleOverlayPill(on)
+        })
+        gameCard.addView(createIconSwitchRow("TemperatureBadge.png", "Temperature in Pill", "Displays real-time battery temperature inside the floating pill", prefs.getBoolean("showTempInFpsOverlay", true)) { on ->
+            prefs.edit().putBoolean("showTempInFpsOverlay", on).apply()
+        })
+
+        gameCard.addView(createDivider())
+
+        // Add Games & Thermal Cap Buttons
+        lateinit var capBtn: TextView
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f; setPadding(0, dp(4), 0, dp(8)) }
+        row.addView(createPillButton("Add Games (${settings.gamingApps.size})") {
+            showAppSelectionModal(
+                title = "Add Games to Overdrive",
+                desc = "Select installed games and apps. When any selected app launches, Overdrive mode will engage automatically.",
+                selectedSet = settings.gamingApps,
+                onSave = { updated ->
+                    settings.gamingApps = updated
+                    buildFullInterface()
+                }
+            )
+        }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(4), 0) } })
+
+        capBtn = createPillButton("Thermal Cap: ${settings.gameThrottleTemp}°C") {
+            showRotaryDrumModal("Overdrive Thermal Ceiling", settings.gameThrottleTemp, 38, 48, "°C") { v ->
+                settings.gameThrottleTemp = v; capBtn.text = "Thermal Cap: ${v}°C"
+            }
+        }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, 0, 0) } }
+        row.addView(capBtn)
+        gameCard.addView(row)
+
+        gameCard.addView(createPillButton("Exempt Background Apps (${settings.exemptApps.size})") {
+            showAppSelectionModal(
+                title = "Exempt Background Apps",
+                desc = "Select background apps (music, voice chat, messaging). These apps will stay protected and will not be throttled or frozen while gaming.",
+                selectedSet = settings.exemptApps,
+                onSave = { updated ->
+                    settings.exemptApps = updated
+                    buildFullInterface()
+                }
+            )
+        })
+
+        col.addView(gameCard)
+        addSpace(col, dp(14))
+
+        // Adreno GPU Control Card (Unified into Gaming)
+        val gpuCard = createCard()
+        gpuCard.addView(createSectionLabel("GRAPHICS CLOCK CONTROL"))
+        hwGpuText = createBodyText("Polling GPU...")
+        gpuCard.addView(hwGpuText)
+
+        addSpace(gpuCard, dp(10))
+
+        gpuLockToggleBtn = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        gpuLockIconView = createIconView("charging.png", 26).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply { setMargins(0, 0, dp(12), 0) }
+        }
+        val gpuCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        gpuLockTitleText = TextView(this).apply {
+            textSize = 13.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        }
+        gpuLockSubText = TextView(this).apply {
+            textSize = 11.5f
+            setPadding(0, dp(2), 0, 0)
+        }
+        gpuCol.addView(gpuLockTitleText)
+        gpuCol.addView(gpuLockSubText)
+        gpuLockToggleBtn.addView(gpuLockIconView)
+        gpuLockToggleBtn.addView(gpuCol)
+
+        attachSpringAnimation(gpuLockToggleBtn) {
+            val targetLock = !HardwareThermalControl.isGpuPeakLocked
+            HardwareThermalControl.setGpuPeakLock(targetLock) { isLockedNow, liveFreq ->
+                uiHandler.post {
+                    updateGpuLockButtonAppearance()
+                    hwGpuText.text = "Load: ${HardwareThermalControl.getGpuUsage()}  •  Clock: $liveFreq"
+                    Toast.makeText(this, if (isLockedNow) "GPU locked to peak speed" else "GPU restored to automatic scaling", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        gpuCard.addView(gpuLockToggleBtn)
+        updateGpuLockButtonAppearance()
+        col.addView(gpuCard)
+
+        addSpace(col, dp(14))
+
+        // Match FPS History Graph
         val fpsCard = createCard()
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         head.addView(createIconView("trophy.png", 22).apply {
             layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply { setMargins(0, 0, dp(8), 0) }
         })
         fpsSessionHeader = TextView(this).apply {
-            text = "RECORDED MATCH FPS GRAPH"
+            text = "MATCH FPS SESSIONS"
             setTextColor(theme.good)
             textSize = 11.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
@@ -1102,13 +1186,12 @@ class MainActivity : Activity() {
         }
         head.addView(fpsSessionHeader)
         head.addView(createIconPillButton("trophy.png", "Matches", false) {
-            AppLogger.logUi("FPS Graph", "Opened Recorded Matches Picker")
             showFpsSessionDialog()
         })
         fpsCard.addView(head)
 
         fpsScrubReadout = TextView(this).apply {
-            text = "Drag across the graph to inspect exact FPS & Temperature"
+            text = "Scrub across curve to inspect FPS variance"
             setTextColor(theme.textSecondary)
             textSize = 12f
             setPadding(0, dp(6), 0, dp(8))
@@ -1128,63 +1211,39 @@ class MainActivity : Activity() {
         fpsCard.addView(fpsGraphView)
         col.addView(fpsCard)
 
-        addSpace(col, dp(14))
-
-        val gameCard = createCard()
-        gameCard.addView(createSectionLabel("120 FPS GAME ENGINE & FLOATING PILL"))
-
-        gameCard.addView(createIconSwitchRow("game.png", "120 FPS Gaming Mode", "Automatically unlock 3.18 GHz CPU, 670 MHz GPU & 120Hz in games", settings.gamingModeEnabled) { on ->
-            AppLogger.logUi("120 FPS Gaming Mode Switch", if (on) "ARMED" else "DISARMED")
-            settings.gamingModeEnabled = on
-            if (!on) HardwareThermalControl.setPeakPerformanceMode(false)
-        })
-        gameCard.addView(createIconSwitchRow("FloatingPill.png", "Floating FPS Pill", "Show draggable live FPS counter over any app", FpsOverlayService.isRunning) { on ->
-            AppLogger.logUi("Floating FPS Pill Switch", if (on) "LAUNCHED" else "STOPPED")
-            toggleOverlayPill(on)
-        })
-        gameCard.addView(createIconSwitchRow("TemperatureBadge.png", "Temperature in FPS Pill", "Display live battery °C alongside FPS in the floating pill", prefs.getBoolean("showTempInFpsOverlay", true)) { on ->
-            AppLogger.logUi("Show Temp in Pill Switch", if (on) "ENABLED" else "DISABLED")
-            prefs.edit().putBoolean("showTempInFpsOverlay", on).apply()
-        })
-
-        gameCard.addView(createDivider())
-
-        lateinit var capBtn: TextView
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f; setPadding(0, dp(6), 0, dp(8)) }
-        row.addView(createPillButton("Games (${settings.gamingApps.size})") {
-            AppLogger.logUi("Gaming Apps Button", "Opened Target Games Selector")
-            showAppPicker("Select Target Games", settings.gamingApps, true) { updated ->
-                settings.gamingApps = updated
-                AppLogger.logUi("Target Games Saved", updated.joinToString(", "))
-                buildFullInterface()
-            }
-        }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(4), 0) } })
-
-        capBtn = createPillButton("Thermal Cap: ${settings.gameThrottleTemp}°C") {
-            showNumberDialog("Game Thermal Ceiling (°C)", settings.gameThrottleTemp, 38, 48) { v ->
-                settings.gameThrottleTemp = v; capBtn.text = "Thermal Cap: ${v}°C"
-                AppLogger.logUi("Game Thermal Ceiling", "Set to ${v}°C")
-            }
-        }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, 0, 0) } }
-        row.addView(capBtn)
-        gameCard.addView(row)
-
-        gameCard.addView(createPillButton("Exempt Background Apps (${settings.exemptApps.size})") {
-            AppLogger.logUi("Exempt Apps Button", "Opened Exempt Apps Selector")
-            showAppPicker("Select Exempt Apps", settings.exemptApps, false) { updated ->
-                settings.exemptApps = updated
-                AppLogger.logUi("Exempt Apps Saved", "${updated.size} packages")
-                buildFullInterface()
-            }
-        })
-
-        col.addView(gameCard)
         scroll.addView(col)
         return scroll
     }
 
+    private fun updateGpuLockButtonAppearance() {
+        if (!::gpuLockToggleBtn.isInitialized) return
+        val locked = HardwareThermalControl.isGpuPeakLocked
+        if (locked) {
+            gpuLockIconView.setImageBitmap(loadCustomBitmap("charging.png"))
+            gpuLockTitleText.text = "Locked at Peak Frequency (Tap to Unlock)"
+            gpuLockTitleText.setTextColor(Color.WHITE)
+            gpuLockSubText.text = "Adreno 650 locked at maximum performance power level"
+            gpuLockSubText.setTextColor(Color.parseColor("#E0E7FF"))
+            gpuLockToggleBtn.background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(theme.accentPrimary, theme.accentSecondary)
+            ).apply { cornerRadius = dp(18).toFloat() }
+        } else {
+            gpuLockIconView.setImageBitmap(loadCustomBitmap("leaf.png"))
+            gpuLockTitleText.text = "Automatic Scaling (Tap to Lock)"
+            gpuLockTitleText.setTextColor(theme.textPrimary)
+            gpuLockSubText.text = "GPU dynamically scales frequencies based on processing load"
+            gpuLockSubText.setTextColor(theme.textSecondary)
+            gpuLockToggleBtn.background = GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(theme.pillBg)
+                setStroke(2, theme.cardStroke)
+            }
+        }
+    }
+
     // =========================================================================
-    // TAB 4: LOGS (Action Log Console + Force-Stop RAM Purge & Process Manager)
+    // TAB 4: LOGS (Live Diagnostics & Background Process Manager)
     // =========================================================================
     private fun buildTasksAndLogTab(): ScrollView {
         val scroll = createScroll()
@@ -1199,8 +1258,8 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).apply { setMargins(0, 0, dp(8), 0) }
         })
         logHeader.addView(TextView(this).apply {
-            text = "DIAGNOSTIC & VERIFICATION LOG"
-            setTextColor(theme.accentPrimary)
+            text = "DIAGNOSTIC & ACTION LOG"
+            setTextColor(theme.accentSecondary)
             textSize = 11.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -1208,7 +1267,9 @@ class MainActivity : Activity() {
         logCard.addView(logHeader)
 
         logScrollBox = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(220)).apply { setMargins(0, dp(10), 0, dp(10)) }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(230)).apply {
+                setMargins(0, dp(10), 0, dp(10))
+            }
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = GradientDrawable().apply {
                 cornerRadius = dp(16).toFloat()
@@ -1228,13 +1289,11 @@ class MainActivity : Activity() {
 
         val logBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f }
         logBtns.addView(createPillButton("Refresh") {
-            AppLogger.logUi("Log Console", "Refreshed view")
             logConsoleText.text = AppLogger.getLogs()
             logScrollBox.post { logScrollBox.fullScroll(View.FOCUS_DOWN) }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(4), 0) } })
 
         logBtns.addView(createIconPillButton("document.png", "Export .txt", false) {
-            AppLogger.logUi("Log Console", "Exporting ActionLog to Downloads")
             exportLogsToFile()
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, dp(4), 0) } })
 
@@ -1254,17 +1313,16 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).apply { setMargins(0, 0, dp(8), 0) }
         })
         head.addView(TextView(this).apply {
-            text = "PROCESS & RAM MANAGER"
-            setTextColor(theme.accentPrimary)
+            text = "MEMORY & PROCESS MANAGER"
+            setTextColor(theme.accentSecondary)
             textSize = 11.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
-        head.addView(createIconPillButton("ram.png", "Purge RAM & Apps", true) {
-            AppLogger.logUi("Purge RAM & Kill Apps Button", "Force-stopping user background apps + drop_caches=3")
+        head.addView(createIconPillButton("ram.png", "Purge Memory", true) {
             HardwareThermalControl.clearRamCaches(settings.exemptApps) { count, freedMb ->
                 uiHandler.post {
-                    Toast.makeText(this, "Stopped $count Apps (+${freedMb}MB Freed)", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Closed $count apps (Freed ${freedMb}MB)", Toast.LENGTH_LONG).show()
                     logConsoleText.text = AppLogger.getLogs()
                     logScrollBox.post { logScrollBox.fullScroll(View.FOCUS_DOWN) }
                     refreshProcessesList()
@@ -1273,9 +1331,12 @@ class MainActivity : Activity() {
         })
         procCard.addView(head)
 
+        hwRamText = createBodyText("Polling RAM...")
+        procCard.addView(hwRamText)
+
         processContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(10), 0, 0)
+            setPadding(0, dp(8), 0, 0)
         }
         procCard.addView(processContainer)
         col.addView(procCard)
@@ -1285,7 +1346,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // INTERACTIVE GRAPH VIEW (Dynamic Temperature Gradient: Green -> Yellow/Orange -> Red)
+    // INTERACTIVE GRAPH VIEW (Smart Touch Arbitration: Vertical Swipe Never Blocks Page Scroll!)
     // =========================================================================
     inner class InteractiveGraphView(
         context: Context,
@@ -1299,6 +1360,11 @@ class MainActivity : Activity() {
         private var secondaryColor: Int = theme.warn
         private var suffix: String = ""
         private var scrubIndex: Int = -1
+
+        private var touchStartX = 0f
+        private var touchStartY = 0f
+        private var isHorizontalScrubbing = false
+        private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
         private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = theme.cardStroke
@@ -1335,24 +1401,47 @@ class MainActivity : Activity() {
             invalidate()
         }
 
+        // Smart Gesture Inspection: Yields immediately to parent ScrollView if vertical
         override fun onTouchEvent(event: MotionEvent): Boolean {
             if (primarySeries.isEmpty()) return false
-            when (event.action) {
-                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                    parent?.requestDisallowInterceptTouchEvent(true)
-                    val padL = 84f; val padR = 24f
-                    val w = (width - padL - padR).coerceAtLeast(1f)
-                    val frac = ((event.x - padL) / w).coerceIn(0f, 1f)
-                    val newIdx = (frac * (primarySeries.size - 1)).roundToInt().coerceIn(0, primarySeries.size - 1)
-                    if (newIdx != scrubIndex) {
-                        scrubIndex = newIdx
-                        hapticTick(this)
-                        onScrubPoint(newIdx)
-                        invalidate()
-                    }
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    touchStartX = event.x
+                    touchStartY = event.y
+                    isHorizontalScrubbing = false
+                    parent?.requestDisallowInterceptTouchEvent(false)
                     return true
                 }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = abs(event.x - touchStartX)
+                    val dy = abs(event.y - touchStartY)
+
+                    if (!isHorizontalScrubbing) {
+                        if (dx > touchSlop && dx > dy * 1.25f) {
+                            isHorizontalScrubbing = true
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                        } else if (dy > touchSlop) {
+                            parent?.requestDisallowInterceptTouchEvent(false)
+                            return false
+                        }
+                    }
+
+                    if (isHorizontalScrubbing) {
+                        val padL = 84f; val padR = 24f
+                        val w = (width - padL - padR).coerceAtLeast(1f)
+                        val frac = ((event.x - padL) / w).coerceIn(0f, 1f)
+                        val newIdx = (frac * (primarySeries.size - 1)).roundToInt().coerceIn(0, primarySeries.size - 1)
+                        if (newIdx != scrubIndex) {
+                            scrubIndex = newIdx
+                            hapticTick(this)
+                            onScrubPoint(newIdx)
+                            invalidate()
+                        }
+                        return true
+                    }
+                }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    isHorizontalScrubbing = false
                     parent?.requestDisallowInterceptTouchEvent(false)
                     return true
                 }
@@ -1410,19 +1499,19 @@ class MainActivity : Activity() {
                 val yBottom = yForTemp(34f).coerceAtLeast(yTop + 10f)
 
                 val colorsStroke = intArrayOf(
-                    Color.parseColor("#EF4444"),
-                    Color.parseColor("#F97316"),
-                    Color.parseColor("#F59E0B"),
-                    Color.parseColor("#10B981")
+                    Color.parseColor("#E11D48"),
+                    Color.parseColor("#EA580C"),
+                    Color.parseColor("#D97706"),
+                    Color.parseColor("#0D7A53")
                 )
                 val positions = floatArrayOf(0f, 0.35f, 0.68f, 1f)
                 curvePaint.shader = LinearGradient(0f, yTop, 0f, yBottom, colorsStroke, positions, Shader.TileMode.CLAMP)
 
                 val colorsFill = intArrayOf(
-                    Color.argb(115, 239, 68, 68),
-                    Color.argb(85, 249, 115, 22),
-                    Color.argb(65, 245, 158, 11),
-                    Color.argb(20, 16, 185, 129)
+                    Color.argb(100, 225, 29, 72),
+                    Color.argb(75, 234, 88, 12),
+                    Color.argb(55, 217, 119, 6),
+                    Color.argb(15, 13, 122, 83)
                 )
                 fillPaint.shader = LinearGradient(0f, yTop, 0f, padT + ch, colorsFill, positions, Shader.TileMode.CLAMP)
             } else {
@@ -1468,7 +1557,363 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // DATA LOADERS & PERMISSION VERIFIERS
+    // MODAL WINDOWS & ROTARY DRUM ROLLER PICKER
+    // =========================================================================
+    private fun showRotaryDrumModal(
+        title: String,
+        current: Int,
+        minV: Int,
+        maxV: Int,
+        unit: String,
+        onSelected: (Int) -> Unit
+    ) {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(24), dp(24), dp(24), dp(20))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(28).toFloat()
+                setColor(theme.cardBg)
+                setStroke(2, theme.cardStroke)
+            }
+        }
+
+        card.addView(TextView(this).apply {
+            text = title
+            setTextColor(theme.textPrimary)
+            textSize = 17f
+            gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        })
+
+        card.addView(TextView(this).apply {
+            text = "Swipe vertically to rotate value"
+            setTextColor(theme.textSecondary)
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4), 0, dp(16))
+        })
+
+        // Watch-Crown Rotary Drum Roller
+        var activeValue = current.coerceIn(minV, maxV)
+        val rollerLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dp(180), dp(130))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(22).toFloat()
+                setColor(theme.pillBg)
+                setStroke(2, theme.cardStroke)
+            }
+        }
+
+        val topPreview = TextView(this).apply {
+            text = "${activeValue - 1}$unit"
+            textSize = 14f
+            alpha = 0.35f
+            setTextColor(theme.textSecondary)
+        }
+        val mainCenter = TextView(this).apply {
+            text = "$activeValue$unit"
+            textSize = 34f
+            typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
+            setTextColor(theme.accentPrimary)
+            setPadding(0, dp(4), 0, dp(4))
+        }
+        val bottomPreview = TextView(this).apply {
+            text = "${activeValue + 1}$unit"
+            textSize = 14f
+            alpha = 0.35f
+            setTextColor(theme.textSecondary)
+        }
+
+        rollerLayout.addView(topPreview)
+        rollerLayout.addView(mainCenter)
+        rollerLayout.addView(bottomPreview)
+
+        var lastY = 0f
+        rollerLayout.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    lastY = event.y
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = event.y - lastY
+                    if (abs(dy) > dp(16)) {
+                        val steps = (dy / dp(16)).toInt()
+                        val newVal = (activeValue - steps).coerceIn(minV, maxV)
+                        if (newVal != activeValue) {
+                            activeValue = newVal
+                            hapticTick(v)
+                            mainCenter.text = "$activeValue$unit"
+                            topPreview.text = if (activeValue > minV) "${activeValue - 1}$unit" else "--"
+                            bottomPreview.text = if (activeValue < maxV) "${activeValue + 1}$unit" else "--"
+                        }
+                        lastY = event.y
+                    }
+                    true
+                }
+                else -> true
+            }
+        }
+        card.addView(rollerLayout)
+
+        addSpace(card, dp(20))
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 2f
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        val cancelBtn = createPillButton("Cancel") { dialog.dismiss() }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(6), 0) }
+        }
+        val saveBtn = createAccentPillButton("Apply") {
+            onSelected(activeValue)
+            dialog.dismiss()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(6), 0, 0, 0) }
+        }
+        btnRow.addView(cancelBtn)
+        btnRow.addView(saveBtn)
+        card.addView(btnRow)
+
+        dialog.setContentView(card)
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout(dp(320), ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
+        }
+        dialog.show()
+    }
+
+    private fun showAppSelectionModal(
+        title: String,
+        desc: String,
+        selectedSet: Set<String>,
+        onSave: (Set<String>) -> Unit
+    ) {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+        val rootBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(20))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(28).toFloat()
+                setColor(theme.cardBg)
+                setStroke(2, theme.cardStroke)
+            }
+        }
+
+        rootBox.addView(TextView(this).apply {
+            text = title
+            setTextColor(theme.textPrimary)
+            textSize = 17f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        })
+        rootBox.addView(TextView(this).apply {
+            text = desc
+            setTextColor(theme.textSecondary)
+            textSize = 12f
+            setPadding(0, dp(4), 0, dp(12))
+        })
+
+        val currentSelected = selectedSet.toMutableSet()
+        val scrollApps = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(260))
+        }
+        val appsCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        thread {
+            val allApps = HardwareThermalControl.getInstalledUserApps(this@MainActivity)
+            uiHandler.post {
+                appsCol.removeAllViews()
+                for (app in allApps) {
+                    val row = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(0, dp(8), 0, dp(8))
+                    }
+                    val cb = CheckBox(this@MainActivity).apply {
+                        isChecked = currentSelected.contains(app.packageName)
+                        buttonTintList = ColorStateList.valueOf(theme.accentPrimary)
+                        setOnCheckedChangeListener { _, isChecked ->
+                            if (isChecked) currentSelected.add(app.packageName)
+                            else currentSelected.remove(app.packageName)
+                        }
+                    }
+                    val labelCol = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(8), 0, 0, 0)
+                    }
+                    labelCol.addView(TextView(this@MainActivity).apply {
+                        text = app.label
+                        setTextColor(theme.textPrimary)
+                        textSize = 13.5f
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    })
+                    labelCol.addView(TextView(this@MainActivity).apply {
+                        text = app.packageName
+                        setTextColor(theme.textSecondary)
+                        textSize = 11f
+                    })
+                    row.addView(cb)
+                    row.addView(labelCol)
+                    row.setOnClickListener { cb.toggle() }
+                    appsCol.addView(row)
+                }
+            }
+        }
+        scrollApps.addView(appsCol)
+        rootBox.addView(scrollApps)
+
+        addSpace(rootBox, dp(16))
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 2f
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        val cancelBtn = createPillButton("Cancel") { dialog.dismiss() }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(6), 0) }
+        }
+        val saveBtn = createAccentPillButton("Save") {
+            onSave(currentSelected)
+            dialog.dismiss()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(6), 0, 0, 0) }
+        }
+        btnRow.addView(cancelBtn)
+        btnRow.addView(saveBtn)
+        rootBox.addView(btnRow)
+
+        dialog.setContentView(rootBox)
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout(dp(320), ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
+        }
+        dialog.show()
+    }
+
+    private fun showPermissionModal(title: String, desc: String, actionLabel: String, onAction: () -> Unit) {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(20))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(28).toFloat()
+                setColor(theme.cardBg)
+                setStroke(2, theme.cardStroke)
+            }
+        }
+        card.addView(TextView(this).apply {
+            text = title
+            setTextColor(theme.textPrimary)
+            textSize = 17f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        })
+        card.addView(TextView(this).apply {
+            text = desc
+            setTextColor(theme.textSecondary)
+            textSize = 12.5f
+            setPadding(0, dp(8), 0, dp(20))
+        })
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 2f
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        val cancelBtn = createPillButton("Dismiss") { dialog.dismiss() }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(6), 0) }
+        }
+        val actBtn = createAccentPillButton(actionLabel) {
+            onAction()
+            dialog.dismiss()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(6), 0, 0, 0) }
+        }
+        btnRow.addView(cancelBtn)
+        btnRow.addView(actBtn)
+        card.addView(btnRow)
+
+        dialog.setContentView(card)
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout(dp(320), ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
+        }
+        dialog.show()
+    }
+
+    private fun showThemeModal() {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(20))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(28).toFloat()
+                setColor(theme.cardBg)
+                setStroke(2, theme.cardStroke)
+            }
+        }
+        card.addView(TextView(this).apply {
+            text = "Select Interface Theme"
+            setTextColor(theme.textPrimary)
+            textSize = 17f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setPadding(0, 0, 0, dp(14))
+        })
+
+        val options = listOf(
+            "DEFAULT" to "Default (Warm Alabaster)",
+            "DARK" to "Dark",
+            "MATERIAL_YOU" to "Material You",
+            "AURORA" to "Aurora"
+        )
+
+        for ((key, label) in options) {
+            val row = TextView(this).apply {
+                text = label
+                setTextColor(theme.textPrimary)
+                textSize = 14f
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(16).toFloat()
+                    setColor(if (prefs.getString("appThemeModeV3", "DEFAULT") == key) theme.pillBg else Color.TRANSPARENT)
+                }
+            }
+            row.setOnClickListener {
+                prefs.edit().putString("appThemeModeV3", key).apply()
+                theme = resolveTheme(key)
+                buildFullInterface()
+                dialog.dismiss()
+            }
+            card.addView(row)
+        }
+
+        dialog.setContentView(card)
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout(dp(300), ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
+        }
+        dialog.show()
+    }
+
+    // =========================================================================
+    // DATA LOADERS & HELPERS
     // =========================================================================
     private fun hasUsageStatsPermission(): Boolean {
         val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
@@ -1486,7 +1931,7 @@ class MainActivity : Activity() {
         val hasOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
         val hasNotif = (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) && settings.showNotification
 
-        styleAccessChip(rootChipBox, rootChipLabel, if (hasRoot) "ROOT: OK" else "ROOT: NO", hasRoot)
+        styleAccessChip(rootChipBox, rootChipLabel, if (hasRoot) "ROOT: OK" else "ROOT: FIX", hasRoot)
         styleAccessChip(usageChipBox, usageChipLabel, if (hasUsage) "USAGE: OK" else "USAGE: FIX", hasUsage)
         styleAccessChip(notifChipBox, notifChipLabel, if (hasNotif) "ICON: ON" else "ICON: OFF", hasNotif)
         styleAccessChip(overlayChipBox, overlayChipLabel, if (hasOverlay) "PILL: OK" else "PILL: FIX", hasOverlay)
@@ -1572,7 +2017,7 @@ class MainActivity : Activity() {
                 } else {
                     val curT = (registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 350) ?: 350) / 10
                     val nowLabel = timeFormatter.format(Date(now))
-                    thermalHistoryList = listOf(ThermalPoint(curT, "Live", "Waiting for 60s database snapshot...", nowLabel))
+                    thermalHistoryList = listOf(ThermalPoint(curT, "Live", "Waiting for database snapshot...", nowLabel))
                     tempGraphView.setGraphData(listOf(curT.toFloat(), curT.toFloat()), emptyList(), theme.accentPrimary, theme.danger, "°C")
                     tempScrubReadout.text = "$nowLabel   •   ${curT}°C   •   Live"
                     tempScrubReadout.setTextColor(getColorForTemperature(curT.toFloat()))
@@ -1626,12 +2071,12 @@ class MainActivity : Activity() {
                 if (list.isNotEmpty()) {
                     currentFpsSessionIdx = currentFpsSessionIdx.coerceIn(0, list.size - 1)
                     val s = list[currentFpsSessionIdx]
-                    fpsSessionHeader.text = "${s.app.uppercase()} • AVG ${s.avg} FPS (${s.duration}s)"
+                    fpsSessionHeader.text = "${s.app.uppercase()} • AVG ${s.avg} FPS"
                     fpsScrubReadout.text = "Min: ${s.min} FPS • Avg: ${s.avg} FPS • Peak: ${s.max} FPS • Avg Temp: ${s.avgTemp}°C"
                     fpsGraphView.setGraphData(s.fpsList, s.tempList, theme.good, theme.warn, "")
                 } else {
-                    fpsSessionHeader.text = "NO RECORDED FPS SESSIONS YET"
-                    fpsScrubReadout.text = "Enable the Floating FPS Pill and tap it in-game to record."
+                    fpsSessionHeader.text = "NO RECORDED MATCHES YET"
+                    fpsScrubReadout.text = "Tap Floating Performance Pill during gameplay to record."
                     fpsGraphView.setGraphData(listOf(60f, 90f, 120f, 118f, 120f), emptyList(), theme.good, theme.warn, "")
                 }
             }
@@ -1646,7 +2091,7 @@ class MainActivity : Activity() {
             uiHandler.post {
                 processContainer.removeAllViews()
                 if (cpuProcs.isEmpty() && ramProcs.isEmpty()) {
-                    processContainer.addView(createBodyText("Grant Root access to inspect kernel processes."))
+                    processContainer.addView(createBodyText("Active processes will appear here when permissions are granted."))
                     return@post
                 }
                 cpuProcs.forEach { p ->
@@ -1674,101 +2119,74 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             })
             addView(TextView(context).apply {
-                text = "PID $pid"; setTextColor(theme.accentPrimary); textSize = 11f; typeface = Typeface.MONOSPACE
+                text = "PID $pid"; setTextColor(theme.accentSecondary); textSize = 11f; typeface = Typeface.MONOSPACE
             })
         }
         attachSpringAnimation(row) {
-            AppLogger.logUi("Process Row Tapped", "$label [PID $pid]")
-            AlertDialog.Builder(this@MainActivity)
-                .setTitle(label)
-                .setItems(arrayOf("Pin to Silver Cores (0-3)", "Kill Process (PID $pid)")) { _, w ->
-                    if (w == 0) {
-                        AppLogger.logUi("Process Action", "Pinning PID $pid to Silver Cores")
-                        HardwareThermalControl.pinProcessToEfficiencyCores(pid)
-                    } else {
-                        AppLogger.logUi("Process Action", "Killing PID $pid")
-                        HardwareThermalControl.killProcess(pid)
-                        refreshProcessesList()
-                    }
+            showPermissionModal(
+                title = label,
+                desc = "Assign this process to efficiency cores to minimize heat, or terminate it immediately.",
+                actionLabel = "Pin to Silver Cores",
+                onAction = {
+                    HardwareThermalControl.pinProcessToEfficiencyCores(pid)
+                    refreshProcessesList()
                 }
-                .show()
+            )
         }
         return row
     }
 
-    private fun showThemePickerDialog() {
-        val modes = arrayOf("DEFAULT", "MATERIAL_YOU", "AURORA", "DARK")
-        val names = arrayOf("Default (Vibrant Daylight)", "Material You (Dynamic System)", "Aurora Violet", "Dark Mode")
-        AlertDialog.Builder(this)
-            .setTitle("Select App Theme")
-            .setItems(names) { _, which ->
-                prefs.edit().putString("appThemeModeV2", modes[which]).apply()
-                theme = resolveTheme(modes[which])
-                AppLogger.logUi("Theme Changed", "Applied ${theme.name} theme")
-                buildFullInterface()
-            }
-            .show()
-    }
-
     private fun showFpsSessionDialog() {
         if (fpsSessionsList.isEmpty()) {
-            Toast.makeText(this, "No recorded sessions yet", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No recorded matches found.", Toast.LENGTH_SHORT).show()
             return
         }
-        val labels = fpsSessionsList.mapIndexed { i, s -> "#${i + 1} ${s.app} — Avg ${s.avg} FPS | Max ${s.max} FPS (${s.avgTemp}°C)" }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Recorded FPS Matches")
-            .setItems(labels) { _, which ->
-                currentFpsSessionIdx = which
-                AppLogger.logUi("FPS Session Selected", labels[which])
-                loadFpsGraphData()
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(28).toFloat()
+                setColor(theme.cardBg)
+                setStroke(2, theme.cardStroke)
             }
-            .show()
-    }
+        }
+        card.addView(TextView(this).apply {
+            text = "Recorded Match History"
+            setTextColor(theme.textPrimary)
+            textSize = 17f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setPadding(0, 0, 0, dp(12))
+        })
 
-    private fun showAppPicker(title: String, current: Set<String>, includeBgmi: Boolean, onSave: (Set<String>) -> Unit) {
-        thread {
-            val pm = packageManager
-            val apps = pm.getInstalledApplications(0)
-                .filter { (it.flags and ApplicationInfo.FLAG_SYSTEM) == 0 || it.packageName.contains("pubg") || it.packageName.contains("tencent") }
-                .sortedBy { it.loadLabel(pm).toString().lowercase() }
-            val names = apps.map { "${it.loadLabel(pm)} (${it.packageName})" }.toTypedArray()
-            val pkgs = apps.map { it.packageName }
-            val checked = BooleanArray(pkgs.size) { current.contains(pkgs[it]) }
-            val selected = current.toMutableSet()
-
-            uiHandler.post {
-                val b = AlertDialog.Builder(this)
-                    .setTitle(title)
-                    .setMultiChoiceItems(names, checked) { _, w, isChecked ->
-                        if (isChecked) selected.add(pkgs[w]) else selected.remove(pkgs[w])
-                    }
-                    .setPositiveButton("Save") { _, _ -> onSave(selected) }
-                    .setNegativeButton("Cancel", null)
-                if (includeBgmi) {
-                    b.setNeutralButton("+ Add BGMI") { _, _ ->
-                        selected.add("com.pubg.imobile"); onSave(selected)
-                    }
+        fpsSessionsList.forEachIndexed { i, s ->
+            val row = TextView(this).apply {
+                text = "#${i + 1}  ${s.app}  •  Avg ${s.avg} FPS  •  Peak ${s.max} FPS"
+                setTextColor(theme.textPrimary)
+                textSize = 13.5f
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(14).toFloat()
+                    setColor(if (i == currentFpsSessionIdx) theme.pillBg else Color.TRANSPARENT)
                 }
-                b.show()
             }
+            row.setOnClickListener {
+                currentFpsSessionIdx = i
+                loadFpsGraphData()
+                dialog.dismiss()
+            }
+            card.addView(row)
         }
-    }
 
-    private fun showNumberDialog(title: String, current: Int, minV: Int, maxV: Int, onSave: (Int) -> Unit) {
-        val input = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText(current.toString())
-            setPadding(dp(20), dp(14), dp(20), dp(14))
+        dialog.setContentView(card)
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout(dp(320), ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
         }
-        AlertDialog.Builder(this)
-            .setTitle("$title ($minV - $maxV)")
-            .setView(input)
-            .setPositiveButton("Save") { _, _ ->
-                onSave(input.text.toString().toIntOrNull()?.coerceIn(minV, maxV) ?: current)
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        dialog.show()
     }
 
     private fun exportLogsToFile() {
@@ -1778,16 +2196,41 @@ class MainActivity : Activity() {
             val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             if (!dir.exists()) dir.mkdirs()
             File(dir, name).writeText(txt)
-            AppLogger.log("[EXPORT] Saved diagnostic log to Downloads/$name")
-            Toast.makeText(this, "Saved to Downloads/$name", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Log saved to Downloads/$name", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
     // =========================================================================
-    // UI COMPONENT BUILDERS
+    // UI BUILDER HELPERS (With Visible Switch Tracks)
     // =========================================================================
+    private fun createCustomSwitch(checked: Boolean, onToggle: (Boolean) -> Unit): Switch {
+        val sw = Switch(this)
+        sw.isChecked = checked
+
+        // Clearly visible track states so the switch never looks like an isolated dot
+        val trackThumbColor = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(theme.accentPrimary, Color.parseColor("#9CA3AF"))
+        )
+        val trackBgColor = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(Color.argb(85, Color.red(theme.accentPrimary), Color.green(theme.accentPrimary), Color.blue(theme.accentPrimary)), Color.argb(60, 156, 163, 175))
+        )
+        sw.thumbTintList = trackThumbColor
+        sw.trackTintList = trackBgColor
+
+        sw.setOnCheckedChangeListener { v, isChecked ->
+            v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(60).withEndAction {
+                v.animate().scaleX(1f).scaleY(1f).setDuration(140).setInterpolator(OvershootInterpolator()).start()
+            }.start()
+            hapticTap(v)
+            onToggle(isChecked)
+        }
+        return sw
+    }
+
     private fun createAccessChip(iconFile: String, label: String, onClick: () -> Unit): Pair<LinearLayout, TextView> {
         val tv = TextView(this).apply {
             text = label
@@ -1838,17 +2281,11 @@ class MainActivity : Activity() {
                 text = subtitle
                 setTextColor(theme.textSecondary)
                 textSize = 11f
-                setPadding(0, 2, 0, 0)
+                setPadding(0, dp(2), 0, 0)
             })
             addView(textCol)
 
-            val sw = Switch(context).apply {
-                isChecked = checked
-                setOnCheckedChangeListener { v, isChecked ->
-                    hapticTap(v)
-                    onToggle(isChecked)
-                }
-            }
+            val sw = createCustomSwitch(checked, onToggle)
             addView(sw)
         }
     }
@@ -1897,18 +2334,18 @@ class MainActivity : Activity() {
 
     private fun createCard() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(16), dp(16), dp(16))
+        setPadding(dp(18), dp(18), dp(18), dp(18))
         background = GradientDrawable().apply {
             cornerRadius = dp(24).toFloat()
             setColor(theme.cardBg)
             setStroke(2, theme.cardStroke)
         }
-        elevation = if (theme.isLight) dp(3).toFloat() else dp(1).toFloat()
+        elevation = if (theme.isLight) dp(2).toFloat() else 0f
     }
 
     private fun createSectionLabel(txt: String) = TextView(this).apply {
         text = txt
-        setTextColor(theme.accentPrimary)
+        setTextColor(theme.accentSecondary)
         textSize = 11f
         typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         letterSpacing = 0.06f
@@ -1937,8 +2374,24 @@ class MainActivity : Activity() {
         attachSpringAnimation(this, onClick)
     }
 
+    private fun createAccentPillButton(label: String, onClick: () -> Unit) = TextView(this).apply {
+        text = label
+        setTextColor(Color.WHITE)
+        textSize = 12f
+        gravity = Gravity.CENTER
+        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        setPadding(dp(16), dp(10), dp(16), dp(10))
+        background = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(theme.accentPrimary, theme.accentSecondary)
+        ).apply {
+            cornerRadius = dp(20).toFloat()
+        }
+        attachSpringAnimation(this, onClick)
+    }
+
     private fun createDivider() = View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2).apply { setMargins(0, dp(8), 0, dp(8)) }
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2).apply { setMargins(0, dp(10), 0, dp(10)) }
         setBackgroundColor(theme.cardStroke)
     }
 
@@ -1949,7 +2402,7 @@ class MainActivity : Activity() {
     private fun toggleOverlayPill(enable: Boolean) {
         if (enable && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-            Toast.makeText(this, "Grant Overlay Permission first", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Please grant screen overlay permission.", Toast.LENGTH_LONG).show()
             return
         }
         if (enable) startService(Intent(this, FpsOverlayService::class.java))
