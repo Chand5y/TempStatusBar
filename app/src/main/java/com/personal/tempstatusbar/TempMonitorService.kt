@@ -162,6 +162,9 @@ class TempMonitorService : Service() {
                 "ACTION_TOGGLE_SMART_GOVERNOR" -> {
                     isSmartGovernorActive = intent.getBooleanExtra("state", false)
                 }
+                "ACTION_FORCE_NOTIF_UPDATE" -> {
+                    refreshBatteryStateAndNotify()
+                }
             }
         }
     }
@@ -180,10 +183,21 @@ class TempMonitorService : Service() {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction("ACTION_TOGGLE_SMART_GOVERNOR")
+            addAction("ACTION_FORCE_NOTIF_UPDATE")
         }, Context.RECEIVER_NOT_EXPORTED)
 
         backgroundHandler.post(dbLogRunnable)
         backgroundHandler.post(gamingEngineRunnable)
+        backgroundHandler.post(powerRunnable)
+    }
+
+    private fun refreshBatteryStateAndNotify() {
+        val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        if (sticky != null) {
+            lastTemp = sticky.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
+            lastPlugged = sticky.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+        }
+        pushNotificationUpdate()
     }
 
     private fun triggerDatabaseSnapshot(temp: Int, isCharging: Boolean, screenOn: Boolean) {
@@ -255,13 +269,13 @@ class TempMonitorService : Service() {
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val wattDelta = abs(stats.wattage - lastLoggedWatts)
         val maDelta = abs(stats.currentMa - lastLoggedMa)
-        if (wattDelta >= 0.5 || maDelta >= 50) { lastLoggedWatts = stats.wattage; lastLoggedMa = stats.currentMa; pushNotificationUpdate() }
+        if (wattDelta >= 0.5 || maDelta >= 50) {
+            lastLoggedWatts = stats.wattage; lastLoggedMa = stats.currentMa
+            pushNotificationUpdate()
+        }
     }
 
-    private fun pushNotificationUpdate() {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-        if (!settings.showNotification) { manager?.cancel(NOTIF_ID); return }
-
+    private fun buildLiveNotification(): Notification {
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
         val bypassStr = if (HardwareThermalControl.isManualBypassActive && stats.isCharging) "\n🛡️ BYPASS" else ""
 
@@ -273,15 +287,23 @@ class TempMonitorService : Service() {
             if (stats.isCharging) "⚡ Charging$bypassStr" else "🔋 Discharging$bypassStr"
         }
 
-        val notif = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Battery: $lastTemp°C")
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("Battery: ${if (lastTemp > 0) "$lastTemp°C" else "--°C"}")
             .setContentText(bodyText)
             .setSmallIcon(drawIcon(if (lastTemp > 0) "$lastTemp°" else "--"))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(getLaunchIntent())
             .build()
-        manager?.notify(NOTIF_ID, notif)
+    }
+
+    private fun pushNotificationUpdate() {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        if (!settings.showNotification) {
+            manager?.cancel(NOTIF_ID)
+            return
+        }
+        manager?.notify(NOTIF_ID, buildLiveNotification())
     }
 
     private fun getLaunchIntent(): PendingIntent {
@@ -296,15 +318,21 @@ class TempMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notif = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Thermal Monitor Active")
-            .setSmallIcon(drawIcon("--"))
-            .build()
+        // Read live temperature immediately so startForeground never overwrites the icon with "--"
+        val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        if (sticky != null) {
+            lastTemp = sticky.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
+            lastPlugged = sticky.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+        }
+        val notif = buildLiveNotification()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
             startForeground(NOTIF_ID, notif)
+        }
+        if (!settings.showNotification) {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)?.cancel(NOTIF_ID)
         }
         return START_STICKY
     }
