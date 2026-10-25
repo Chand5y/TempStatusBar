@@ -11,34 +11,64 @@ android {
         applicationId "com.personal.tempstatusbar"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "2.0"
     }
 
     buildTypes {
         release {
             minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
     kotlinOptions {
         jvmTarget = '17'
+    }
+
+    // Bundles the root ../icons folder directly into APK assets (preserving exact capital/small letters)
+    sourceSets {
+        main {
+            assets.srcDirs += ['../icons', 'src/main/assets']
+        }
+    }
+
+    // Automatically applies ../icons/AppIcon.png as the App Drawer Launcher Icon
+    preBuild.doFirst {
+        def customAppIcon = file('../icons/AppIcon.png')
+        if (customAppIcon.exists()) {
+            ['mipmap-mdpi', 'mipmap-hdpi', 'mipmap-xhdpi', 'mipmap-xxhdpi', 'mipmap-xxxhdpi', 'drawable'].each { dirName ->
+                def targetDir = file("src/main/res/${dirName}")
+                if (!targetDir.exists()) {
+                    targetDir.mkdirs()
+                }
+                targetDir.listFiles()?.each { existingFile ->
+                    if (existingFile.name.startsWith("ic_launcher") && existingFile.name.endsWith(".xml")) {
+                        existingFile.delete()
+                    }
+                }
+                copy {
+                    from customAppIcon
+                    into targetDir
+                    rename { 'ic_launcher.png' }
+                }
+                copy {
+                    from customAppIcon
+                    into targetDir
+                    rename { 'ic_launcher_round.png' }
+                }
+            }
+        }
     }
 }
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
 }
-// Automatically bundles TempStatusBar/icons/ (preserving capital/small letters) and sets AppIcon.png as the App Drawer Icon
-android.sourceSets.main.assets.srcDirs += ['../icons']
-
-tasks.register('syncCustomAppIcon', Copy) {
-    from('../icons/AppIcon.png')
-    into('src/main/res/drawable')
-    rename { 'ic_launcher_custom.png' }
-}
-preBuild.dependsOn(syncCustomAppIcon)
