@@ -1,7 +1,6 @@
 package com.personal.tempstatusbar
 
 import android.Manifest
-import android.animation.ValueAnimator
 import android.app.*
 import android.content.Context
 import android.content.Intent
@@ -87,6 +86,7 @@ class MainActivity : Activity() {
     private lateinit var processContainer: LinearLayout
     private lateinit var logConsoleText: TextView
     private lateinit var logScrollBox: ScrollView
+    private lateinit var autoTestStatusBanner: TextView
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private var isUiActive = false
@@ -169,18 +169,72 @@ class MainActivity : Activity() {
         val savedTheme = prefs.getString("appThemeMode", "DEFAULT") ?: "DEFAULT"
         theme = resolveTheme(savedTheme)
 
-        AppLogger.log("📱 [UI] MainActivity opened | Theme: ${theme.name}")
+        AppLogger.log("📱 [UI] MainActivity launched | Theme: ${theme.name}")
         buildFullInterface()
         startAndSyncService()
+    }
 
-        // Run initial hardware audit automatically on first launch so the log is populated with real data immediately
-        HardwareThermalControl.runFullKernelAudit {
-            uiHandler.post {
-                if (::logConsoleText.isInitialized) {
+    // =========================================================================
+    // HANDS-FREE AUTOMATED TEST RUNNER UI
+    // =========================================================================
+    private fun startHandsFreeAutoTest() {
+        if (HardwareThermalControl.isAutoTestRunning) {
+            Toast.makeText(this, "Automated test is already running...", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Switch straight to Logs & Tasks tab so user can watch live execution hands-free
+        switchTab(3, animate = true)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        val hasUsage = hasUsageStatsPermission()
+        val hasOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
+        val hasNotif = Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+        autoTestStatusBanner.visibility = View.VISIBLE
+        autoTestStatusBanner.text = "🤖 HANDS-FREE AUTO-TEST RUNNING...\nKeep phone untouched (~18s)"
+
+        HardwareThermalControl.runAutomatedTestSuite(
+            context = applicationContext,
+            hasUsagePerm = hasUsage,
+            hasOverlayPerm = hasOverlay,
+            hasNotifPerm = hasNotif,
+            onProgress = { stage, total, title ->
+                uiHandler.post {
+                    autoTestStatusBanner.text = "🤖 STAGE $stage/$total — KEEP PHONE UNTOUCHED\n$title"
                     logConsoleText.text = AppLogger.getLogs()
+                    logScrollBox.post { logScrollBox.fullScroll(View.FOCUS_DOWN) }
+                }
+            },
+            onFinished = { passed, failed, manualActions, exportedFile ->
+                uiHandler.post {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    hapticTap()
+                    autoTestStatusBanner.text = "🏁 AUTO-TEST DONE: $passed PASSED • $failed FAILED\nSaved: $exportedFile"
+                    logConsoleText.text = AppLogger.getLogs()
+                    logScrollBox.post { logScrollBox.fullScroll(View.FOCUS_DOWN) }
+
+                    val summaryMsg = StringBuilder()
+                    summaryMsg.append("✅ Passed Checks: $passed\n")
+                    summaryMsg.append("❌ Failed Checks: $failed\n")
+                    summaryMsg.append("💾 Auto-Saved Report:\n$exportedFile\n\n")
+                    if (manualActions.isNotEmpty()) {
+                        summaryMsg.append("⚠️ Manual Actions Needed:\n")
+                        manualActions.forEachIndexed { idx, act ->
+                            summaryMsg.append("${idx + 1}. $act\n")
+                        }
+                    } else {
+                        summaryMsg.append("✨ All permissions & hardware controls verified!")
+                    }
+
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("🤖 Hands-Free Auto-Test Report")
+                        .setMessage(summaryMsg.toString().trim())
+                        .setPositiveButton("OK", null)
+                        .show()
                 }
             }
-        }
+        )
     }
 
     // =========================================================================
@@ -265,7 +319,6 @@ class MainActivity : Activity() {
                 } else resolveTheme("DEFAULT")
             }
             else -> ThemePalette(
-                // Classy, Modern Obsidian Titanium & Royal Sapphire Default Theme
                 name = "Default",
                 bgTop = Color.parseColor("#111318"),
                 bgBottom = Color.parseColor("#181C24"),
@@ -285,9 +338,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // =========================================================================
-    // INTERACTIVE ANIMATIONS & HAPTICS
-    // =========================================================================
     private fun hapticTap(view: View? = window?.decorView) {
         view?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     }
@@ -343,14 +393,13 @@ class MainActivity : Activity() {
             background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(theme.bgTop, theme.bgBottom))
         }
 
-        // Top Content Wrapper (Header + Access Chips + Active Tab Frame)
         val mainBody = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
             setPadding(34, 34, 34, 0)
         }
 
-        // 1. Header Bar
+        // 1. Header Bar with Auto-Test & Theme Buttons
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -362,27 +411,37 @@ class MainActivity : Activity() {
         titleCol.addView(TextView(this).apply {
             text = "TempStatusBar Pro"
             setTextColor(theme.textPrimary)
-            textSize = 20f
+            textSize = 19.5f
             typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
             letterSpacing = 0.02f
         })
         titleCol.addView(TextView(this).apply {
             text = "${HardwareThermalControl.getHardwareInfo()} • ${theme.name}"
             setTextColor(theme.textSecondary)
-            textSize = 12f
+            textSize = 11.5f
             setPadding(0, 3, 0, 0)
         })
 
-        val themeBtn = createPillButton("Theme: ${theme.name}") {
+        val autoTestTopBtn = createPillButton("🤖 Auto-Test") {
+            startHandsFreeAutoTest()
+        }.apply {
+            setPadding(24, 15, 24, 15)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 10, 0)
+            }
+        }
+
+        val themeBtn = createPillButton("Theme") {
             AppLogger.logUi("Theme Button", "Opened Theme Selector")
             showThemePickerDialog()
-        }.apply { setPadding(28, 16, 28, 16) }
+        }.apply { setPadding(24, 15, 24, 15) }
 
         header.addView(titleCol)
+        header.addView(autoTestTopBtn)
         header.addView(themeBtn)
         mainBody.addView(header)
 
-        addSpace(mainBody, 20)
+        addSpace(mainBody, 18)
 
         // 2. Access Status Strip
         val accessRow = LinearLayout(this).apply {
@@ -423,7 +482,7 @@ class MainActivity : Activity() {
         accessRow.addView(overlayChip)
         mainBody.addView(accessRow)
 
-        addSpace(mainBody, 20)
+        addSpace(mainBody, 18)
 
         // 3. Center Tab View Container
         val contentFrame = FrameLayout(this).apply {
@@ -480,7 +539,7 @@ class MainActivity : Activity() {
             }
             val txt = TextView(this).apply {
                 text = "$icon  $label"
-                textSize = 12f
+                textSize = 11.5f
                 gravity = Gravity.CENTER
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             }
@@ -550,7 +609,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // TAB 1: MONITOR (Status Bar Temp, Interactive Thermal Graph, Thresholds)
+    // TAB 1: MONITOR
     // =========================================================================
     private fun buildMonitorTab(): ScrollView {
         val scroll = createScroll()
@@ -611,7 +670,6 @@ class MainActivity : Activity() {
 
         addSpace(col, 22)
 
-        // Interactive Temperature Graph Card
         val graphCard = createCard()
         val gHead = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -667,7 +725,6 @@ class MainActivity : Activity() {
 
         addSpace(col, 22)
 
-        // Thresholds Card
         val threshCard = createCard()
         threshCard.addView(createSectionLabel("THERMAL & CHARGING THRESHOLDS"))
         threshCard.addView(createSwitch("Enable Max Charge % Cutoff", settings.chargeLimitEnabled) { on ->
@@ -731,7 +788,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // TAB 2: HARDWARE (Per-Core Control, Prime Throttle, GPU, Refresh Rate)
+    // TAB 2: HARDWARE
     // =========================================================================
     private fun buildHardwareTab(): ScrollView {
         val scroll = createScroll()
@@ -748,7 +805,7 @@ class MainActivity : Activity() {
         gpuBtns.addView(createPillButton("⚡ Force 670MHz Nuclear") {
             AppLogger.logUi("GPU Control", "User tapped Force 670MHz Nuclear")
             HardwareThermalControl.forceUnthrottleGPU()
-            Toast.makeText(this, "GPU Forced to 670MHz (Check Logs for verification)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "GPU Forced to 670MHz", Toast.LENGTH_SHORT).show()
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, 6, 0) } })
 
         gpuBtns.addView(createPillButton("🌱 Restore Auto GPU") {
@@ -841,7 +898,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // TAB 3: GAMING & FPS (Interactive FPS Graph + Nuclear 120 FPS Controls)
+    // TAB 3: GAMING & FPS
     // =========================================================================
     private fun buildGamingTab(): ScrollView {
         val scroll = createScroll()
@@ -940,13 +997,12 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // TAB 4: LOGS & TASKS (Verified Action Log + Kernel Process Manager)
+    // TAB 4: LOGS & TASKS (With Hands-Free Automated Test Runner)
     // =========================================================================
     private fun buildTasksAndLogTab(): ScrollView {
         val scroll = createScroll()
         val col = createCol()
 
-        // Deep Diagnostic & Verification Logger Card (Top of Tab 4 for instant visibility)
         val logCard = createCard()
         val logHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -959,19 +1015,30 @@ class MainActivity : Activity() {
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
-        logHeader.addView(createPillButton("🔬 Run Audit") {
-            AppLogger.logUi("Run Kernel Audit Button", "Triggered manual hardware verification")
-            HardwareThermalControl.runFullKernelAudit {
-                uiHandler.post {
-                    logConsoleText.text = AppLogger.getLogs()
-                    logScrollBox.post { logScrollBox.fullScroll(View.FOCUS_DOWN) }
-                }
-            }
-        }.apply { setPadding(24, 12, 24, 12) })
+        logHeader.addView(createPillButton("🤖 Run Auto-Test") {
+            startHandsFreeAutoTest()
+        }.apply { setPadding(26, 14, 26, 14) })
         logCard.addView(logHeader)
 
+        autoTestStatusBanner = TextView(this).apply {
+            visibility = View.GONE
+            setTextColor(theme.good)
+            textSize = 11.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setPadding(24, 16, 24, 16)
+            background = GradientDrawable().apply {
+                cornerRadius = 18f
+                setColor(Color.argb(30, Color.red(theme.good), Color.green(theme.good), Color.blue(theme.good)))
+                setStroke(2, theme.good)
+            }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 12, 0, 0)
+            }
+        }
+        logCard.addView(autoTestStatusBanner)
+
         logScrollBox = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 460).apply { setMargins(0, 14, 0, 14) }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 480).apply { setMargins(0, 14, 0, 14) }
             setPadding(22, 18, 22, 18)
             background = GradientDrawable().apply {
                 cornerRadius = 20f
@@ -1011,7 +1078,6 @@ class MainActivity : Activity() {
 
         addSpace(col, 22)
 
-        // Live Kernel Process & RAM Manager Card
         val procCard = createCard()
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         head.addView(TextView(this).apply {
@@ -1024,7 +1090,7 @@ class MainActivity : Activity() {
         head.addView(createPillButton("Purge RAM") {
             AppLogger.logUi("Purge RAM Button", "User requested kernel drop_caches=3")
             HardwareThermalControl.clearRamCaches()
-            Toast.makeText(this, "RAM Purge Executed (Verified in Log above)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "RAM Purge Executed", Toast.LENGTH_SHORT).show()
             refreshProcessesList()
         }.apply { setPadding(22, 10, 22, 10) })
         procCard.addView(head)
@@ -1041,7 +1107,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // INTERACTIVE TOUCH-DRAGGABLE GRAPH VIEW WITH HAPTIC SCRUBBING
+    // INTERACTIVE TOUCH-DRAGGABLE GRAPH VIEW
     // =========================================================================
     inner class InteractiveGraphView(
         context: Context,
@@ -1390,9 +1456,6 @@ class MainActivity : Activity() {
         return row
     }
 
-    // =========================================================================
-    // DIALOGS & LOG EXPORT
-    // =========================================================================
     private fun showThemePickerDialog() {
         val modes = arrayOf("DEFAULT", "MATERIAL_YOU", "LIGHT", "DARK")
         val names = arrayOf("Default (Obsidian Titanium)", "Material You (Dynamic System)", "Light Mode", "Dark Mode")
@@ -1483,7 +1546,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // UI COMPONENT BUILDERS (With Spring Touch Animations)
+    // UI COMPONENT BUILDERS
     // =========================================================================
     private fun createAccessChip(label: String, onClick: () -> Unit): TextView {
         return TextView(this).apply {
