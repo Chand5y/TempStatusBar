@@ -24,6 +24,7 @@ class FpsOverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: TextView
     private lateinit var dbHelper: DatabaseHelper
+    private lateinit var settings: SettingsManager
     private var isServiceActive = true
     private var isRecording = false
     private var sessionStartTime = 0L
@@ -55,9 +56,9 @@ class FpsOverlayService : Service() {
         super.onCreate()
         isRunning = true
         dbHelper = DatabaseHelper(this)
+        settings = SettingsManager(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        // Ensure showTempInFpsOverlay is initialized to true on first install
         val prefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
         if (!prefs.contains("showTempInFpsOverlay")) {
             prefs.edit().putBoolean("showTempInFpsOverlay", true).apply()
@@ -171,20 +172,18 @@ class FpsOverlayService : Service() {
 
             if (HardwareThermalControl.isRootAvailable()) {
                 thread {
-                    try {
-                        val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys window | grep -E 'mCurrentFocus|topResumedActivity'"))
-                        val reader = BufferedReader(InputStreamReader(p.inputStream))
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
-                            val match = Regex("""([a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+)""").find(line!!)
-                            val foundPkg = match?.value
-                            if (foundPkg != null && !foundPkg.contains("tempstatusbar") && !foundPkg.contains("miui.home")) {
-                                foregroundApp = AppLabelHelper.getAppName(applicationContext, foundPkg)
-                                break
-                            }
-                        }
-                        p.waitFor()
-                    } catch (e: Exception) { foregroundApp = "Active App" }
+                    val foundPkg = HardwareThermalControl.getForegroundPackageRoot()
+                    if (foundPkg.isNotEmpty() && !foundPkg.contains("miui.home")) {
+                        foregroundApp = AppLabelHelper.getAppName(applicationContext, foundPkg)
+                    } else {
+                        foregroundApp = "Active Game"
+                    }
+                    // Auto-engage Turbo Mode when recording a match so CPU/GPU/120Hz locks are guaranteed active!
+                    AppLogger.log("🔴 [FPS RECORDING STARTED] Target: $foregroundApp -> Engaging Turbo Mode Locks")
+                    HardwareThermalControl.setPeakPerformanceMode(true)
+                    if (foundPkg.isNotEmpty()) {
+                        HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, foundPkg)
+                    }
                 }
             } else {
                 foregroundApp = "Android System (Non-Root)"
@@ -194,10 +193,10 @@ class FpsOverlayService : Service() {
 
     private fun startHardwarePoller() {
         val prefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
+        var tickCounter = 0
 
         thread {
             while (isServiceActive) {
-                // Default is now true so it matches the UI toggle on fresh install
                 val showTemp = prefs.getBoolean("showTempInFpsOverlay", true)
                 val hasRoot = HardwareThermalControl.isRootAvailable()
 
@@ -215,13 +214,21 @@ class FpsOverlayService : Service() {
                     fpsRaw = nonRootCurrentFps
                 }
 
-                // Always read battery temp reliably via sticky broadcast (instant, zero root overhead)
                 val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
                 tempRaw = batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)?.div(10)
 
                 if (isRecording) {
                     if (fpsRaw != null && fpsRaw > 0) fpsReadings.add(fpsRaw)
                     if (tempRaw != null && tempRaw > 0) tempReadings.add(tempRaw)
+
+                    // Every 2 seconds during active recording, enforce the read-only 3.18GHz / 670MHz / 120Hz heartbeat
+                    tickCounter++
+                    if (hasRoot && tickCounter % 2 == 0) {
+                        val curT = tempRaw ?: 37
+                        if (curT < settings.gameThrottleTemp) {
+                            HardwareThermalControl.enforceNuclearHeartbeat(curT)
+                        }
+                    }
                 }
 
                 HardwareThermalControl.liveFps = fpsRaw ?: -1
@@ -252,6 +259,7 @@ class FpsOverlayService : Service() {
             val downsampledFps = fpsReadings.filterIndexed { index, _ -> index % step == 0 }.take(100).joinToString(",")
             val downsampledTemp = tempReadings.filterIndexed { index, _ -> index % step == 0 }.take(100).joinToString(",")
 
+            AppLogger.log("⏹️ [FPS RECORDING SAVED] $foregroundApp (${duration}s) | Avg: $avg FPS | Peak: $max FPS | Min: $min FPS | AvgTemp: ${avgT}°C")
             dbHelper.saveFpsSession(foregroundApp, duration, min, max, avg, avgT, downsampledFps, downsampledTemp)
         }
     }
