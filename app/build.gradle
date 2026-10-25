@@ -11,8 +11,8 @@ android {
         applicationId "com.personal.tempstatusbar"
         minSdk 26
         targetSdk 34
-        versionCode 3
-        versionName "2.1"
+        versionCode 4
+        versionName "2.2"
     }
 
     buildTypes {
@@ -37,11 +37,9 @@ android {
         }
     }
 
-    // Forces ../icons/AppIcon.png as the real Android Launcher & Installer Icon
     preBuild.doFirst {
         def customAppIcon = file('../icons/AppIcon.png')
         if (customAppIcon.exists()) {
-            // 1. Delete adaptive icon XML folders (mipmap-anydpi-v26) that override PNGs with the fire icon
             def resDir = file("src/main/res")
             if (resDir.exists()) {
                 resDir.listFiles()?.each { subDir ->
@@ -51,7 +49,6 @@ android {
                 }
             }
 
-            // 2. Copy AppIcon.png into all mipmap and drawable folders
             ['mipmap-mdpi', 'mipmap-hdpi', 'mipmap-xhdpi', 'mipmap-xxhdpi', 'mipmap-xxxhdpi', 'drawable'].each { dirName ->
                 def targetDir = file("src/main/res/${dirName}")
                 if (!targetDir.exists()) {
@@ -73,15 +70,18 @@ android {
                     rename { 'ic_launcher_round.png' }
                 }
             }
+        }
 
-            // 3. Ensure AndroidManifest.xml points to @mipmap/ic_launcher instead of the fire icon
-            def manifestFile = file("src/main/AndroidManifest.xml")
-            if (manifestFile.exists()) {
-                def text = manifestFile.getText("UTF-8")
-                text = text.replaceAll('android:icon="[^"]*"', 'android:icon="@mipmap/ic_launcher"')
-                text = text.replaceAll('android:roundIcon="[^"]*"', 'android:roundIcon="@mipmap/ic_launcher_round"')
-                manifestFile.write(text, "UTF-8")
+        // Ensure AndroidManifest.xml has @mipmap/ic_launcher and QUERY_ALL_PACKAGES for Add Games picker
+        def manifestFile = file("src/main/AndroidManifest.xml")
+        if (manifestFile.exists()) {
+            def text = manifestFile.getText("UTF-8")
+            text = text.replaceAll('android:icon="[^"]*"', 'android:icon="@mipmap/ic_launcher"')
+            text = text.replaceAll('android:roundIcon="[^"]*"', 'android:roundIcon="@mipmap/ic_launcher_round"')
+            if (!text.contains("QUERY_ALL_PACKAGES")) {
+                text = text.replace("<application", "<uses-permission android:name=\"android.permission.QUERY_ALL_PACKAGES\" />\n    <application")
             }
+            manifestFile.write(text, "UTF-8")
         }
     }
 }
