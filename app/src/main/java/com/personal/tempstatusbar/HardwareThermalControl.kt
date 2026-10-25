@@ -23,7 +23,7 @@ import kotlin.math.abs
 data class RamProc(val name: String, val sizeMb: Int, val pid: Int)
 data class ProcessData(val pid: Int, val name: String, val cpu: String)
 data class CoreStatus(val coreId: Int, val online: Boolean, val freqText: String)
-data class AppEntry(val label: String, val packageName: String)
+data class AppEntry(val label: String, val packageName: String, val isSelected: Boolean = false)
 
 object HardwareThermalControl {
     private var toneGen: ToneGenerator? = null
@@ -41,7 +41,7 @@ object HardwareThermalControl {
     private var cachedRootState: Boolean? = null
     private var lastRootCheckTime = 0L
 
-    private var isPeakPerformanceActive = false
+    var isPeakPerformanceActive = false; private set
     private var isPrimeCoreThrottled: Boolean? = null
     private var lastOptimizedGame = ""
 
@@ -61,7 +61,7 @@ object HardwareThermalControl {
         }
     }
 
-    // Converts qs_fps.png or qs_info.png into a true Alpha-Mask Silhouette so Android Quick Settings never draws a solid white square!
+    // Creates an alpha-masked silhouette icon from qs_fps.png / qs_info.png for Quick Settings tiles
     fun loadQuickTileIcon(context: Context, exactFileName: String): Icon? {
         try {
             val candidates = listOf(exactFileName, "icons/$exactFileName")
@@ -81,24 +81,20 @@ object HardwareThermalControl {
             val pixels = IntArray(w * h)
             src.getPixels(pixels, 0, w, 0, 0, w, h)
 
-            val corner = pixels[0]
-            val cornerLum = (Color.red(corner) + Color.green(corner) + Color.blue(corner)) / 3
-
             for (i in pixels.indices) {
                 val px = pixels[i]
                 val a = Color.alpha(px)
-                if (a < 30) {
+                val r = Color.red(px)
+                val g = Color.green(px)
+                val b = Color.blue(px)
+                val brightness = (r + g + b) / 3
+
+                // Convert dark backgrounds to transparent, and light/white artwork to visible silhouette
+                if (a < 30 || brightness < 60) {
                     pixels[i] = Color.TRANSPARENT
                 } else {
-                    val lum = (Color.red(px) + Color.green(px) + Color.blue(px)) / 3
-                    // Strip background based on distance from corner luminance
-                    val diff = abs(lum - cornerLum)
-                    if (diff < 38) {
-                        pixels[i] = Color.TRANSPARENT
-                    } else {
-                        val alpha = (diff * 2).coerceIn(80, 255)
-                        pixels[i] = Color.argb(alpha, 255, 255, 255)
-                    }
+                    val alphaOut = (brightness * (a / 255f)).toInt().coerceIn(0, 255)
+                    pixels[i] = Color.argb(alphaOut, 255, 255, 255)
                 }
             }
             out.setPixels(pixels, 0, w, 0, 0, w, h)
@@ -108,12 +104,11 @@ object HardwareThermalControl {
         }
     }
 
-    // Discovers ALL user-installed apps & games on Android 11-15 using Launcher Intents + Root 'pm list packages -3' fallback
-    fun getInstalledUserApps(context: Context): List<AppEntry> {
+    // Pinned sort: selected apps appear first at the top, followed by unselected apps alphabetically
+    fun getInstalledUserApps(context: Context, selectedSet: Set<String> = emptySet()): List<AppEntry> {
         val pm = context.packageManager
         val map = linkedMapOf<String, String>()
 
-        // 1. Query all launchable apps via MAIN/LAUNCHER intent
         try {
             val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
                 addCategory(Intent.CATEGORY_LAUNCHER)
@@ -127,7 +122,6 @@ object HardwareThermalControl {
             }
         } catch (e: Exception) {}
 
-        // 2. Query installed applications
         try {
             val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
             for (ai in apps) {
@@ -142,7 +136,6 @@ object HardwareThermalControl {
             }
         } catch (e: Exception) {}
 
-        // 3. Root fallback ('pm list packages -3') in case Android 15 package visibility filtered user apps
         if (isRootAvailable()) {
             try {
                 val (_, out) = runRootShell("pm list packages -3")
@@ -153,8 +146,7 @@ object HardwareThermalControl {
                             val ai = pm.getApplicationInfo(pkg, 0)
                             pm.getApplicationLabel(ai).toString()
                         } catch (e: Exception) {
-                            pkg.substringAfterLast(".")
-                                .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                            pkg.substringAfterLast(".").replaceFirstChar { it.uppercase() }
                         }
                         map[pkg] = label
                     }
@@ -163,8 +155,8 @@ object HardwareThermalControl {
         }
 
         return map.entries
-            .map { AppEntry(it.value, it.key) }
-            .sortedBy { it.label.lowercase() }
+            .map { AppEntry(it.value, it.key, selectedSet.contains(it.key)) }
+            .sortedWith(compareByDescending<AppEntry> { it.isSelected }.thenBy { it.label.lowercase() })
     }
 
     fun autoAddQuickSettingsTiles(context: Context) {
@@ -407,13 +399,14 @@ object HardwareThermalControl {
         }
     }
 
+    // Pushes hardware limits & syncs GPU lock state
     fun setPeakPerformanceMode(enable: Boolean) {
         if (!isRootAvailable() || isPeakPerformanceActive == enable) return
         isPeakPerformanceActive = enable
 
         thread {
             if (enable) {
-                AppLogger.log("🚀 OVERDRIVE ENGINE: MAXIMUM PERFORMANCE ENGAGED")
+                AppLogger.log("🚀 TURBO MODE: MAXIMUM HARDWARE PERFORMANCE ENGAGED")
 
                 val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
                 executeVerifiedCommand("Freeze Xiaomi Thermal Daemons", stopCmd)
@@ -442,7 +435,7 @@ object HardwareThermalControl {
                 )
                 forceRefreshRate(120)
             } else {
-                AppLogger.log("🌱 OVERDRIVE ENGINE: Normal Performance Restored")
+                AppLogger.log("🌱 TURBO MODE: Balanced Performance Restored")
                 val restoreThermalsCmd = """
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                     echo 0 > /sys/class/thermal/thermal_message/sconfig 2>/dev/null
@@ -589,7 +582,6 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-    // UPDATED: Uses Idle Pass-Through (keeps USB input alive with 0mA battery charge current if supported) and cleanly restores all nodes
     fun setChargingEnabled(enable: Boolean, isManualToggle: Boolean = false) {
         if (isManualToggle) isManualBypassActive = !enable
         isChargingThrottled = !enable
@@ -608,7 +600,6 @@ object HardwareThermalControl {
                 """.trimIndent()
                 executeVerifiedCommand("Restore Normal Charging", cmd, "/sys/class/power_supply/battery/input_suspend", "0")
             } else {
-                // First try setting constant_charge_current to 0 while keeping USB input connected (Idle Pass-Through)
                 val cmd = """
                     chmod 0644 /sys/class/power_supply/battery/constant_charge_current 2>/dev/null
                     echo 0 > /sys/class/power_supply/battery/constant_charge_current 2>/dev/null
@@ -751,7 +742,6 @@ object HardwareThermalControl {
         }
     }
 
-    // FIXED: Uses non-repeating waveform (-1) so it never gets stuck vibrating endlessly!
     fun playThermalAlert() {
         if (isMuted) return
         try { toneGen?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 1200) } catch (e: Exception) {}
