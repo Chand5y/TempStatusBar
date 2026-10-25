@@ -1,7 +1,6 @@
 package com.personal.tempstatusbar
 
 import android.Manifest
-import android.animation.ValueAnimator
 import android.app.*
 import android.content.Context
 import android.content.Intent
@@ -46,6 +45,8 @@ class MainActivity : Activity() {
         val textSecondary: Int,
         val accentPrimary: Int,
         val accentSecondary: Int,
+        val toggleTrackOff: Int,
+        val toggleThumbOff: Int,
         val good: Int,
         val warn: Int,
         val danger: Int,
@@ -55,11 +56,10 @@ class MainActivity : Activity() {
     private lateinit var theme: ThemePalette
     private var currentTabIndex = 0
     private val tabViews = mutableListOf<View>()
+    private val navTabItems = mutableListOf<LinearLayout>()
     private val navTabLabels = mutableListOf<TextView>()
-    private val navTabIcons = mutableListOf<ImageView>()
     private lateinit var navIndicatorView: View
     private lateinit var navSegmentedBar: FrameLayout
-    private lateinit var navTabsRow: LinearLayout
 
     // Access Chips
     private lateinit var rootChipLabel: TextView
@@ -85,7 +85,7 @@ class MainActivity : Activity() {
     private val coreSwitches = mutableListOf<Switch?>()
     private var isUpdatingCoreUi = false
 
-    // Tab 3: Gaming (Unified with GPU Control)
+    // Tab 3: Gaming (Unified with GPU Tuning)
     private lateinit var hwGpuText: TextView
     private lateinit var gpuLockToggleBtn: LinearLayout
     private lateinit var gpuLockTitleText: TextView
@@ -142,7 +142,7 @@ class MainActivity : Activity() {
                     heroWattText.text = "$sign${pwr.wattage}W  •  ${abs(pwr.currentMa)} mA"
 
                     if (::hwGpuText.isInitialized) {
-                        hwGpuText.text = "Load: $gpuLoad  •  Clock: $gpuFreq"
+                        hwGpuText.text = "Adreno 650 Load: $gpuLoad  •  Clock: $gpuFreq"
                         updateGpuLockButtonAppearance()
                     }
                     if (::hwRamText.isInitialized) {
@@ -196,7 +196,7 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
         }
 
-        val savedTheme = prefs.getString("appThemeModeV3", "DEFAULT") ?: "DEFAULT"
+        val savedTheme = prefs.getString("appThemeModeV4", "DEFAULT") ?: "DEFAULT"
         theme = resolveTheme(savedTheme)
 
         buildFullInterface()
@@ -280,20 +280,6 @@ class MainActivity : Activity() {
                 }
             } catch (e: Exception) {}
         }
-        try {
-            val allAssets = assets.list("") ?: emptyArray()
-            val matched = allAssets.firstOrNull { it.equals(exactFileName, ignoreCase = true) }
-            if (matched != null) {
-                assets.open(matched).use { stream ->
-                    val raw = BitmapFactory.decodeStream(stream)
-                    if (raw != null) {
-                        val cleaned = removeSolidCornerBackground(raw)
-                        iconCache[exactFileName] = cleaned
-                        return cleaned
-                    }
-                }
-            }
-        } catch (e: Exception) {}
         return null
     }
 
@@ -328,15 +314,15 @@ class MainActivity : Activity() {
 
     private fun getColorForTemperature(tempC: Float): Int {
         return when {
-            tempC >= 40f -> Color.parseColor("#E11D48") // Red
-            tempC >= 38f -> Color.parseColor("#EA580C") // Orange
-            tempC >= 36f -> Color.parseColor("#D97706") // Amber
-            else -> Color.parseColor("#059669")         // Green
+            tempC >= 40f -> Color.parseColor("#E11D48")
+            tempC >= 38f -> Color.parseColor("#EA580C")
+            tempC >= 36f -> Color.parseColor("#D97706")
+            else -> Color.parseColor("#059669")
         }
     }
 
     // =========================================================================
-    // THEME ENGINE
+    // THEME PALETTE DEFINITION (Default = Classic Warm Alabaster; Dark = Pure Pitch Black)
     // =========================================================================
     private fun resolveTheme(mode: String): ThemePalette {
         val sysNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -345,14 +331,16 @@ class MainActivity : Activity() {
                 name = "Dark",
                 bgTop = Color.parseColor("#000000"),
                 bgBottom = Color.parseColor("#000000"),
-                cardBg = Color.parseColor("#0B0B0E"),
+                cardBg = Color.parseColor("#0B0B0D"),
                 cardStroke = Color.parseColor("#1C1C22"),
                 pillBg = Color.parseColor("#141418"),
                 navBarBg = Color.parseColor("#09090C"),
-                textPrimary = Color.parseColor("#F4F4F5"),
+                textPrimary = Color.parseColor("#F4F4F6"),
                 textSecondary = Color.parseColor("#A1A1AA"),
                 accentPrimary = Color.parseColor("#27272A"),
                 accentSecondary = Color.parseColor("#3F3F46"),
+                toggleTrackOff = Color.parseColor("#3F3F46"),
+                toggleThumbOff = Color.parseColor("#D4D4D8"),
                 good = Color.parseColor("#10B981"),
                 warn = Color.parseColor("#F59E0B"),
                 danger = Color.parseColor("#EF4444"),
@@ -370,6 +358,8 @@ class MainActivity : Activity() {
                 textSecondary = Color.parseColor("#D8B4FE"),
                 accentPrimary = Color.parseColor("#C084FC"),
                 accentSecondary = Color.parseColor("#E879F9"),
+                toggleTrackOff = Color.parseColor("#4C3278"),
+                toggleThumbOff = Color.parseColor("#D8B4FE"),
                 good = Color.parseColor("#34D399"),
                 warn = Color.parseColor("#FBBF24"),
                 danger = Color.parseColor("#F43F5E"),
@@ -390,6 +380,8 @@ class MainActivity : Activity() {
                             textSecondary = getColor(android.R.color.system_neutral2_200),
                             accentPrimary = getColor(android.R.color.system_accent1_200),
                             accentSecondary = getColor(android.R.color.system_accent2_200),
+                            toggleTrackOff = getColor(android.R.color.system_neutral2_700),
+                            toggleThumbOff = getColor(android.R.color.system_neutral1_300),
                             good = Color.parseColor("#34D399"),
                             warn = Color.parseColor("#FBBF24"),
                             danger = Color.parseColor("#FB7185"),
@@ -408,6 +400,8 @@ class MainActivity : Activity() {
                             textSecondary = getColor(android.R.color.system_neutral2_600),
                             accentPrimary = getColor(android.R.color.system_accent1_600),
                             accentSecondary = getColor(android.R.color.system_accent2_600),
+                            toggleTrackOff = getColor(android.R.color.system_neutral2_300),
+                            toggleThumbOff = getColor(android.R.color.system_neutral1_600),
                             good = Color.parseColor("#059669"),
                             warn = Color.parseColor("#D97706"),
                             danger = Color.parseColor("#E11D48"),
@@ -417,18 +411,20 @@ class MainActivity : Activity() {
                 } else resolveTheme("DEFAULT")
             }
             else -> ThemePalette(
-                // Warm Alabaster & Slate Pearl Default
+                // Warm Alabaster, Bone & Pearl
                 name = "Default",
-                bgTop = Color.parseColor("#F4F3EF"),
-                bgBottom = Color.parseColor("#ECE9E2"),
+                bgTop = Color.parseColor("#F5F4F0"),
+                bgBottom = Color.parseColor("#EBE9E2"),
                 cardBg = Color.parseColor("#FFFFFF"),
-                cardStroke = Color.parseColor("#E0DCD3"),
-                pillBg = Color.parseColor("#EBE7DE"),
-                navBarBg = Color.parseColor("#FAF8F4"),
-                textPrimary = Color.parseColor("#262522"),
-                textSecondary = Color.parseColor("#68655E"),
-                accentPrimary = Color.parseColor("#2E2C29"),
-                accentSecondary = Color.parseColor("#4A4641"),
+                cardStroke = Color.parseColor("#E2DFD6"),
+                pillBg = Color.parseColor("#ECEAE2"),
+                navBarBg = Color.parseColor("#FAF9F6"),
+                textPrimary = Color.parseColor("#23221F"),
+                textSecondary = Color.parseColor("#69665F"),
+                accentPrimary = Color.parseColor("#2B2926"),
+                accentSecondary = Color.parseColor("#484540"),
+                toggleTrackOff = Color.parseColor("#D5D2C8"),
+                toggleThumbOff = Color.parseColor("#8C887E"),
                 good = Color.parseColor("#0D7A53"),
                 warn = Color.parseColor("#C46800"),
                 danger = Color.parseColor("#DC2626"),
@@ -469,12 +465,12 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // MAIN UI FRAMEWORK
+    // MAIN INTERFACE SETUP
     // =========================================================================
     private fun buildFullInterface() {
         tabViews.clear()
+        navTabItems.clear()
         navTabLabels.clear()
-        navTabIcons.clear()
         coreFreqLabels.clear()
         coreSwitches.clear()
 
@@ -498,7 +494,7 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(16), dp(16), 0)
         }
 
-        // Header: Clean single-line layout
+        // Header: Clean title and Theme picker
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -526,14 +522,13 @@ class MainActivity : Activity() {
         val themeBtn = createIconPillButton("theme.png", "Theme", isAccent = false) {
             showThemeModal()
         }
-
         header.addView(titleCol)
         header.addView(themeBtn)
         mainBody.addView(header)
 
         addSpace(mainBody, dp(12))
 
-        // Permission Status Strip
+        // Permission Status Chips
         val accessRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 4f
@@ -559,7 +554,7 @@ class MainActivity : Activity() {
         val uPair = createAccessChip("graph.png", "USAGE") {
             showPermissionModal(
                 title = "Usage Access",
-                desc = "Allows the background service to detect when your target games are running so Overdrive performance mode engages automatically.",
+                desc = "Allows the background service to detect when your target games are running so Turbo Mode engages automatically.",
                 actionLabel = "Open Settings",
                 onAction = { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
             )
@@ -617,7 +612,7 @@ class MainActivity : Activity() {
         mainBody.addView(contentFrame)
         root.addView(mainBody)
 
-        // Bottom Navigation Bar with Curved Pill Slider
+        // Bottom Navigation Bar with Curved Borders & Follow-Through Slider[span_2](start_span)[span_2](end_span)
         val bottomDockContainer = FrameLayout(this).apply {
             setPadding(dp(18), dp(6), dp(18), dp(16))
         }
@@ -633,19 +628,19 @@ class MainActivity : Activity() {
         }
 
         navIndicatorView = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(0, dp(52)).apply {
+            layoutParams = FrameLayout.LayoutParams(0, dp(54)).apply {
                 gravity = Gravity.CENTER_VERTICAL
             }
             background = GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
                 intArrayOf(theme.accentPrimary, theme.accentSecondary)
             ).apply {
-                cornerRadius = dp(26).toFloat()
+                cornerRadius = dp(27).toFloat()
             }
         }
         navSegmentedBar.addView(navIndicatorView)
 
-        navTabsRow = LinearLayout(this).apply {
+        val navTabsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 4f
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
@@ -663,6 +658,10 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                setOnClickListener {
+                    hapticTap(this)
+                    switchTab(idx)
+                }
             }
             val img = createIconView(iconFile, 22)
             val txt = TextView(this).apply {
@@ -674,14 +673,13 @@ class MainActivity : Activity() {
             }
             item.addView(img)
             item.addView(txt)
-            navTabIcons.add(img)
+            navTabItems.add(item)
             navTabLabels.add(txt)
             navTabsRow.addView(item)
         }
-
         navSegmentedBar.addView(navTabsRow)
 
-        // Interactive Tracking: Follows thumb motion in real time
+        // Slide Tracking
         navSegmentedBar.setOnTouchListener { bar, event ->
             val totalW = bar.width.toFloat().coerceAtLeast(1f)
             val slotW = totalW / 4f
@@ -691,6 +689,7 @@ class MainActivity : Activity() {
                 MotionEvent.ACTION_DOWN -> {
                     animateIndicatorToPosition(targetIdx, animate = true)
                     if (targetIdx != currentTabIndex) {
+                        hapticTap(bar)
                         switchTab(targetIdx)
                     } else {
                         hapticTick(bar)
@@ -758,7 +757,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // Directional Slide Animation: Slides left/right based on forward/backward movement
+    // Directional Slide Animation: Slides left/right according to navigation direction
     private fun switchTab(targetIndex: Int) {
         if (targetIndex == currentTabIndex) return
         val forward = targetIndex > currentTabIndex
@@ -807,7 +806,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // TAB 1: MONITOR (Thermometer Icon, Smart Scroll Graph, Timestamp Scrubbing)
+    // TAB 1: MONITOR (TemperatureBadge Icon, Timestamp Scrubbing, Smart Touch)
     // =========================================================================
     private fun buildMonitorTab(): ScrollView {
         val scroll = createScroll()
@@ -818,8 +817,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        // Shows thermometer.png for live temperature
-        heroRow.addView(createIconBadge("thermometer.png", 26, 46))
+        // Uses TemperatureBadge.png for live temperature
+        heroRow.addView(createIconBadge("TemperatureBadge.png", 26, 46))
 
         heroTempText = TextView(this).apply {
             text = "--°C"
@@ -929,7 +928,7 @@ class MainActivity : Activity() {
 
         addSpace(col, dp(14))
 
-        // Protection Thresholds Card with Rotary Drum Pickers
+        // Protection Thresholds Card with Centered Watch-Crown Drum Pickers
         val threshCard = createCard()
         threshCard.addView(createSectionLabel("THERMAL & CHARGING PROTECTION"))
         threshCard.addView(createIconSwitchRow("thermometer.png", "Charge Level Limiter", "Stops AC charging when battery reaches target level", settings.chargeLimitEnabled) { on ->
@@ -1061,19 +1060,20 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // TAB 3: GAMING (Unified Overdrive, Adreno GPU Hub, Add Games, Match Records)
+    // TAB 3: GAMING (Turbo Mode, GPU Tuning, Pinned App Picker, Match Records)
     // =========================================================================
     private fun buildGamingTab(): ScrollView {
         val scroll = createScroll()
         val col = createCol()
 
-        // Overdrive & Floating HUD Hub
+        // Turbo Mode & Floating HUD Hub
         val gameCard = createCard()
-        gameCard.addView(createSectionLabel("OVERDRIVE PERFORMANCE ENGINE"))
+        gameCard.addView(createSectionLabel("TURBO PERFORMANCE ENGINE"))
 
-        gameCard.addView(createIconSwitchRow("game.png", "Overdrive", "Unlocks CPU clocks, stabilizes GPU frequencies, and pins refresh rate", settings.gamingModeEnabled) { on ->
+        gameCard.addView(createIconSwitchRow("game.png", "Turbo Mode", "Unlocks CPU clocks, forces GPU to 670 MHz, and stabilizes refresh rate", settings.gamingModeEnabled) { on ->
             settings.gamingModeEnabled = on
-            if (!on) HardwareThermalControl.setPeakPerformanceMode(false)
+            HardwareThermalControl.setPeakPerformanceMode(on)
+            updateGpuLockButtonAppearance()
         })
         gameCard.addView(createIconSwitchRow("FloatingPill.png", "Floating Performance Pill", "Overlays live FPS and battery metrics above active apps", FpsOverlayService.isRunning) { on ->
             toggleOverlayPill(on)
@@ -1089,8 +1089,8 @@ class MainActivity : Activity() {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f; setPadding(0, dp(4), 0, dp(8)) }
         row.addView(createPillButton("Add Games (${settings.gamingApps.size})") {
             showAppSelectionModal(
-                title = "Add Games to Overdrive",
-                desc = "Select installed games and apps. When any selected app launches, Overdrive mode will engage automatically.",
+                title = "Add Games to Turbo Mode",
+                desc = "Selected games float to the top. When any selected game runs, Turbo Mode engages automatically.",
                 selectedSet = settings.gamingApps,
                 onSave = { updated ->
                     settings.gamingApps = updated
@@ -1100,7 +1100,7 @@ class MainActivity : Activity() {
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(4), 0) } })
 
         capBtn = createPillButton("Thermal Cap: ${settings.gameThrottleTemp}°C") {
-            showRotaryDrumModal("Overdrive Thermal Ceiling", settings.gameThrottleTemp, 38, 48, "°C") { v ->
+            showRotaryDrumModal("Turbo Thermal Ceiling", settings.gameThrottleTemp, 38, 48, "°C") { v ->
                 settings.gameThrottleTemp = v; capBtn.text = "Thermal Cap: ${v}°C"
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, 0, 0) } }
@@ -1110,7 +1110,7 @@ class MainActivity : Activity() {
         gameCard.addView(createPillButton("Exempt Background Apps (${settings.exemptApps.size})") {
             showAppSelectionModal(
                 title = "Exempt Background Apps",
-                desc = "Select background apps (music, voice chat, messaging). These apps will stay protected and will not be throttled or frozen while gaming.",
+                desc = "Selected background apps stay protected from being closed or throttled while gaming.",
                 selectedSet = settings.exemptApps,
                 onSave = { updated ->
                     settings.exemptApps = updated
@@ -1222,7 +1222,7 @@ class MainActivity : Activity() {
             gpuLockIconView.setImageBitmap(loadCustomBitmap("charging.png"))
             gpuLockTitleText.text = "Locked at Peak Frequency (Tap to Unlock)"
             gpuLockTitleText.setTextColor(Color.WHITE)
-            gpuLockSubText.text = "Adreno 650 locked at maximum performance power level"
+            gpuLockSubText.text = "Adreno 650 locked at maximum performance power level (670 MHz)"
             gpuLockSubText.setTextColor(Color.parseColor("#E0E7FF"))
             gpuLockToggleBtn.background = GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
@@ -1243,7 +1243,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // TAB 4: LOGS (Live Diagnostics & Background Process Manager)
+    // TAB 4: LOGS (Isolated Touch Scroll & Process Manager)
     // =========================================================================
     private fun buildTasksAndLogTab(): ScrollView {
         val scroll = createScroll()
@@ -1266,8 +1266,9 @@ class MainActivity : Activity() {
         })
         logCard.addView(logHeader)
 
+        // Isolated Touch ScrollView: Never delegates touches to outer screen when scrolling logs[span_3](start_span)[span_3](end_span)!
         logScrollBox = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(230)).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(240)).apply {
                 setMargins(0, dp(10), 0, dp(10))
             }
             setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -1275,6 +1276,17 @@ class MainActivity : Activity() {
                 cornerRadius = dp(16).toFloat()
                 setColor(theme.pillBg)
                 setStroke(2, theme.cardStroke)
+            }
+            setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                        v.parent?.requestDisallowInterceptTouchEvent(true)
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.parent?.requestDisallowInterceptTouchEvent(false)
+                    }
+                }
+                false
             }
         }
         logConsoleText = TextView(this).apply {
@@ -1346,218 +1358,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // INTERACTIVE GRAPH VIEW (Smart Touch Arbitration: Vertical Swipe Never Blocks Page Scroll!)
-    // =========================================================================
-    inner class InteractiveGraphView(
-        context: Context,
-        private val isTemperatureMode: Boolean,
-        private val onScrubPoint: (Int) -> Unit
-    ) : View(context) {
-
-        private var primarySeries: List<Float> = emptyList()
-        private var secondarySeries: List<Float> = emptyList()
-        private var lineColor: Int = theme.accentPrimary
-        private var secondaryColor: Int = theme.warn
-        private var suffix: String = ""
-        private var scrubIndex: Int = -1
-
-        private var touchStartX = 0f
-        private var touchStartY = 0f
-        private var isHorizontalScrubbing = false
-        private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-
-        private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = theme.cardStroke
-            strokeWidth = 2f
-        }
-        private val axisTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = theme.textSecondary
-            textSize = 23f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        }
-        private val curvePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            strokeWidth = 6.5f
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-        }
-        private val secCurvePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            strokeWidth = 3.5f
-            style = Paint.Style.STROKE
-        }
-        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-        private val scrubLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = theme.accentPrimary
-            strokeWidth = 3f
-        }
-        private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-
-        fun setGraphData(primary: List<Float>, secondary: List<Float>, color1: Int, color2: Int, unit: String) {
-            primarySeries = primary
-            secondarySeries = secondary
-            lineColor = color1
-            secondaryColor = color2
-            suffix = unit
-            scrubIndex = if (primary.isNotEmpty()) primary.size - 1 else -1
-            invalidate()
-        }
-
-        // Smart Gesture Inspection: Yields immediately to parent ScrollView if vertical
-        override fun onTouchEvent(event: MotionEvent): Boolean {
-            if (primarySeries.isEmpty()) return false
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    touchStartX = event.x
-                    touchStartY = event.y
-                    isHorizontalScrubbing = false
-                    parent?.requestDisallowInterceptTouchEvent(false)
-                    return true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = abs(event.x - touchStartX)
-                    val dy = abs(event.y - touchStartY)
-
-                    if (!isHorizontalScrubbing) {
-                        if (dx > touchSlop && dx > dy * 1.25f) {
-                            isHorizontalScrubbing = true
-                            parent?.requestDisallowInterceptTouchEvent(true)
-                        } else if (dy > touchSlop) {
-                            parent?.requestDisallowInterceptTouchEvent(false)
-                            return false
-                        }
-                    }
-
-                    if (isHorizontalScrubbing) {
-                        val padL = 84f; val padR = 24f
-                        val w = (width - padL - padR).coerceAtLeast(1f)
-                        val frac = ((event.x - padL) / w).coerceIn(0f, 1f)
-                        val newIdx = (frac * (primarySeries.size - 1)).roundToInt().coerceIn(0, primarySeries.size - 1)
-                        if (newIdx != scrubIndex) {
-                            scrubIndex = newIdx
-                            hapticTick(this)
-                            onScrubPoint(newIdx)
-                            invalidate()
-                        }
-                        return true
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    isHorizontalScrubbing = false
-                    parent?.requestDisallowInterceptTouchEvent(false)
-                    return true
-                }
-            }
-            return super.onTouchEvent(event)
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val w = width.toFloat(); val h = height.toFloat()
-            if (w <= 0f || h <= 0f || primarySeries.isEmpty()) return
-
-            val padL = 84f; val padR = 24f; val padT = 24f; val padB = 28f
-            val cw = w - padL - padR
-            val ch = h - padT - padB
-
-            val rawMin = primarySeries.minOrNull() ?: 0f
-            val rawMax = primarySeries.maxOrNull() ?: 100f
-            val minV = if (isTemperatureMode) max(28f, rawMin - 2f) else max(0f, rawMin - (rawMax - rawMin).coerceAtLeast(6f) * 0.15f)
-            val maxV = if (isTemperatureMode) max(43f, rawMax + 2f) else rawMax + (rawMax - rawMin).coerceAtLeast(6f) * 0.15f
-            val range = (maxV - minV).coerceAtLeast(1f)
-
-            for (i in 0..3) {
-                val frac = i / 3f
-                val y = padT + ch * frac
-                canvas.drawLine(padL, y, w - padR, y, gridPaint)
-                val vLbl = (maxV - range * frac).roundToInt()
-                canvas.drawText("$vLbl$suffix", 6f, y + 8f, axisTextPaint)
-            }
-
-            val pts = primarySeries.mapIndexed { i, v ->
-                val x = if (primarySeries.size > 1) padL + (i.toFloat() / (primarySeries.size - 1)) * cw else padL + cw / 2f
-                val y = padT + ch * (1f - ((v - minV) / range).coerceIn(0f, 1f))
-                PointF(x, y)
-            }
-
-            val path = Path()
-            val fill = Path()
-            path.moveTo(pts.first().x, pts.first().y)
-            fill.moveTo(pts.first().x, padT + ch)
-            fill.lineTo(pts.first().x, pts.first().y)
-
-            for (i in 0 until pts.size - 1) {
-                val p0 = pts[i]; val p1 = pts[i + 1]
-                val cx = (p0.x + p1.x) / 2f
-                path.cubicTo(cx, p0.y, cx, p1.y, p1.x, p1.y)
-                fill.cubicTo(cx, p0.y, cx, p1.y, p1.x, p1.y)
-            }
-            fill.lineTo(pts.last().x, padT + ch)
-            fill.close()
-
-            if (isTemperatureMode) {
-                fun yForTemp(t: Float): Float = padT + ch * (1f - ((t - minV) / range).coerceIn(0f, 1f))
-                val yTop = yForTemp(41f)
-                val yBottom = yForTemp(34f).coerceAtLeast(yTop + 10f)
-
-                val colorsStroke = intArrayOf(
-                    Color.parseColor("#E11D48"),
-                    Color.parseColor("#EA580C"),
-                    Color.parseColor("#D97706"),
-                    Color.parseColor("#0D7A53")
-                )
-                val positions = floatArrayOf(0f, 0.35f, 0.68f, 1f)
-                curvePaint.shader = LinearGradient(0f, yTop, 0f, yBottom, colorsStroke, positions, Shader.TileMode.CLAMP)
-
-                val colorsFill = intArrayOf(
-                    Color.argb(100, 225, 29, 72),
-                    Color.argb(75, 234, 88, 12),
-                    Color.argb(55, 217, 119, 6),
-                    Color.argb(15, 13, 122, 83)
-                )
-                fillPaint.shader = LinearGradient(0f, yTop, 0f, padT + ch, colorsFill, positions, Shader.TileMode.CLAMP)
-            } else {
-                curvePaint.shader = null
-                curvePaint.color = lineColor
-                fillPaint.shader = LinearGradient(
-                    0f, padT, 0f, padT + ch,
-                    Color.argb(90, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)),
-                    Color.argb(0, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)),
-                    Shader.TileMode.CLAMP
-                )
-            }
-
-            canvas.drawPath(fill, fillPaint)
-            canvas.drawPath(path, curvePaint)
-
-            if (secondarySeries.size >= 2) {
-                val sMin = (secondarySeries.minOrNull() ?: 0f) - 2f
-                val sMax = (secondarySeries.maxOrNull() ?: 100f) + 2f
-                val sRange = (sMax - sMin).coerceAtLeast(1f)
-                val sPath = Path()
-                secondarySeries.forEachIndexed { i, v ->
-                    val x = padL + (i.toFloat() / (secondarySeries.size - 1)) * cw
-                    val y = padT + ch * (1f - ((v - sMin) / sRange).coerceIn(0f, 1f))
-                    if (i == 0) sPath.moveTo(x, y) else sPath.lineTo(x, y)
-                }
-                secCurvePaint.color = secondaryColor
-                canvas.drawPath(sPath, secCurvePaint)
-            }
-
-            val idx = scrubIndex.coerceIn(0, pts.size - 1)
-            val activePt = pts[idx]
-            val activeVal = primarySeries[idx]
-            val activeDotColor = if (isTemperatureMode) getColorForTemperature(activeVal) else lineColor
-
-            scrubLinePaint.color = activeDotColor
-            canvas.drawLine(activePt.x, padT, activePt.x, padT + ch, scrubLinePaint)
-            dotPaint.color = activeDotColor
-            canvas.drawCircle(activePt.x, activePt.y, 12f, dotPaint)
-            dotPaint.color = theme.cardBg
-            canvas.drawCircle(activePt.x, activePt.y, 5f, dotPaint)
-        }
-    }
-
-    // =========================================================================
-    // MODAL WINDOWS & ROTARY DRUM ROLLER PICKER
+    // CENTERED ROTARY DRUM ROLLER MODAL (Fixed Symmetry & Centering)
     // =========================================================================
     private fun showRotaryDrumModal(
         title: String,
@@ -1597,14 +1398,14 @@ class MainActivity : Activity() {
             setPadding(0, dp(4), 0, dp(16))
         })
 
-        // Watch-Crown Rotary Drum Roller
+        // Centered Watch-Crown Drum Roller
         var activeValue = current.coerceIn(minV, maxV)
         val rollerLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(dp(180), dp(130))
+            layoutParams = LinearLayout.LayoutParams(dp(200), dp(136))
             background = GradientDrawable().apply {
-                cornerRadius = dp(22).toFloat()
+                cornerRadius = dp(24).toFloat()
                 setColor(theme.pillBg)
                 setStroke(2, theme.cardStroke)
             }
@@ -1612,21 +1413,24 @@ class MainActivity : Activity() {
 
         val topPreview = TextView(this).apply {
             text = "${activeValue - 1}$unit"
-            textSize = 14f
+            textSize = 15f
             alpha = 0.35f
+            gravity = Gravity.CENTER
             setTextColor(theme.textSecondary)
         }
         val mainCenter = TextView(this).apply {
             text = "$activeValue$unit"
             textSize = 34f
+            gravity = Gravity.CENTER
             typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
             setTextColor(theme.accentPrimary)
             setPadding(0, dp(4), 0, dp(4))
         }
         val bottomPreview = TextView(this).apply {
             text = "${activeValue + 1}$unit"
-            textSize = 14f
+            textSize = 15f
             alpha = 0.35f
+            gravity = Gravity.CENTER
             setTextColor(theme.textSecondary)
         }
 
@@ -1692,6 +1496,9 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
+    // =========================================================================
+    // PINNED APP SELECTION MODAL (Selected Games Pinned to Top)
+    // =========================================================================
     private fun showAppSelectionModal(
         title: String,
         desc: String,
@@ -1726,12 +1533,13 @@ class MainActivity : Activity() {
 
         val currentSelected = selectedSet.toMutableSet()
         val scrollApps = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(260))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(280))
         }
         val appsCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         thread {
-            val allApps = HardwareThermalControl.getInstalledUserApps(this@MainActivity)
+            // Selected games and apps are sorted first at the very top of the list!
+            val allApps = HardwareThermalControl.getInstalledUserApps(this@MainActivity, currentSelected)
             uiHandler.post {
                 appsCol.removeAllViews()
                 for (app in allApps) {
@@ -1756,7 +1564,7 @@ class MainActivity : Activity() {
                         text = app.label
                         setTextColor(theme.textPrimary)
                         textSize = 13.5f
-                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        typeface = Typeface.create("sans-serif-medium", if (app.isSelected) Typeface.BOLD else Typeface.NORMAL)
                     })
                     labelCol.addView(TextView(this@MainActivity).apply {
                         text = app.packageName
@@ -1891,11 +1699,11 @@ class MainActivity : Activity() {
                 setPadding(dp(16), dp(14), dp(16), dp(14))
                 background = GradientDrawable().apply {
                     cornerRadius = dp(16).toFloat()
-                    setColor(if (prefs.getString("appThemeModeV3", "DEFAULT") == key) theme.pillBg else Color.TRANSPARENT)
+                    setColor(if (prefs.getString("appThemeModeV4", "DEFAULT") == key) theme.pillBg else Color.TRANSPARENT)
                 }
             }
             row.setOnClickListener {
-                prefs.edit().putString("appThemeModeV3", key).apply()
+                prefs.edit().putString("appThemeModeV4", key).apply()
                 theme = resolveTheme(key)
                 buildFullInterface()
                 dialog.dismiss()
@@ -2209,17 +2017,20 @@ class MainActivity : Activity() {
         val sw = Switch(this)
         sw.isChecked = checked
 
-        // Clearly visible track states so the switch never looks like an isolated dot
-        val trackThumbColor = ColorStateList(
+        // High contrast thumb and track styling across both light and dark modes[span_4](start_span)[span_4](end_span)
+        val thumbColor = ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-            intArrayOf(theme.accentPrimary, Color.parseColor("#9CA3AF"))
+            intArrayOf(theme.accentPrimary, theme.toggleThumbOff)
         )
-        val trackBgColor = ColorStateList(
+        val trackColor = ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-            intArrayOf(Color.argb(85, Color.red(theme.accentPrimary), Color.green(theme.accentPrimary), Color.blue(theme.accentPrimary)), Color.argb(60, 156, 163, 175))
+            intArrayOf(
+                Color.argb(170, Color.red(theme.accentPrimary), Color.green(theme.accentPrimary), Color.blue(theme.accentPrimary)),
+                theme.toggleTrackOff
+            )
         )
-        sw.thumbTintList = trackThumbColor
-        sw.trackTintList = trackBgColor
+        sw.thumbTintList = thumbColor
+        sw.trackTintList = trackColor
 
         sw.setOnCheckedChangeListener { v, isChecked ->
             v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(60).withEndAction {
