@@ -2,9 +2,13 @@ package com.personal.tempstatusbar
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.BatteryManager
 import android.os.Build
+import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
 import java.io.BufferedReader
@@ -23,6 +27,7 @@ object HardwareThermalControl {
     var isChargingThrottled = false; private set
     var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
+    @Volatile var isAutoTestRunning = false; private set
 
     @Volatile var liveFps = -1
 
@@ -45,7 +50,6 @@ object HardwareThermalControl {
         }
     }
 
-    // Reads a kernel sysfs node via root so we can compare BEFORE and AFTER values
     fun readSysfsNode(path: String): String {
         try {
             val f = File(path)
@@ -62,7 +66,18 @@ object HardwareThermalControl {
         }
     }
 
-    // Executes root command AND verifies if the target sysfs node actually changed
+    fun runRootShell(cmd: String): Pair<Int, String> {
+        if (!isRootAvailable()) return -1 to "NO_ROOT"
+        return try {
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "$cmd 2>&1"))
+            val out = BufferedReader(InputStreamReader(p.inputStream)).readText().trim()
+            val code = p.waitFor()
+            code to out
+        } catch (e: Exception) {
+            -1 to "EXCEPTION: ${e.message}"
+        }
+    }
+
     fun executeVerifiedCommand(
         action: String,
         command: String,
@@ -125,63 +140,294 @@ object HardwareThermalControl {
         return executeVerifiedCommand(action, command)
     }
 
-    // Comprehensive Diagnostic Audit to prove which kernel features work vs fail on this device
-    fun runFullKernelAudit(onComplete: (() -> Unit)? = null) {
+    // =========================================================================
+    // HANDS-FREE 12-STAGE AUTOMATED DIAGNOSTIC & VERIFICATION SUITE
+    // =========================================================================
+    fun runAutomatedTestSuite(
+        context: Context,
+        hasUsagePerm: Boolean,
+        hasOverlayPerm: Boolean,
+        hasNotifPerm: Boolean,
+        onProgress: (Int, Int, String) -> Unit,
+        onFinished: (Int, Int, List<String>, String) -> Unit
+    ) {
+        if (isAutoTestRunning) return
+        isAutoTestRunning = true
+
         thread {
-            AppLogger.log("==========================================")
-            AppLogger.log("🔬 STARTING FULL KERNEL & HARDWARE AUDIT")
-            val hasRoot = isRootAvailable()
-            AppLogger.log("1. Root Shell Handshake: ${if (hasRoot) "✅ GRANTED (uid=0)" else "❌ DENIED"}")
-            if (!hasRoot) {
-                onComplete?.invoke()
-                return@thread
+            var passedCount = 0
+            var failedCount = 0
+            val manualActionsNeeded = mutableListOf<String>()
+            val totalStages = 12
+
+            fun step(stage: Int, title: String) {
+                onProgress(stage, totalStages, title)
+                AppLogger.log("------------------------------------------")
+                AppLogger.log("🧪 [STAGE $stage/$totalStages] $title")
             }
 
+            fun recordResult(ok: Boolean, passMsg: String, failMsg: String) {
+                if (ok) {
+                    passedCount++
+                    AppLogger.log("  🟢 PASS: $passMsg")
+                } else {
+                    failedCount++
+                    AppLogger.log("  🔴 FAIL: $failMsg")
+                }
+            }
+
+            AppLogger.clear()
+            AppLogger.log("🤖 HANDS-FREE AUTOMATED TEST SUITE STARTED")
+            AppLogger.log("📱 Device: ${Build.MANUFACTURER} ${Build.MODEL} (${getHardwareInfo()}) | SDK ${Build.VERSION.SDK_INT}")
+
+            // STAGE 1: Pre-Flight Permissions & Environment Check
+            step(1, "Checking Permissions & Environment...")
+            val rootOk = isRootAvailable()
+            recordResult(rootOk, "Root Shell (su) granted uid=0", "Root Shell denied — grant Superuser in Magisk/KernelSU")
+            if (!rootOk) {
+                manualActionsNeeded.add("Grant Superuser (Root) permission in Magisk / KernelSU.")
+            }
+
+            recordResult(hasUsagePerm, "Usage Access Permission is GRANTED", "Usage Access is MISSING (required to detect BGMI launch)")
+            if (!hasUsagePerm) manualActionsNeeded.add("Enable 'Usage Access' permission for TempStatusBar Pro.")
+
+            recordResult(hasOverlayPerm, "Display Over Other Apps (Overlay) is GRANTED", "Overlay Permission is MISSING (required for Floating FPS Pill)")
+            if (!hasOverlayPerm) manualActionsNeeded.add("Enable 'Display over other apps' permission for Floating FPS Pill.")
+
+            recordResult(hasNotifPerm, "Status Bar Notification Permission is GRANTED", "Notification Permission is MISSING")
+            if (!hasNotifPerm) manualActionsNeeded.add("Allow Notifications so temperature icon appears in Status Bar.")
+
+            val batIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val isPlugged = (batIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+            val startTemp = (batIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10
+            AppLogger.log("  ℹ️ Battery State: ${startTemp}°C | Charger Plugged: $isPlugged")
+            if (!isPlugged) {
+                manualActionsNeeded.add("Optional: Plug in your charger if you want to verify physical charging wattage drop during Battery Bypass.")
+            }
+            Thread.sleep(500)
+
+            // STAGE 2: Kernel & Thermal Zone Mode Override Test
+            step(2, "Testing Kernel Thermal Zones (/sys/class/thermal)...")
+            val (_, unameOut) = runRootShell("uname -r")
             val selinux = readSysfsNode("/sys/fs/selinux/enforce")
-            AppLogger.log("2. SELinux Status: ${if (selinux == "1") "Enforcing (1)" else "Permissive ($selinux)"}")
+            AppLogger.log("  ℹ️ Kernel: $unameOut | SELinux Enforce: $selinux")
 
-            // Audit CPU Policies
-            listOf(0, 4, 7).forEach { pol ->
-                val govPath = "/sys/devices/system/cpu/cpufreq/policy$pol/scaling_governor"
-                val curGov = readSysfsNode(govPath)
-                val maxFreq = readSysfsNode("/sys/devices/system/cpu/cpufreq/policy$pol/scaling_max_freq")
-                AppLogger.log("3. CPU Policy$pol: Gov=[$curGov] | MaxFreq=[$maxFreq kHz]")
-            }
-
-            // Audit GPU Nodes
-            val gpuClk = readSysfsNode("/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq")
-            val minPwr = readSysfsNode("/sys/class/kgsl/kgsl-3d0/min_pwrlevel")
-            val thmPwr = readSysfsNode("/sys/class/kgsl/kgsl-3d0/thermal_pwrlevel")
-            AppLogger.log("4. Adreno GPU: Freq=[$gpuClk Hz] | min_pwrlevel=[$minPwr] | thermal_pwrlevel=[$thmPwr]")
-
-            // Audit Xiaomi Thermal sconfig
-            val sconfigPath = "/sys/class/thermal/thermal_message/sconfig"
-            val sconfigBefore = readSysfsNode(sconfigPath)
-            AppLogger.log("5. Xiaomi Thermal Profile ($sconfigPath): Current=[$sconfigBefore]")
-
-            // Audit Battery Charging Nodes
-            val chargeNodes = listOf(
-                "/sys/class/power_supply/battery/input_suspend",
-                "/sys/class/power_supply/battery/charging_enabled",
-                "/sys/class/power_supply/usb/input_suspend"
+            val (_, tzTest) = runRootShell("total=0; writable=0; for z in /sys/class/thermal/thermal_zone*/mode; do total=\$((total+1)); echo disabled > \$z 2>/dev/null && writable=\$((writable+1)); done; echo \"\$writable/\$total\"")
+            val tzParts = tzTest.split("/")
+            val writableZones = tzParts.getOrNull(0)?.toIntOrNull() ?: 0
+            recordResult(
+                writableZones > 0,
+                "Disabled $tzTest kernel thermal zones successfully",
+                "0 thermal_zone*/mode nodes accepted 'disabled' (kernel hard-locked thermal zones)"
             )
-            chargeNodes.forEach { node ->
-                val v = readSysfsNode(node)
-                val exists = !v.contains("No such file", true) && !v.startsWith("ERR")
-                AppLogger.log("6. Battery Node [$node]: ${if (exists) "✅ AVAILABLE (val=$v)" else "⚠️ MISSING ($v)"}")
+            runRootShell("for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > \$z 2>/dev/null; done")
+            Thread.sleep(500)
+
+            // STAGE 3: Xiaomi Thermal Profile (sconfig) Benchmark Lock Test
+            step(3, "Testing Xiaomi Thermal Profile (sconfig)...")
+            val sconfigPath = "/sys/class/thermal/thermal_message/sconfig"
+            val sconfigOrig = readSysfsNode(sconfigPath)
+            runRootShell("chmod 0666 $sconfigPath 2>/dev/null; echo 10 > $sconfigPath 2>/dev/null; chmod 0444 $sconfigPath 2>/dev/null")
+            val sconfigAfter = readSysfsNode(sconfigPath)
+            recordResult(
+                sconfigAfter == "10",
+                "Xiaomi sconfig locked to Benchmark Mode [Before: $sconfigOrig -> After: $sconfigAfter]",
+                "Xiaomi sconfig rejected '10' [Readback: $sconfigAfter]"
+            )
+            runRootShell("chmod 0666 $sconfigPath 2>/dev/null; echo 0 > $sconfigPath 2>/dev/null")
+            Thread.sleep(500)
+
+            // STAGE 4: Thermal Daemon Freeze (SIGSTOP) & Resume (SIGCONT) Test
+            step(4, "Testing Thermal Daemons Freeze & Resume...")
+            val (_, daemonReport) = runRootShell(
+                "for d in joyose mi_thermald thermal-engine; do " +
+                "p=\$(pidof \$d); " +
+                "if [ ! -z \"\$p\" ]; then " +
+                "kill -STOP \$p 2>/dev/null; " +
+                "st=\$(awk '{print \$3}' /proc/\$(echo \$p | awk '{print \$1}')/stat 2>/dev/null); " +
+                "kill -CONT \$p 2>/dev/null; " +
+                "echo \"\$d(PID:\$p->State:\$st)\"; " +
+                "else echo \"\$d(NOT_RUNNING)\"; fi; done"
+            )
+            val daemonClean = daemonReport.replace("\n", " | ")
+            recordResult(
+                daemonClean.contains("State:T") || daemonClean.contains("NOT_RUNNING"),
+                "Daemons tested & restored: $daemonClean",
+                "Could not freeze daemons: $daemonClean"
+            )
+            Thread.sleep(500)
+
+            // STAGE 5: CPU Governor Switching Test (Policies 0, 4, 7)
+            step(5, "Testing Kryo 585 CPU Governor Switching...")
+            val govPath4 = "/sys/devices/system/cpu/cpufreq/policy4/scaling_governor"
+            val origGov4 = readSysfsNode(govPath4)
+            runRootShell("echo performance > $govPath4 2>/dev/null")
+            val perfGov4 = readSysfsNode(govPath4)
+            runRootShell("echo schedutil > $govPath4 2>/dev/null")
+            val restGov4 = readSysfsNode(govPath4)
+            recordResult(
+                perfGov4.contains("performance", true),
+                "CPU Policy4 Governor switched [$origGov4 -> $perfGov4 -> $restGov4]",
+                "CPU Policy4 Governor failed to switch to performance [Stayed: $perfGov4]"
+            )
+            Thread.sleep(500)
+
+            // STAGE 6: Prime Core (C7) Frequency Throttle & Nuclear Unthrottle Test
+            step(6, "Testing Prime Core (C7) Throttle & Nuclear Clocks...")
+            val c7MinHw = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
+            val c7MaxHw = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq")
+            val c7ScaleMax = "/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
+            val c7ScaleMin = "/sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq"
+
+            // Test Throttle
+            runRootShell("echo $c7MinHw > $c7ScaleMin 2>/dev/null; echo $c7MinHw > $c7ScaleMax 2>/dev/null")
+            val throttledRead = readSysfsNode(c7ScaleMax)
+
+            // Test Nuclear Unthrottle
+            runRootShell("echo $c7MaxHw > $c7ScaleMax 2>/dev/null; echo 2457600 > $c7ScaleMin 2>/dev/null")
+            val nuclearMaxRead = readSysfsNode(c7ScaleMax)
+            val nuclearMinRead = readSysfsNode(c7ScaleMin)
+
+            // Restore Default
+            runRootShell("echo $c7MinHw > $c7ScaleMin 2>/dev/null; echo $c7MaxHw > $c7ScaleMax 2>/dev/null")
+            recordResult(
+                throttledRead == c7MinHw && nuclearMaxRead == c7MaxHw,
+                "Prime Core C7 Throttle [$throttledRead kHz] & Nuclear Unthrottle [Min:$nuclearMinRead / Max:$nuclearMaxRead kHz] verified",
+                "Prime Core C7 scaling lock mismatch [Throttle:$throttledRead, Max:$nuclearMaxRead, Expected:$c7MaxHw]"
+            )
+            Thread.sleep(500)
+
+            // STAGE 7: Per-Core Hotplug (Online/Offline) Test
+            step(7, "Testing CPU Core 7 Hotplug (Offline -> Online)...")
+            val c7OnlinePath = "/sys/devices/system/cpu/cpu7/online"
+            runRootShell("chmod 0644 $c7OnlinePath 2>/dev/null; echo 0 > $c7OnlinePath 2>/dev/null")
+            val offlineRead = readSysfsNode(c7OnlinePath)
+            runRootShell("echo 1 > $c7OnlinePath 2>/dev/null")
+            val onlineRead = readSysfsNode(c7OnlinePath)
+            recordResult(
+                offlineRead == "0" && onlineRead == "1",
+                "Core 7 Hotplug verified [Offline: $offlineRead -> Restored Online: $onlineRead]",
+                "Core 7 Hotplug blocked by kernel [Offline read: $offlineRead, Online read: $onlineRead]"
+            )
+            Thread.sleep(500)
+
+            // STAGE 8: Adreno 650 GPU Nuclear Power Level 0 (670 MHz) Test
+            step(8, "Testing Adreno 650 GPU 670 MHz Lock...")
+            val gpuMinPwrPath = "/sys/class/kgsl/kgsl-3d0/min_pwrlevel"
+            val gpuThmPwrPath = "/sys/class/kgsl/kgsl-3d0/thermal_pwrlevel"
+            runRootShell("echo 0 > $gpuThmPwrPath 2>/dev/null; echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null; echo 0 > $gpuMinPwrPath 2>/dev/null")
+            Thread.sleep(300)
+            val lockedMinPwr = readSysfsNode(gpuMinPwrPath)
+            val lockedGpuFreq = getGpuFrequency()
+            runRootShell("echo 6 > $gpuMinPwrPath 2>/dev/null; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null")
+            val restoredMinPwr = readSysfsNode(gpuMinPwrPath)
+            recordResult(
+                lockedMinPwr == "0",
+                "GPU Power Level 0 locked [Freq: $lockedGpuFreq | min_pwrlevel: 0 -> Restored: $restoredMinPwr]",
+                "GPU min_pwrlevel rejected 0 [Readback: $lockedMinPwr | Freq: $lockedGpuFreq]"
+            )
+            Thread.sleep(500)
+
+            // STAGE 9: Display Refresh Rate Lock (60Hz -> 90Hz -> 120Hz)
+            step(9, "Testing Display Refresh Rate Switching (60/90/120Hz)...")
+            val hzResults = mutableListOf<String>()
+            listOf(60, 90, 120).forEach { hz ->
+                val modeId = if (hz >= 120) 0 else 1
+                runRootShell("settings put system peak_refresh_rate $hz; settings put system min_refresh_rate $hz; settings put system user_refresh_rate $hz; settings put secure miui_refresh_rate $hz; service call SurfaceFlinger 1035 i32 $modeId >/dev/null 2>&1")
+                Thread.sleep(250)
+                val (_, rb) = runRootShell("settings get system user_refresh_rate")
+                hzResults.add("${hz}Hz->$rb")
+            }
+            recordResult(
+                hzResults.last().contains("120"),
+                "Refresh Rate sequence verified [${hzResults.joinToString(", ")}]",
+                "Refresh Rate readback mismatch [${hzResults.joinToString(", ")}]"
+            )
+            Thread.sleep(500)
+
+            // STAGE 10: Battery Bypass & Charging Isolation Test
+            step(10, "Testing Battery Bypass & Charging Isolation Nodes...")
+            val pwrBefore = PowerHardwareHelper.readPowerStats(context, isPlugged)
+            val suspendNode = "/sys/class/power_supply/battery/input_suspend"
+            val chargeEnNode = "/sys/class/power_supply/battery/charging_enabled"
+            runRootShell("echo 0 > $chargeEnNode 2>/dev/null; echo 1 > $suspendNode 2>/dev/null; echo 1 > /sys/class/power_supply/usb/input_suspend 2>/dev/null")
+            Thread.sleep(600)
+            val suspendDuring = readSysfsNode(suspendNode)
+            val chargeEnDuring = readSysfsNode(chargeEnNode)
+            val pwrDuring = PowerHardwareHelper.readPowerStats(context, isPlugged)
+
+            // Restore Charging
+            runRootShell("echo 1 > $chargeEnNode 2>/dev/null; echo 0 > $suspendNode 2>/dev/null; echo 0 > /sys/class/power_supply/usb/input_suspend 2>/dev/null")
+            val suspendAfter = readSysfsNode(suspendNode)
+            val bypassNodeOk = (suspendDuring == "1" || chargeEnDuring == "0")
+            recordResult(
+                bypassNodeOk,
+                "Battery Bypass node accepted write [input_suspend: $suspendDuring, charging_enabled: $chargeEnDuring | Restored: $suspendAfter | Current: ${pwrBefore.currentMa}mA -> ${pwrDuring.currentMa}mA]",
+                "Battery Bypass nodes rejected write [input_suspend: $suspendDuring, charging_enabled: $chargeEnDuring]"
+            )
+            Thread.sleep(500)
+
+            // STAGE 11: Process Pinning (taskset) & RAM Cache Purge Test
+            step(11, "Testing Process Silver-Core Pinning & RAM Purge...")
+            val myPid = android.os.Process.myPid()
+            val (_, tasksetOut) = runRootShell("taskset -p 0f $myPid 2>&1; taskset -p ff $myPid 2>&1")
+            val ramBefore = getRamUsage(context).replace("\n", " ")
+            val (dropCode, _) = runRootShell("sync; echo 3 > /proc/sys/vm/drop_caches")
+            val ramAfter = getRamUsage(context).replace("\n", " ")
+            recordResult(
+                dropCode == 0 && tasksetOut.contains("affinity", true),
+                "taskset Affinity & RAM Purge verified [RAM: $ramBefore -> $ramAfter]",
+                "taskset or drop_caches failed [Exit:$dropCode | Out:${tasksetOut.lines().firstOrNull()}]"
+            )
+            Thread.sleep(500)
+
+            // STAGE 12: Hardware DRM FPS Counter & Floating Overlay Test
+            step(12, "Testing Hardware DRM FPS Counter & Overlay Service...")
+            val drmFpsRaw = readSysfsNode("/sys/class/drm/sde-crtc-0/measured_fps")
+            val parsedDrmFps = drmFpsRaw.split(Regex("[^0-9]+")).mapNotNull { it.toIntOrNull() }.firstOrNull() ?: -1
+            val wasOverlayRunning = FpsOverlayService.isRunning
+            if (hasOverlayPerm && !wasOverlayRunning) {
+                context.startService(Intent(context, FpsOverlayService::class.java))
+                Thread.sleep(1300)
+            }
+            val bridgeFps = liveFps
+            if (hasOverlayPerm && !wasOverlayRunning) {
+                context.stopService(Intent(context, FpsOverlayService::class.java))
+            }
+            recordResult(
+                parsedDrmFps > 0 || bridgeFps > 0,
+                "Hardware DRM FPS Counter readable [Raw: '$drmFpsRaw' | Bridge LiveFPS: $bridgeFps]",
+                "Hardware DRM FPS Counter unreadable [Raw: '$drmFpsRaw' | Bridge: $bridgeFps]"
+            )
+
+            // Final Summary & Auto-Export
+            AppLogger.log("==========================================")
+            AppLogger.log("🏁 AUTOMATED TEST COMPLETE: $passedCount PASSED | $failedCount FAILED")
+            if (manualActionsNeeded.isNotEmpty()) {
+                AppLogger.log("⚠️ MANUAL USER ACTIONS RECOMMENDED:")
+                manualActionsNeeded.forEachIndexed { i, act ->
+                    AppLogger.log("   ${i + 1}. $act")
+                }
+            } else {
+                AppLogger.log("✨ ZERO MANUAL ACTIONS NEEDED — ALL PERMISSIONS & NODES READY")
             }
 
-            // Audit Daemons
+            var exportedPath = "Not exported"
             try {
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "for d in joyose mi_thermald thermal-engine; do echo \"\$d:\$(pidof \$d)\"; done"))
-                val out = BufferedReader(InputStreamReader(p.inputStream)).readText().trim().replace("\n", " | ")
-                p.waitFor()
-                AppLogger.log("7. Thermal Daemons PIDs: $out")
-            } catch (e: Exception) {}
-
-            AppLogger.log("🔬 KERNEL AUDIT COMPLETE — ALL RESULTS LOGGED")
+                val fileName = "AutoTest_Report_${System.currentTimeMillis()}.txt"
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!dir.exists()) dir.mkdirs()
+                val outFile = File(dir, fileName)
+                outFile.writeText(AppLogger.getLogs())
+                exportedPath = "Downloads/$fileName"
+                AppLogger.log("💾 [AUTO-EXPORT] Full report saved to $exportedPath")
+            } catch (e: Exception) {
+                AppLogger.log("⚠️ [AUTO-EXPORT] Could not save to Downloads: ${e.message}")
+            }
             AppLogger.log("==========================================")
-            onComplete?.invoke()
+
+            isAutoTestRunning = false
+            onFinished(passedCount, failedCount, manualActionsNeeded, exportedPath)
         }
     }
 
@@ -241,12 +487,6 @@ object HardwareThermalControl {
             val modeId = if (hz >= 120) 0 else 1
             val cmd = "settings put system peak_refresh_rate $hz; settings put system min_refresh_rate $hz; settings put system user_refresh_rate $hz; settings put secure miui_refresh_rate $hz; settings put system miui_refresh_rate $hz; service call SurfaceFlinger 1035 i32 $modeId"
             executeVerifiedCommand("Force Display Refresh to ${hz}Hz", cmd)
-            try {
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "settings get system peak_refresh_rate"))
-                val readback = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.trim()
-                p.waitFor()
-                AppLogger.log("📺 [READBACK] Display Refresh Setting -> peak_refresh_rate = $readback Hz")
-            } catch (e: Exception) {}
         }
     }
 
@@ -257,7 +497,6 @@ object HardwareThermalControl {
         thread {
             if (enable) {
                 AppLogger.log("🚀 GAMING ENGINE: NUCLEAR PERFORMANCE ENGAGED")
-
                 val killThermalsCmd = """
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > ${'$'}z 2>/dev/null; done
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
@@ -265,9 +504,7 @@ object HardwareThermalControl {
                     chmod 0444 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                 """.trimIndent()
                 executeVerifiedCommand("Lock Thermal sconfig -> 10", killThermalsCmd, "/sys/class/thermal/thermal_message/sconfig", "10")
-
                 forceUnthrottleGPU()
-
                 executeVerifiedCommand(
                     "CPU Policy4 Governor -> Performance",
                     "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor",
@@ -275,19 +512,16 @@ object HardwareThermalControl {
                     "performance"
                 )
                 forceRefreshRate(120)
-
                 val stopCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -STOP \$p; fi; done"
                 executeVerifiedCommand("Freeze Xiaomi Thermal Daemons", stopCmd)
             } else {
                 AppLogger.log("🌱 GAMING ENGINE: Normal Performance Restored")
-
                 val restoreThermalsCmd = """
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                     echo 0 > /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > ${'$'}z 2>/dev/null; done
                 """.trimIndent()
                 executeVerifiedCommand("Restore Kernel Thermals", restoreThermalsCmd)
-
                 executeVerifiedCommand(
                     "GPU -> Auto Dynamic Mode",
                     "echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel",
@@ -300,7 +534,6 @@ object HardwareThermalControl {
                     "/sys/devices/system/cpu/cpufreq/policy4/scaling_governor",
                     "schedutil"
                 )
-
                 val cpuRestoreCmd = """
                     cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null
                     cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null
@@ -308,7 +541,6 @@ object HardwareThermalControl {
                     cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
                 """.trimIndent()
                 executeVerifiedCommand("Restore CPU Min/Max Freqs", cpuRestoreCmd)
-
                 val resumeCmd = "for d in joyose mi_thermald thermal-engine; do p=\$(pidof \$d); if [ ! -z \"\$p\" ]; then kill -CONT \$p; fi; done"
                 executeVerifiedCommand("Resume Xiaomi Thermal Daemons", resumeCmd)
             }
