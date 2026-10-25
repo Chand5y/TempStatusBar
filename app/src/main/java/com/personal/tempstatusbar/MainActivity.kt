@@ -1,6 +1,7 @@
 package com.personal.tempstatusbar
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.*
 import android.content.Context
 import android.content.Intent
@@ -15,6 +16,8 @@ import android.os.*
 import android.provider.Settings
 import android.text.InputType
 import android.view.*
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.*
 import java.io.File
 import kotlin.concurrent.thread
@@ -28,7 +31,6 @@ class MainActivity : Activity() {
     private lateinit var dbHelper: DatabaseHelper
     private lateinit var prefs: android.content.SharedPreferences
 
-    // Theme Engine State
     data class ThemePalette(
         val name: String,
         val bgTop: Int,
@@ -36,6 +38,7 @@ class MainActivity : Activity() {
         val cardBg: Int,
         val cardStroke: Int,
         val pillBg: Int,
+        val navBarBg: Int,
         val textPrimary: Int,
         val textSecondary: Int,
         val accentPrimary: Int,
@@ -49,15 +52,17 @@ class MainActivity : Activity() {
     private lateinit var theme: ThemePalette
     private var currentTabIndex = 0
     private val tabViews = mutableListOf<View>()
-    private val tabBtns = mutableListOf<TextView>()
+    private val navTabContainers = mutableListOf<LinearLayout>()
+    private val navTabLabels = mutableListOf<TextView>()
+    private val navTabIndicators = mutableListOf<View>()
 
-    // Access & Permission Chips
+    // Access Chips
     private lateinit var rootChip: TextView
     private lateinit var usageChip: TextView
     private lateinit var notifChip: TextView
     private lateinit var overlayChip: TextView
 
-    // Tab 1: Monitor & Thermals Views
+    // Tab 1: Monitor
     private lateinit var heroTempText: TextView
     private lateinit var heroStateText: TextView
     private lateinit var heroWattText: TextView
@@ -66,27 +71,27 @@ class MainActivity : Activity() {
     private lateinit var tempSnapshotBox: TextView
     private var thermalHistoryList = listOf<ThermalPoint>()
 
-    // Tab 2: Hardware Control Views
+    // Tab 2: Hardware
     private lateinit var hwGpuText: TextView
     private lateinit var hwRamText: TextView
     private val coreFreqLabels = mutableListOf<TextView>()
-    private val coreToggleSwitches = mutableListOf<Switch>()
 
-    // Tab 3: Gaming & FPS Views
+    // Tab 3: Gaming & FPS
     private lateinit var fpsGraphView: InteractiveGraphView
     private lateinit var fpsSessionHeader: TextView
     private lateinit var fpsScrubReadout: TextView
     private var fpsSessionsList = listOf<FpsSessionData>()
     private var currentFpsSessionIdx = 0
 
-    // Tab 4: Process & Logs Views
+    // Tab 4: Tasks & Logs
     private lateinit var processContainer: LinearLayout
     private lateinit var logConsoleText: TextView
+    private lateinit var logScrollBox: ScrollView
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private var isUiActive = false
 
-    data class ThermalPoint(val temp: Int, val chargeType: String, val details: String, val timestamp: String)
+    data class ThermalPoint(val temp: Int, val chargeType: String, val details: String)
     data class FpsSessionData(val app: String, val duration: Int, val min: Int, val max: Int, val avg: Int, val avgTemp: Int, val fpsList: List<Float>, val tempList: List<Float>)
 
     private val livePoller = object : Runnable {
@@ -117,9 +122,11 @@ class MainActivity : Activity() {
                             else -> theme.good
                         }
                     )
-                    val modeStr = if (HardwareThermalControl.isManualBypassActive) "🛡️ BYPASS ACTIVE"
-                    else if (pwr.isCharging) "⚡ CHARGING ($level%)" else "🔋 DISCHARGING ($level%)"
-                    heroStateText.text = modeStr
+                    heroStateText.text = when {
+                        HardwareThermalControl.isManualBypassActive -> "🛡️ BYPASS ISOLATED ($level%)"
+                        pwr.isCharging -> "⚡ CHARGING ($level%)"
+                        else -> "🔋 DISCHARGING ($level%)"
+                    }
                     val sign = if (pwr.isCharging) "+" else "-"
                     heroWattText.text = "$sign${pwr.wattage}W  •  ${abs(pwr.currentMa)} mA"
 
@@ -127,7 +134,12 @@ class MainActivity : Activity() {
                     hwRamText.text = ram.replace("\n", "  •  ")
 
                     for (i in 0 until minOf(cores.size, coreFreqLabels.size)) {
-                        coreFreqLabels[i].text = "Core $i: ${cores[i]}"
+                        val tag = if (i <= 3) "Silver" else if (i <= 6) "Gold" else "Prime"
+                        coreFreqLabels[i].text = "Core $i ($tag): ${cores[i]}"
+                    }
+
+                    if (currentTabIndex == 3) {
+                        logConsoleText.text = AppLogger.getLogs()
                     }
                 }
             }
@@ -137,12 +149,12 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLogger.init(applicationContext)
         settings = SettingsManager(this)
         dbHelper = DatabaseHelper(this)
         prefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
         HardwareThermalControl.init(this)
 
-        // Ensure default BGMI package & safe 43°C game throttle cap
         if (settings.gamingApps.isEmpty()) {
             settings.gamingApps = setOf("com.pubg.imobile", "com.tencent.ig")
         }
@@ -150,69 +162,78 @@ class MainActivity : Activity() {
             settings.gameThrottleTemp = 43
         }
 
-        // Request Android 13+ Notification Permission so Status Bar Temp works immediately
-        if (Build.VERSION.SDK_INT >= 33) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
-            }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
         }
 
-        // Trigger root handshake in background on launch so Magisk/KernelSU prompts immediately
-        thread { HardwareThermalControl.isRootAvailable() }
+        val savedTheme = prefs.getString("appThemeMode", "DEFAULT") ?: "DEFAULT"
+        theme = resolveTheme(savedTheme)
 
-        theme = resolveTheme(prefs.getString("appThemeMode", "SIGNATURE") ?: "SIGNATURE")
+        AppLogger.log("📱 [UI] MainActivity opened | Theme: ${theme.name}")
         buildFullInterface()
         startAndSyncService()
+
+        // Run initial hardware audit automatically on first launch so the log is populated with real data immediately
+        HardwareThermalControl.runFullKernelAudit {
+            uiHandler.post {
+                if (::logConsoleText.isInitialized) {
+                    logConsoleText.text = AppLogger.getLogs()
+                }
+            }
+        }
     }
 
     // =========================================================================
-    // MULTI-THEME ENGINE (Signature Default, Material You, Light, Dark, Crimson)
+    // EXECUTIVE THEME ENGINE (Default, Material You, Light, Dark)
     // =========================================================================
     private fun resolveTheme(mode: String): ThemePalette {
         val sysNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         return when (mode) {
             "LIGHT" -> ThemePalette(
-                name = "Light Mode",
-                bgTop = Color.parseColor("#F1F5F9"),
-                bgBottom = Color.parseColor("#E2E8F0"),
+                name = "Light",
+                bgTop = Color.parseColor("#F8FAFC"),
+                bgBottom = Color.parseColor("#EEF2F6"),
                 cardBg = Color.parseColor("#FFFFFF"),
-                cardStroke = Color.parseColor("#CBD5E1"),
+                cardStroke = Color.parseColor("#E2E8F0"),
                 pillBg = Color.parseColor("#F1F5F9"),
+                navBarBg = Color.parseColor("#FFFFFF"),
                 textPrimary = Color.parseColor("#0F172A"),
-                textSecondary = Color.parseColor("#475569"),
-                accentPrimary = Color.parseColor("#0284C7"),
-                accentSecondary = Color.parseColor("#4F46E5"),
+                textSecondary = Color.parseColor("#64748B"),
+                accentPrimary = Color.parseColor("#2563EB"),
+                accentSecondary = Color.parseColor("#3B82F6"),
                 good = Color.parseColor("#059669"),
                 warn = Color.parseColor("#D97706"),
-                danger = Color.parseColor("#E11D48"),
+                danger = Color.parseColor("#DC2626"),
                 isLight = true
             )
             "DARK" -> ThemePalette(
-                name = "Dark Mode",
-                bgTop = Color.parseColor("#090D16"),
-                bgBottom = Color.parseColor("#111827"),
-                cardBg = Color.parseColor("#1E293B"),
-                cardStroke = Color.parseColor("#334155"),
-                pillBg = Color.parseColor("#0F172A"),
-                textPrimary = Color.parseColor("#F8FAFC"),
-                textSecondary = Color.parseColor("#94A3B8"),
-                accentPrimary = Color.parseColor("#38BDF8"),
+                name = "Dark",
+                bgTop = Color.parseColor("#090A0F"),
+                bgBottom = Color.parseColor("#11131A"),
+                cardBg = Color.parseColor("#171922"),
+                cardStroke = Color.parseColor("#262936"),
+                pillBg = Color.parseColor("#202430"),
+                navBarBg = Color.parseColor("#14161E"),
+                textPrimary = Color.parseColor("#F3F4F6"),
+                textSecondary = Color.parseColor("#9CA3AF"),
+                accentPrimary = Color.parseColor("#6366F1"),
                 accentSecondary = Color.parseColor("#818CF8"),
                 good = Color.parseColor("#10B981"),
                 warn = Color.parseColor("#F59E0B"),
-                danger = Color.parseColor("#F43F5E"),
+                danger = Color.parseColor("#EF4444"),
                 isLight = false
             )
             "MATERIAL_YOU" -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     if (sysNight) {
                         ThemePalette(
-                            name = "Material You (Dynamic)",
+                            name = "Material You",
                             bgTop = getColor(android.R.color.system_neutral1_900),
                             bgBottom = getColor(android.R.color.system_neutral1_800),
                             cardBg = getColor(android.R.color.system_neutral2_800),
                             cardStroke = getColor(android.R.color.system_neutral2_600),
                             pillBg = getColor(android.R.color.system_neutral1_900),
+                            navBarBg = getColor(android.R.color.system_neutral1_900),
                             textPrimary = getColor(android.R.color.system_neutral1_50),
                             textSecondary = getColor(android.R.color.system_neutral2_200),
                             accentPrimary = getColor(android.R.color.system_accent1_200),
@@ -224,12 +245,13 @@ class MainActivity : Activity() {
                         )
                     } else {
                         ThemePalette(
-                            name = "Material You (Dynamic)",
+                            name = "Material You",
                             bgTop = getColor(android.R.color.system_neutral1_50),
                             bgBottom = getColor(android.R.color.system_neutral1_100),
                             cardBg = getColor(android.R.color.system_neutral1_0),
                             cardStroke = getColor(android.R.color.system_neutral2_200),
                             pillBg = getColor(android.R.color.system_neutral1_100),
+                            navBarBg = getColor(android.R.color.system_neutral1_0),
                             textPrimary = getColor(android.R.color.system_neutral1_900),
                             textSecondary = getColor(android.R.color.system_neutral2_600),
                             accentPrimary = getColor(android.R.color.system_accent1_600),
@@ -240,27 +262,32 @@ class MainActivity : Activity() {
                             isLight = true
                         )
                     }
-                } else resolveTheme("SIGNATURE")
+                } else resolveTheme("DEFAULT")
             }
             else -> ThemePalette(
-                name = "Signature Default",
-                bgTop = Color.parseColor("#0B132B"),
-                bgBottom = Color.parseColor("#1C2541"),
-                cardBg = Color.parseColor("#232F4E"),
-                cardStroke = Color.parseColor("#3A506B"),
-                pillBg = Color.parseColor("#162038"),
-                textPrimary = Color.parseColor("#FFFFFF"),
-                textSecondary = Color.parseColor("#A5B4FC"),
-                accentPrimary = Color.parseColor("#00F5D4"),
-                accentSecondary = Color.parseColor("#00BBF9"),
-                good = Color.parseColor("#00F5D4"),
-                warn = Color.parseColor("#FEE440"),
-                danger = Color.parseColor("#FF0055"),
+                // Classy, Modern Obsidian Titanium & Royal Sapphire Default Theme
+                name = "Default",
+                bgTop = Color.parseColor("#111318"),
+                bgBottom = Color.parseColor("#181C24"),
+                cardBg = Color.parseColor("#1E232D"),
+                cardStroke = Color.parseColor("#2E3646"),
+                pillBg = Color.parseColor("#262C3A"),
+                navBarBg = Color.parseColor("#161922"),
+                textPrimary = Color.parseColor("#F9FAFB"),
+                textSecondary = Color.parseColor("#9CA3AF"),
+                accentPrimary = Color.parseColor("#3B82F6"),
+                accentSecondary = Color.parseColor("#60A5FA"),
+                good = Color.parseColor("#10B981"),
+                warn = Color.parseColor("#F59E0B"),
+                danger = Color.parseColor("#F43F5E"),
                 isLight = false
             )
         }
     }
 
+    // =========================================================================
+    // INTERACTIVE ANIMATIONS & HAPTICS
+    // =========================================================================
     private fun hapticTap(view: View? = window?.decorView) {
         view?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     }
@@ -273,18 +300,38 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun attachSpringAnimation(view: View, onClick: () -> Unit) {
+        view.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.95f).scaleY(0.95f).setDuration(90).setInterpolator(DecelerateInterpolator()).start()
+                }
+                MotionEvent.ACTION_UP -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(200).setInterpolator(OvershootInterpolator(2.2f)).start()
+                    hapticTap(v)
+                    onClick()
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(150).start()
+                }
+            }
+            true
+        }
+    }
+
     // =========================================================================
-    // MAIN INTERFACE BUILDER
+    // MAIN UI LAYOUT WITH BOTTOM NAVIGATION BAR
     // =========================================================================
     private fun buildFullInterface() {
         tabViews.clear()
-        tabBtns.clear()
+        navTabContainers.clear()
+        navTabLabels.clear()
+        navTabIndicators.clear()
         coreFreqLabels.clear()
-        coreToggleSwitches.clear()
 
         try {
             window.statusBarColor = theme.bgTop
-            window.navigationBarColor = theme.bgBottom
+            window.navigationBarColor = theme.navBarBg
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 @Suppress("DEPRECATION")
                 window.decorView.systemUiVisibility = if (theme.isLight) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else 0
@@ -294,10 +341,16 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(theme.bgTop, theme.bgBottom))
-            setPadding(32, 36, 32, 24)
         }
 
-        // 1. Header Row with Theme Switcher
+        // Top Content Wrapper (Header + Access Chips + Active Tab Frame)
+        val mainBody = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            setPadding(34, 34, 34, 0)
+        }
+
+        // 1. Header Bar
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -311,97 +364,68 @@ class MainActivity : Activity() {
             setTextColor(theme.textPrimary)
             textSize = 20f
             typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
+            letterSpacing = 0.02f
         })
         titleCol.addView(TextView(this).apply {
             text = "${HardwareThermalControl.getHardwareInfo()} • ${theme.name}"
             setTextColor(theme.textSecondary)
-            textSize = 11.5f
+            textSize = 12f
+            setPadding(0, 3, 0, 0)
         })
 
-        val themeBtn = createPillButton("🎨 Theme") {
+        val themeBtn = createPillButton("Theme: ${theme.name}") {
+            AppLogger.logUi("Theme Button", "Opened Theme Selector")
             showThemePickerDialog()
         }.apply { setPadding(28, 16, 28, 16) }
 
         header.addView(titleCol)
         header.addView(themeBtn)
-        root.addView(header)
+        mainBody.addView(header)
 
-        addSpace(root, 20)
+        addSpace(mainBody, 20)
 
-        // 2. Live Access & Permission Status Bar (Root, Usage, Status Bar, Overlay)
+        // 2. Access Status Strip
         val accessRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 4f
         }
         rootChip = createAccessChip("ROOT") {
+            AppLogger.logUi("Access Chip", "Tapped ROOT verification chip")
             thread {
                 val ok = HardwareThermalControl.isRootAvailable()
                 uiHandler.post {
                     updateAccessChips(ok)
-                    Toast.makeText(this, if (ok) "Root Access Verified (uid=0)" else "Root Denied — Check Magisk/KernelSU", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, if (ok) "Root Verified (uid=0)" else "Root Denied", Toast.LENGTH_SHORT).show()
                 }
             }
         }
         usageChip = createAccessChip("USAGE") {
+            AppLogger.logUi("Access Chip", "Opened Usage Access Settings")
             startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-            Toast.makeText(this, "Enable Usage Access for TempStatusBar", Toast.LENGTH_LONG).show()
         }
-        notifChip = createAccessChip("STATUS BAR") {
+        notifChip = createAccessChip("ICON") {
+            AppLogger.logUi("Access Chip", "Triggered Status Bar Icon Refresh")
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
             } else {
                 settings.showNotification = true
                 startAndSyncService()
-                Toast.makeText(this, "Status Bar Temperature Refreshed", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Status Bar Temperature Active", Toast.LENGTH_SHORT).show()
             }
         }
-        overlayChip = createAccessChip("OVERLAY") {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-            } else {
-                toggleOverlayPill(!FpsOverlayService.isRunning)
-            }
+        overlayChip = createAccessChip("PILL") {
+            AppLogger.logUi("Access Chip", "Toggled Floating FPS Pill")
+            toggleOverlayPill(!FpsOverlayService.isRunning)
         }
         accessRow.addView(rootChip)
         accessRow.addView(usageChip)
         accessRow.addView(notifChip)
         accessRow.addView(overlayChip)
-        root.addView(accessRow)
+        mainBody.addView(accessRow)
 
-        addSpace(root, 22)
+        addSpace(mainBody, 20)
 
-        // 3. 4-Tab Segmented Navigation
-        val tabBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            weightSum = 4f
-            setPadding(8, 8, 8, 8)
-            background = GradientDrawable().apply {
-                cornerRadius = 100f
-                setColor(theme.pillBg)
-                setStroke(2, theme.cardStroke)
-            }
-        }
-        listOf("Monitor", "Hardware", "Gaming/FPS", "Tasks/Log").forEachIndexed { idx, label ->
-            val tBtn = TextView(this).apply {
-                text = label
-                textSize = 12f
-                gravity = Gravity.CENTER
-                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                setPadding(8, 20, 8, 20)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener {
-                    hapticTap(this)
-                    switchTab(idx)
-                }
-            }
-            tabBtns.add(tBtn)
-            tabBar.addView(tBtn)
-        }
-        root.addView(tabBar)
-
-        addSpace(root, 20)
-
-        // 4. Tab Content Area
+        // 3. Center Tab View Container
         val contentFrame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
         }
@@ -414,33 +438,113 @@ class MainActivity : Activity() {
             tabViews.add(v)
             contentFrame.addView(v)
         }
-        root.addView(contentFrame)
+        mainBody.addView(contentFrame)
+        root.addView(mainBody)
 
-        setContentView(root)
-        switchTab(currentTabIndex)
-    }
-
-    private fun switchTab(idx: Int) {
-        currentTabIndex = idx
-        tabViews.forEachIndexed { i, v -> v.visibility = if (i == idx) View.VISIBLE else View.GONE }
-        tabBtns.forEachIndexed { i, b ->
-            if (i == idx) {
-                b.setTextColor(if (theme.isLight) Color.WHITE else Color.parseColor("#090D16"))
-                b.background = GradientDrawable(
-                    GradientDrawable.Orientation.LEFT_RIGHT,
-                    intArrayOf(theme.accentPrimary, theme.accentSecondary)
-                ).apply { cornerRadius = 100f }
-            } else {
-                b.setTextColor(theme.textSecondary)
-                b.background = null
+        // 4. Docked Bottom Navigation Bar
+        val bottomNavWrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(theme.navBarBg)
+                setStroke(2, theme.cardStroke)
             }
         }
+        val bottomNav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 4f
+            setPadding(16, 14, 16, 18)
+        }
+
+        val navItems = listOf(
+            "Monitor" to "🌡️",
+            "Hardware" to "⚙️",
+            "Gaming" to "🚀",
+            "Logs & Tasks" to "📋"
+        )
+
+        navItems.forEachIndexed { idx, (label, icon) ->
+            val itemLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(8, 12, 8, 12)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(6, 0, 6, 0)
+                }
+            }
+            val indicator = View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(48, 6).apply { setMargins(0, 0, 0, 8) }
+                background = GradientDrawable().apply {
+                    cornerRadius = 10f
+                    setColor(theme.accentPrimary)
+                }
+            }
+            val txt = TextView(this).apply {
+                text = "$icon  $label"
+                textSize = 12f
+                gravity = Gravity.CENTER
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            }
+            itemLayout.addView(indicator)
+            itemLayout.addView(txt)
+
+            attachSpringAnimation(itemLayout) {
+                if (currentTabIndex != idx) {
+                    AppLogger.logUi("Bottom Nav", "Switched to tab [$label]")
+                    switchTab(idx, animate = true)
+                }
+            }
+
+            navTabContainers.add(itemLayout)
+            navTabLabels.add(txt)
+            navTabIndicators.add(indicator)
+            bottomNav.addView(itemLayout)
+        }
+
+        bottomNavWrapper.addView(bottomNav)
+        root.addView(bottomNavWrapper)
+
+        setContentView(root)
+        switchTab(currentTabIndex, animate = false)
+    }
+
+    private fun switchTab(idx: Int, animate: Boolean) {
+        currentTabIndex = idx
+        tabViews.forEachIndexed { i, v ->
+            if (i == idx) {
+                v.visibility = View.VISIBLE
+                if (animate) {
+                    v.alpha = 0f
+                    v.translationY = 28f
+                    v.animate()
+                        .alpha(1f)
+                        .translationY(0f)
+                        .setDuration(220)
+                        .setInterpolator(DecelerateInterpolator())
+                        .start()
+                }
+            } else {
+                v.visibility = View.GONE
+            }
+        }
+        navTabContainers.forEachIndexed { i, container ->
+            val active = (i == idx)
+            navTabIndicators[i].visibility = if (active) View.VISIBLE else View.INVISIBLE
+            navTabLabels[i].setTextColor(if (active) theme.accentPrimary else theme.textSecondary)
+            container.background = if (active) {
+                GradientDrawable().apply {
+                    cornerRadius = 24f
+                    setColor(Color.argb(28, Color.red(theme.accentPrimary), Color.green(theme.accentPrimary), Color.blue(theme.accentPrimary)))
+                }
+            } else null
+        }
+
         when (idx) {
             0 -> loadThermalGraphData()
             2 -> loadFpsGraphData()
             3 -> {
                 refreshProcessesList()
-                logConsoleText.text = readAllLogs().ifBlank { "No logs recorded yet." }
+                logConsoleText.text = AppLogger.getLogs()
+                logScrollBox.post { logScrollBox.fullScroll(View.FOCUS_DOWN) }
             }
         }
     }
@@ -452,7 +556,6 @@ class MainActivity : Activity() {
         val scroll = createScroll()
         val col = createCol()
 
-        // Live Hero Status Card
         val heroCard = createCard()
         val heroRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -490,14 +593,17 @@ class MainActivity : Activity() {
         heroCard.addView(createDivider())
 
         heroCard.addView(createSwitch("Show Live Temperature in Status Bar", settings.showNotification) { on ->
+            AppLogger.logUi("Status Bar Temp Switch", if (on) "ENABLED" else "DISABLED")
             settings.showNotification = on
             startAndSyncService()
         })
         heroCard.addView(createSwitch("Show Live Wattage & mA in Notification", settings.showPowerMetrics) { on ->
+            AppLogger.logUi("Notification Power Metrics Switch", if (on) "ENABLED" else "DISABLED")
             settings.showPowerMetrics = on
             startAndSyncService()
         })
         heroCard.addView(createSwitch("Battery Bypass (Isolate Charger)", HardwareThermalControl.isManualBypassActive) { on ->
+            AppLogger.logUi("Battery Bypass Switch", if (on) "ENGAGED" else "RELEASED")
             HardwareThermalControl.setChargingEnabled(!on, isManualToggle = true)
             startAndSyncService()
         })
@@ -505,24 +611,27 @@ class MainActivity : Activity() {
 
         addSpace(col, 22)
 
-        // Interactive Touch-Draggable Temperature Graph Card
+        // Interactive Temperature Graph Card
         val graphCard = createCard()
         val gHead = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         gHead.addView(TextView(this).apply {
-            text = "INTERACTIVE TEMPERATURE GRAPH (DRAG TO INSPECT)"
+            text = "INTERACTIVE TEMPERATURE GRAPH (DRAG TO SCRUB)"
             setTextColor(theme.accentPrimary)
             textSize = 11f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
-        gHead.addView(createPillButton("↻") { loadThermalGraphData() }.apply { setPadding(22, 10, 22, 10) })
+        gHead.addView(createPillButton("↻") {
+            AppLogger.logUi("Thermal Graph", "Manual Refresh")
+            loadThermalGraphData()
+        }.apply { setPadding(22, 10, 22, 10) })
         graphCard.addView(gHead)
 
         tempScrubReadout = TextView(this).apply {
-            text = "Drag across the graph to inspect historical temps & CPU usage"
+            text = "Drag across the graph to inspect historical temps & CPU load"
             setTextColor(theme.textSecondary)
             textSize = 12f
             setPadding(0, 8, 0, 10)
@@ -536,7 +645,7 @@ class MainActivity : Activity() {
                 tempSnapshotBox.text = "CPU Snapshot at Sample #${idx + 1} (${pt.temp}°C):\n${pt.details}"
             }
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 340)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 330)
         }
         graphCard.addView(tempGraphView)
 
@@ -558,10 +667,11 @@ class MainActivity : Activity() {
 
         addSpace(col, 22)
 
-        // Thermal & Charging Thresholds Card
+        // Thresholds Card
         val threshCard = createCard()
         threshCard.addView(createSectionLabel("THERMAL & CHARGING THRESHOLDS"))
         threshCard.addView(createSwitch("Enable Max Charge % Cutoff", settings.chargeLimitEnabled) { on ->
+            AppLogger.logUi("Max Charge % Cutoff Switch", if (on) "ENABLED (${settings.chargeLimitMax}%)" else "DISABLED")
             settings.chargeLimitEnabled = on
         })
 
@@ -573,18 +683,21 @@ class MainActivity : Activity() {
         warnBtn = createPillButton("Warn: ${settings.warningTemp}°C") {
             showNumberDialog("Overheat Warning (°C)", settings.warningTemp, 36, 48) { v ->
                 settings.warningTemp = v; warnBtn.text = "Warn: ${v}°C"
+                AppLogger.logUi("Threshold Change", "Warning Temp set to ${v}°C")
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, 6, 0) } }
 
         cutBtn = createPillButton("Cutoff: ${settings.cutoffTemp}°C") {
             showNumberDialog("Charge Cutoff (°C)", settings.cutoffTemp, 37, 48) { v ->
                 settings.cutoffTemp = v; cutBtn.text = "Cutoff: ${v}°C"
+                AppLogger.logUi("Threshold Change", "Charge Cutoff Temp set to ${v}°C")
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 6, 0) } }
 
         resBtn = createPillButton("Resume: ${settings.resumeTemp}°C") {
             showNumberDialog("Charge Resume (°C)", settings.resumeTemp, 34, 45) { v ->
                 settings.resumeTemp = v; resBtn.text = "Resume: ${v}°C"
+                AppLogger.logUi("Threshold Change", "Charge Resume Temp set to ${v}°C")
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 0, 0) } }
 
@@ -598,12 +711,14 @@ class MainActivity : Activity() {
         maxPctBtn = createPillButton("Max Charge: ${settings.chargeLimitMax}%") {
             showNumberDialog("Stop Charging At (%)", settings.chargeLimitMax, 60, 100) { v ->
                 settings.chargeLimitMax = v; maxPctBtn.text = "Max Charge: ${v}%"
+                AppLogger.logUi("Threshold Change", "Max Charge % set to ${v}%")
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, 6, 0) } }
 
         resPctBtn = createPillButton("Resume Pct: ${settings.chargeLimitResume}%") {
             showNumberDialog("Resume Charging At (%)", settings.chargeLimitResume, 50, 95) { v ->
                 settings.chargeLimitResume = v; resPctBtn.text = "Resume Pct: ${v}%"
+                AppLogger.logUi("Threshold Change", "Resume Charge % set to ${v}%")
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 0, 0) } }
 
@@ -631,13 +746,22 @@ class MainActivity : Activity() {
 
         val gpuBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f; setPadding(0, 14, 0, 0) }
         gpuBtns.addView(createPillButton("⚡ Force 670MHz Nuclear") {
+            AppLogger.logUi("GPU Control", "User tapped Force 670MHz Nuclear")
             HardwareThermalControl.forceUnthrottleGPU()
-            Toast.makeText(this, "GPU Forced to Power Level 0 (670MHz)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "GPU Forced to 670MHz (Check Logs for verification)", Toast.LENGTH_SHORT).show()
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, 6, 0) } })
 
         gpuBtns.addView(createPillButton("🌱 Restore Auto GPU") {
-            HardwareThermalControl.executeRootCommand("GPU -> Auto Mode", "echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null")
-            Toast.makeText(this, "GPU Restored to Dynamic Scaling", Toast.LENGTH_SHORT).show()
+            AppLogger.logUi("GPU Control", "User tapped Restore Auto GPU")
+            thread {
+                HardwareThermalControl.executeVerifiedCommand(
+                    "GPU -> Auto Mode",
+                    "echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel",
+                    "/sys/class/kgsl/kgsl-3d0/min_pwrlevel",
+                    "6"
+                )
+            }
+            Toast.makeText(this, "GPU Restored to Auto Scaling", Toast.LENGTH_SHORT).show()
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 0, 0) } })
 
         gpuCard.addView(gpuBtns)
@@ -645,14 +769,14 @@ class MainActivity : Activity() {
 
         addSpace(col, 22)
 
-        // Display Refresh Rate Override Card
         val hzCard = createCard()
         hzCard.addView(createSectionLabel("DISPLAY REFRESH RATE LOCK"))
         val hzRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f; setPadding(0, 12, 0, 0) }
         listOf(60, 90, 120).forEach { hz ->
             hzRow.addView(createPillButton("${hz}Hz") {
+                AppLogger.logUi("Display Refresh Button", "User requested ${hz}Hz lock")
                 HardwareThermalControl.forceRefreshRate(hz)
-                Toast.makeText(this, "Display Refresh Locked to ${hz}Hz", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Display Locked to ${hz}Hz", Toast.LENGTH_SHORT).show()
             }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 6, 0) } })
         }
         hzCard.addView(hzRow)
@@ -660,15 +784,16 @@ class MainActivity : Activity() {
 
         addSpace(col, 22)
 
-        // Kryo 585 Per-Core Control Card
         val cpuCard = createCard()
         cpuCard.addView(createSectionLabel("KRYO 585 PER-CORE CONTROL & GOVERNOR"))
         cpuCard.addView(createSwitch("Smart Thermal Governor (Auto Cool)", false) { on ->
+            AppLogger.logUi("Smart Thermal Governor Switch", if (on) "ENABLED" else "DISABLED")
             sendBroadcast(Intent("ACTION_TOGGLE_SMART_GOVERNOR").apply {
                 setPackage(packageName); putExtra("state", on)
             })
         })
         cpuCard.addView(createSwitch("Manual Throttle Prime Core (C7 Min Freq)", false) { on ->
+            AppLogger.logUi("Prime Core C7 Throttle Switch", if (on) "THROTTLED" else "UNTHROTTLED")
             HardwareThermalControl.throttlePrimeCore(on)
         })
         cpuCard.addView(createDivider())
@@ -679,11 +804,7 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(0, 8, 0, 8)
             }
-            val clusterTag = when {
-                coreId <= 3 -> "Silver"
-                coreId <= 6 -> "Gold"
-                else -> "Prime"
-            }
+            val clusterTag = if (coreId <= 3) "Silver" else if (coreId <= 6) "Gold" else "Prime"
             val lbl = TextView(this).apply {
                 text = "Core $coreId ($clusterTag): -- MHz"
                 setTextColor(theme.textPrimary)
@@ -699,10 +820,10 @@ class MainActivity : Activity() {
                     isChecked = true
                     setOnCheckedChangeListener { v, online ->
                         hapticTap(v)
+                        AppLogger.logUi("CPU Core $coreId Switch", if (online) "ONLINE" else "OFFLINE")
                         HardwareThermalControl.setCoreOnline(coreId, online)
                     }
                 }
-                coreToggleSwitches.add(sw)
                 row.addView(sw)
             } else {
                 row.addView(TextView(this).apply {
@@ -726,7 +847,6 @@ class MainActivity : Activity() {
         val scroll = createScroll()
         val col = createCol()
 
-        // Interactive FPS Session Graph Card
         val fpsCard = createCard()
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         fpsSessionHeader = TextView(this).apply {
@@ -737,7 +857,10 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         head.addView(fpsSessionHeader)
-        head.addView(createPillButton("Matches") { showFpsSessionDialog() }.apply { setPadding(24, 12, 24, 12) })
+        head.addView(createPillButton("Matches") {
+            AppLogger.logUi("FPS Graph", "Opened Recorded Matches Picker")
+            showFpsSessionDialog()
+        }.apply { setPadding(24, 12, 24, 12) })
         fpsCard.addView(head)
 
         fpsScrubReadout = TextView(this).apply {
@@ -756,25 +879,27 @@ class MainActivity : Activity() {
                 fpsScrubReadout.text = "Point #${idx + 1}/${s.fpsList.size}  •  $fVal FPS  •  ${tVal}°C  (Avg ${s.avg} | Max ${s.max})"
             }
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 340)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 330)
         }
         fpsCard.addView(fpsGraphView)
         col.addView(fpsCard)
 
         addSpace(col, 22)
 
-        // Nuclear 120 FPS Gaming Engine Card
         val gameCard = createCard()
         gameCard.addView(createSectionLabel("NUCLEAR 120 FPS ENGINE & OVERLAY"))
 
         gameCard.addView(createSwitch("Nuclear 120 FPS Gaming Mode", settings.gamingModeEnabled) { on ->
+            AppLogger.logUi("Nuclear Gaming Mode Switch", if (on) "ARMED" else "DISARMED")
             settings.gamingModeEnabled = on
             if (!on) HardwareThermalControl.setPeakPerformanceMode(false)
         })
         gameCard.addView(createSwitch("Launch Floating FPS Pill Overlay", FpsOverlayService.isRunning) { on ->
+            AppLogger.logUi("Floating FPS Pill Switch", if (on) "LAUNCHED" else "STOPPED")
             toggleOverlayPill(on)
         })
         gameCard.addView(createSwitch("Show Battery Temp in FPS Pill", prefs.getBoolean("showTempInFpsOverlay", true)) { on ->
+            AppLogger.logUi("Show Temp in Pill Switch", if (on) "ENABLED" else "DISABLED")
             prefs.edit().putBoolean("showTempInFpsOverlay", on).apply()
         })
 
@@ -783,22 +908,29 @@ class MainActivity : Activity() {
         lateinit var capBtn: TextView
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 2f; setPadding(0, 8, 0, 12) }
         row.addView(createPillButton("Target Games (${settings.gamingApps.size})") {
+            AppLogger.logUi("Gaming Apps Button", "Opened Target Games Selector")
             showAppPicker("Select Target Games", settings.gamingApps, true) { updated ->
-                settings.gamingApps = updated; buildFullInterface()
+                settings.gamingApps = updated
+                AppLogger.logUi("Target Games Saved", updated.joinToString(", "))
+                buildFullInterface()
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, 6, 0) } })
 
         capBtn = createPillButton("Throttle Cap: ${settings.gameThrottleTemp}°C") {
             showNumberDialog("Game Thermal Ceiling (°C)", settings.gameThrottleTemp, 38, 48) { v ->
                 settings.gameThrottleTemp = v; capBtn.text = "Throttle Cap: ${v}°C"
+                AppLogger.logUi("Game Thermal Ceiling", "Set to ${v}°C")
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 0, 0) } }
         row.addView(capBtn)
         gameCard.addView(row)
 
         gameCard.addView(createPillButton("Exempt Background Apps (${settings.exemptApps.size})") {
+            AppLogger.logUi("Exempt Apps Button", "Opened Exempt Apps Selector")
             showAppPicker("Select Exempt Apps", settings.exemptApps, false) { updated ->
-                settings.exemptApps = updated; buildFullInterface()
+                settings.exemptApps = updated
+                AppLogger.logUi("Exempt Apps Saved", "${updated.size} packages")
+                buildFullInterface()
             }
         })
 
@@ -808,12 +940,78 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // TAB 4: TASKS & LOGS (Kernel Process Manager + Action Log Console)
+    // TAB 4: LOGS & TASKS (Verified Action Log + Kernel Process Manager)
     // =========================================================================
     private fun buildTasksAndLogTab(): ScrollView {
         val scroll = createScroll()
         val col = createCol()
 
+        // Deep Diagnostic & Verification Logger Card (Top of Tab 4 for instant visibility)
+        val logCard = createCard()
+        val logHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        logHeader.addView(TextView(this).apply {
+            text = "DEEP DIAGNOSTIC & VERIFICATION LOG"
+            setTextColor(theme.accentPrimary)
+            textSize = 11.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        logHeader.addView(createPillButton("🔬 Run Audit") {
+            AppLogger.logUi("Run Kernel Audit Button", "Triggered manual hardware verification")
+            HardwareThermalControl.runFullKernelAudit {
+                uiHandler.post {
+                    logConsoleText.text = AppLogger.getLogs()
+                    logScrollBox.post { logScrollBox.fullScroll(View.FOCUS_DOWN) }
+                }
+            }
+        }.apply { setPadding(24, 12, 24, 12) })
+        logCard.addView(logHeader)
+
+        logScrollBox = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 460).apply { setMargins(0, 14, 0, 14) }
+            setPadding(22, 18, 22, 18)
+            background = GradientDrawable().apply {
+                cornerRadius = 20f
+                setColor(theme.pillBg)
+                setStroke(2, theme.cardStroke)
+            }
+        }
+        logConsoleText = TextView(this).apply {
+            text = AppLogger.getLogs()
+            setTextColor(theme.textPrimary)
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+        }
+        logScrollBox.addView(logConsoleText)
+        logCard.addView(logScrollBox)
+
+        val logBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f }
+        logBtns.addView(createPillButton("Refresh") {
+            AppLogger.logUi("Log Console", "Refreshed view")
+            logConsoleText.text = AppLogger.getLogs()
+            logScrollBox.post { logScrollBox.fullScroll(View.FOCUS_DOWN) }
+        }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, 6, 0) } })
+
+        logBtns.addView(createPillButton("Export .txt") {
+            AppLogger.logUi("Log Console", "Exporting ActionLog to Downloads")
+            exportLogsToFile()
+        }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 6, 0) } })
+
+        logBtns.addView(createPillButton("Clear") {
+            AppLogger.clear()
+            logConsoleText.text = AppLogger.getLogs()
+        }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 0, 0) } })
+
+        logCard.addView(logBtns)
+        col.addView(logCard)
+
+        addSpace(col, 22)
+
+        // Live Kernel Process & RAM Manager Card
         val procCard = createCard()
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         head.addView(TextView(this).apply {
@@ -824,8 +1022,9 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
         head.addView(createPillButton("Purge RAM") {
+            AppLogger.logUi("Purge RAM Button", "User requested kernel drop_caches=3")
             HardwareThermalControl.clearRamCaches()
-            Toast.makeText(this, "Kernel RAM Caches Dropped", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "RAM Purge Executed (Verified in Log above)", Toast.LENGTH_SHORT).show()
             refreshProcessesList()
         }.apply { setPadding(22, 10, 22, 10) })
         procCard.addView(head)
@@ -836,47 +1035,6 @@ class MainActivity : Activity() {
         }
         procCard.addView(processContainer)
         col.addView(procCard)
-
-        addSpace(col, 22)
-
-        val logCard = createCard()
-        logCard.addView(createSectionLabel("DEEP DIAGNOSTIC ACTION LOG"))
-        val logBox = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 420).apply { setMargins(0, 12, 0, 14) }
-            setPadding(22, 18, 22, 18)
-            background = GradientDrawable().apply {
-                cornerRadius = 20f
-                setColor(theme.pillBg)
-                setStroke(2, theme.cardStroke)
-            }
-        }
-        logConsoleText = TextView(this).apply {
-            text = readAllLogs().ifBlank { "No diagnostic logs recorded yet." }
-            setTextColor(theme.textPrimary)
-            textSize = 11f
-            typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
-        }
-        logBox.addView(logConsoleText)
-        logCard.addView(logBox)
-
-        val logBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 3f }
-        logBtns.addView(createPillButton("Refresh") {
-            logConsoleText.text = readAllLogs().ifBlank { "No diagnostic logs recorded yet." }
-            logBox.post { logBox.fullScroll(View.FOCUS_DOWN) }
-        }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, 6, 0) } })
-
-        logBtns.addView(createPillButton("Export .txt") { exportLogsToFile() }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 6, 0) }
-        })
-
-        logBtns.addView(createPillButton("Clear") {
-            clearAllLogs()
-            logConsoleText.text = readAllLogs()
-        }.apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(6, 0, 0, 0) } })
-
-        logCard.addView(logBtns)
-        col.addView(logCard)
 
         scroll.addView(col)
         return scroll
@@ -937,8 +1095,7 @@ class MainActivity : Activity() {
             when (event.action) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                     parent?.requestDisallowInterceptTouchEvent(true)
-                    val padL = 84f
-                    val padR = 24f
+                    val padL = 84f; val padR = 24f
                     val w = (width - padL - padR).coerceAtLeast(1f)
                     val frac = ((event.x - padL) / w).coerceIn(0f, 1f)
                     val newIdx = (frac * (primarySeries.size - 1)).roundToInt().coerceIn(0, primarySeries.size - 1)
@@ -960,8 +1117,7 @@ class MainActivity : Activity() {
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val w = width.toFloat()
-            val h = height.toFloat()
+            val w = width.toFloat(); val h = height.toFloat()
             if (w <= 0f || h <= 0f || primarySeries.isEmpty()) return
 
             val padL = 84f; val padR = 24f; val padT = 26f; val padB = 30f
@@ -1006,7 +1162,7 @@ class MainActivity : Activity() {
 
             fillPaint.shader = LinearGradient(
                 0f, padT, 0f, padT + ch,
-                Color.argb(95, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)),
+                Color.argb(85, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)),
                 Color.argb(0, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)),
                 Shader.TileMode.CLAMP
             )
@@ -1029,7 +1185,6 @@ class MainActivity : Activity() {
                 canvas.drawPath(sPath, secCurvePaint)
             }
 
-            // Draw Interactive Scrubbing Crosshair & Node
             val idx = scrubIndex.coerceIn(0, pts.size - 1)
             val activePt = pts[idx]
             canvas.drawLine(activePt.x, padT, activePt.x, padT + ch, scrubLinePaint)
@@ -1071,8 +1226,8 @@ class MainActivity : Activity() {
         chip.setTextColor(c)
         chip.background = GradientDrawable().apply {
             cornerRadius = 100f
-            setColor(Color.argb(32, Color.red(c), Color.green(c), Color.blue(c)))
-            setStroke(2, Color.argb(140, Color.red(c), Color.green(c), Color.blue(c)))
+            setColor(Color.argb(28, Color.red(c), Color.green(c), Color.blue(c)))
+            setStroke(2, Color.argb(130, Color.red(c), Color.green(c), Color.blue(c)))
         }
     }
 
@@ -1090,7 +1245,7 @@ class MainActivity : Activity() {
                 if (tName != null) {
                     val c = db.rawQuery("SELECT * FROM $tName ORDER BY rowid DESC LIMIT 60", null)
                     while (c.moveToNext()) {
-                        var t = 0; var cType = "Battery"; var det = ""; var ts = ""
+                        var t = 0; var cType = "Battery"; var det = ""
                         for (i in 0 until c.columnCount) {
                             val col = c.getColumnName(i).lowercase()
                             val v = c.getString(i) ?: ""
@@ -1098,10 +1253,9 @@ class MainActivity : Activity() {
                                 col.contains("temp") -> t = v.toIntOrNull() ?: 0
                                 col.contains("type") -> cType = v
                                 col.contains("detail") -> det = v
-                                col.contains("time") || col.contains("date") -> ts = v
                             }
                         }
-                        if (t in 15..75) pts.add(ThermalPoint(t, cType, det.ifBlank { "No CPU snapshot recorded" }, ts))
+                        if (t in 15..75) pts.add(ThermalPoint(t, cType, det.ifBlank { "No CPU snapshot recorded" }))
                     }
                     c.close()
                 }
@@ -1117,7 +1271,7 @@ class MainActivity : Activity() {
                     tempSnapshotBox.text = "Latest CPU Snapshot (${last.temp}°C):\n${last.details}"
                 } else {
                     val curT = (registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 350) ?: 350) / 10
-                    thermalHistoryList = listOf(ThermalPoint(curT, "Live", "Waiting for 60s database snapshot...", "Now"))
+                    thermalHistoryList = listOf(ThermalPoint(curT, "Live", "Waiting for 60s database snapshot..."))
                     tempGraphView.setGraphData(listOf(curT.toFloat(), curT.toFloat()), emptyList(), theme.accentPrimary, theme.danger, "°C")
                 }
             }
@@ -1203,10 +1357,10 @@ class MainActivity : Activity() {
     }
 
     private fun createProcItem(label: String, pid: Int): LinearLayout {
-        return LinearLayout(this).apply {
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(22, 18, 22, 18)
+            setPadding(24, 20, 24, 20)
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 6, 0, 6) }
             background = GradientDrawable().apply { cornerRadius = 18f; setColor(theme.pillBg) }
             addView(TextView(context).apply {
@@ -1216,30 +1370,38 @@ class MainActivity : Activity() {
             addView(TextView(context).apply {
                 text = "PID $pid"; setTextColor(theme.accentPrimary); textSize = 11f; typeface = Typeface.MONOSPACE
             })
-            setOnClickListener {
-                hapticTap(this)
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle(label)
-                    .setItems(arrayOf("Pin to Silver Cores (0-3)", "Kill Process (PID $pid)")) { _, w ->
-                        if (w == 0) HardwareThermalControl.pinProcessToEfficiencyCores(pid)
-                        else { HardwareThermalControl.killProcess(pid); refreshProcessesList() }
-                    }
-                    .show()
-            }
         }
+        attachSpringAnimation(row) {
+            AppLogger.logUi("Process Row Tapped", "$label [PID $pid]")
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle(label)
+                .setItems(arrayOf("Pin to Silver Cores (0-3)", "Kill Process (PID $pid)")) { _, w ->
+                    if (w == 0) {
+                        AppLogger.logUi("Process Action", "Pinning PID $pid to Silver Cores")
+                        HardwareThermalControl.pinProcessToEfficiencyCores(pid)
+                    } else {
+                        AppLogger.logUi("Process Action", "Killing PID $pid")
+                        HardwareThermalControl.killProcess(pid)
+                        refreshProcessesList()
+                    }
+                }
+                .show()
+        }
+        return row
     }
 
     // =========================================================================
-    // DIALOGS & LOG HELPERS
+    // DIALOGS & LOG EXPORT
     // =========================================================================
     private fun showThemePickerDialog() {
-        val modes = arrayOf("SIGNATURE", "MATERIAL_YOU", "LIGHT", "DARK")
-        val names = arrayOf("Signature Default (Cyber Thermal)", "Material You (Dynamic System)", "Light Mode (Clean Alabaster)", "Dark Mode (Deep Slate)")
+        val modes = arrayOf("DEFAULT", "MATERIAL_YOU", "LIGHT", "DARK")
+        val names = arrayOf("Default (Obsidian Titanium)", "Material You (Dynamic System)", "Light Mode", "Dark Mode")
         AlertDialog.Builder(this)
             .setTitle("Select App Theme")
             .setItems(names) { _, which ->
                 prefs.edit().putString("appThemeMode", modes[which]).apply()
                 theme = resolveTheme(modes[which])
+                AppLogger.logUi("Theme Changed", "Applied ${theme.name} theme")
                 buildFullInterface()
             }
             .show()
@@ -1255,6 +1417,7 @@ class MainActivity : Activity() {
             .setTitle("Recorded FPS Matches")
             .setItems(labels) { _, which ->
                 currentFpsSessionIdx = which
+                AppLogger.logUi("FPS Session Selected", labels[which])
                 loadFpsGraphData()
             }
             .show()
@@ -1305,48 +1468,14 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun readAllLogs(): String {
-        try {
-            for (m in AppLogger.javaClass.methods) {
-                if (m.parameterCount == 0 && (m.returnType == String::class.java || List::class.java.isAssignableFrom(m.returnType)) && m.name != "toString") {
-                    val res = m.invoke(AppLogger)
-                    if (res is String && res.isNotBlank()) return res
-                    if (res is List<*> && res.isNotEmpty()) return res.joinToString("\n")
-                }
-            }
-            for (f in AppLogger.javaClass.declaredFields) {
-                f.isAccessible = true
-                val v = f.get(AppLogger)
-                if (v is List<*> && v.isNotEmpty()) return v.joinToString("\n")
-                if (v is StringBuilder && v.isNotEmpty()) return v.toString()
-                if (v is File && v.exists()) return v.readText()
-            }
-            filesDir.listFiles()?.firstOrNull { it.name.contains("log", true) }?.let { return it.readText() }
-        } catch (e: Exception) {}
-        return ""
-    }
-
-    private fun clearAllLogs() {
-        try {
-            AppLogger.javaClass.methods.firstOrNull { it.name.contains("clear", true) && it.parameterCount == 0 }?.invoke(AppLogger)
-            for (f in AppLogger.javaClass.declaredFields) {
-                f.isAccessible = true
-                val v = f.get(AppLogger)
-                if (v is MutableList<*>) v.clear()
-                if (v is StringBuilder) v.clear()
-                if (v is File && v.exists()) v.writeText("")
-            }
-        } catch (e: Exception) {}
-        AppLogger.log("LOGS CLEARED BY USER")
-    }
-
     private fun exportLogsToFile() {
         try {
-            val txt = readAllLogs()
+            val txt = AppLogger.getLogs()
             val name = "ActionLog_${System.currentTimeMillis()}.txt"
             val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             if (!dir.exists()) dir.mkdirs()
             File(dir, name).writeText(txt)
+            AppLogger.log("💾 [EXPORT] Saved diagnostic log to Downloads/$name")
             Toast.makeText(this, "Saved to Downloads/$name", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -1354,7 +1483,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // UI COMPONENT HELPERS
+    // UI COMPONENT BUILDERS (With Spring Touch Animations)
     // =========================================================================
     private fun createAccessChip(label: String, onClick: () -> Unit): TextView {
         return TextView(this).apply {
@@ -1364,7 +1493,7 @@ class MainActivity : Activity() {
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             setPadding(10, 14, 10, 14)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(4, 0, 4, 0) }
-            setOnClickListener { hapticTap(this); onClick() }
+            attachSpringAnimation(this, onClick)
         }
     }
 
@@ -1376,7 +1505,7 @@ class MainActivity : Activity() {
 
     private fun createCol() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(2, 2, 2, 36)
+        setPadding(2, 4, 2, 32)
     }
 
     private fun createCard() = LinearLayout(this).apply {
@@ -1412,6 +1541,9 @@ class MainActivity : Activity() {
         isChecked = checked
         setPadding(0, 18, 0, 18)
         setOnCheckedChangeListener { v, isChecked ->
+            v.animate().scaleX(0.97f).scaleY(0.97f).setDuration(70).withEndAction {
+                v.animate().scaleX(1f).scaleY(1f).setDuration(150).setInterpolator(OvershootInterpolator()).start()
+            }.start()
             hapticTap(v)
             onToggle(isChecked)
         }
@@ -1429,7 +1561,7 @@ class MainActivity : Activity() {
             setColor(theme.pillBg)
             setStroke(2, theme.cardStroke)
         }
-        setOnClickListener { hapticTap(this); onClick() }
+        attachSpringAnimation(this, onClick)
     }
 
     private fun createDivider() = View(this).apply {
