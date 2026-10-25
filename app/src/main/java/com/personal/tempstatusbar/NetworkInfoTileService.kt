@@ -1,26 +1,37 @@
 package com.personal.tempstatusbar
 
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
-import kotlin.concurrent.thread
 
 class NetworkInfoTileService : TileService() {
+
+    override fun onStartListening() {
+        super.onStartListening()
+        val tile = qsTile ?: return
+
+        val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val temp = (batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10
+        val tempText = if (temp > 0) "$temp°C" else "--°C"
+
+        tile.state = Tile.STATE_ACTIVE
+        tile.label = "Battery $tempText"
+
+        // Converts qs_info.png into a true monochrome alpha-mask silhouette
+        val silhouette = HardwareThermalControl.loadQuickTileIcon(this, "qs_info.png")
+        if (silhouette != null) {
+            tile.icon = silhouette
+        }
+        tile.updateTile()
+    }
+
     override fun onClick() {
         super.onClick()
-        
-        // Log the tap immediately so we know the button is responding
-        AppLogger.log("QS TILE ACTION: Network Info Tapped")
-        
-        thread {
-            // 1. Forcefully collapse the notification panel via root
-            HardwareThermalControl.executeRootCommand("Collapse Panel", "cmd statusbar collapse")
-            
-            // 2. Force launch the hidden Radio menu, bypassing HyperOS background restrictions
-            val success = HardwareThermalControl.executeRootCommand("Launch RadioInfo (Standard)", "am start -n com.android.settings/.RadioInfo")
-            
-            // 3. If standard Android namespace fails, use the Xiaomi-specific namespace
-            if (!success) {
-                HardwareThermalControl.executeRootCommand("Launch RadioInfo (Xiaomi)", "am start -n com.android.phone/com.android.phone.settings.RadioInfo")
-            }
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
+        startActivityAndCollapse(launchIntent)
     }
 }
