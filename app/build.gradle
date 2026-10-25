@@ -33,3 +33,12 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
 }
+// Automatically bundles TempStatusBar/icons/ (preserving capital/small letters) and sets AppIcon.png as the App Drawer Icon
+android.sourceSets.main.assets.srcDirs += ['../icons']
+
+tasks.register('syncCustomAppIcon', Copy) {
+    from('../icons/AppIcon.png')
+    into('src/main/res/drawable')
+    rename { 'ic_launcher_custom.png' }
+}
+preBuild.dependsOn(syncCustomAppIcon)
