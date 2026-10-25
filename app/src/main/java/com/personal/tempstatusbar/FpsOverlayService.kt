@@ -57,11 +57,16 @@ class FpsOverlayService : Service() {
         dbHelper = DatabaseHelper(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
+        // Ensure showTempInFpsOverlay is initialized to true on first install
+        val prefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
+        if (!prefs.contains("showTempInFpsOverlay")) {
+            prefs.edit().putBoolean("showTempInFpsOverlay", true).apply()
+        }
+
         activeOverlay?.let { try { windowManager.removeView(it) } catch (e: Exception) {} }
 
-        // Sleek, compact glassmorphic pill
         overlayView = TextView(this).apply {
-            text = "TAP TO START"
+            text = "TAP TO RECORD"
             setTextColor(Color.WHITE)
             textSize = 10.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
@@ -96,7 +101,7 @@ class FpsOverlayService : Service() {
     private fun updatePillStyle(recording: Boolean) {
         overlayView.background = GradientDrawable().apply {
             cornerRadius = 100f
-            setColor(Color.parseColor("#88121212")) // 53% translucent dark charcoal glass
+            setColor(Color.parseColor("#88121212"))
             if (recording) {
                 setStroke(2, Color.parseColor("#B3E53935"))
             } else {
@@ -192,7 +197,8 @@ class FpsOverlayService : Service() {
 
         thread {
             while (isServiceActive) {
-                val showTemp = prefs.getBoolean("showTempInFpsOverlay", false)
+                // Default is now true so it matches the UI toggle on fresh install
+                val showTemp = prefs.getBoolean("showTempInFpsOverlay", true)
                 val hasRoot = HardwareThermalControl.isRootAvailable()
 
                 var fpsRaw: Int? = null
@@ -204,17 +210,14 @@ class FpsOverlayService : Service() {
                         val rawFpsString = BufferedReader(InputStreamReader(fpsProc.inputStream)).readLine()
                         fpsProc.waitFor()
                         fpsRaw = rawFpsString?.split(Regex("[^0-9]+"))?.mapNotNull { it.toIntOrNull() }?.firstOrNull { it in 1..240 }
-
-                        val tempProc = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys battery | grep temperature"))
-                        val rawTempString = BufferedReader(InputStreamReader(tempProc.inputStream)).readLine()
-                        tempProc.waitFor()
-                        tempRaw = rawTempString?.replace(Regex("[^0-9]"), "")?.toIntOrNull()?.div(10)
                     } catch (e: Exception) {}
                 } else {
                     fpsRaw = nonRootCurrentFps
-                    val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                    tempRaw = batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)?.div(10)
                 }
+
+                // Always read battery temp reliably via sticky broadcast (instant, zero root overhead)
+                val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                tempRaw = batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)?.div(10)
 
                 if (isRecording) {
                     if (fpsRaw != null && fpsRaw > 0) fpsReadings.add(fpsRaw)
@@ -226,7 +229,7 @@ class FpsOverlayService : Service() {
                 handler.post {
                     if (isServiceActive) {
                         val f = fpsRaw ?: "--"
-                        val t = tempRaw ?: "--"
+                        val t = if (tempRaw != null && tempRaw > 0) tempRaw else "--"
                         overlayView.text = if (showTemp) "$f FPS | $t°C" else "$f FPS"
                     }
                 }
