@@ -91,6 +91,8 @@ class MainActivity : Activity() {
     private var isUpdatingCoreUi = false
 
     // Tab 3: Gaming (Unified with GPU Tuning)
+    private lateinit var turboModeSwitch: Switch
+    private var isUpdatingTurboSwitch = false
     private lateinit var hwGpuText: TextView
     private lateinit var gpuLockToggleBtn: LinearLayout
     private lateinit var gpuLockTitleText: TextView
@@ -128,6 +130,7 @@ class MainActivity : Activity() {
 
             thread {
                 val hasRoot = HardwareThermalControl.isRootAvailable()
+                HardwareThermalControl.syncGpuLockState()
                 val gpuLoad = HardwareThermalControl.getGpuUsage()
                 val gpuFreq = HardwareThermalControl.getGpuFrequency()
                 val coreStatuses = HardwareThermalControl.getCoreStatuses()
@@ -139,7 +142,7 @@ class MainActivity : Activity() {
                     heroTempText.text = "${temp}°C"
                     heroTempText.setTextColor(getColorForTemperature(temp.toFloat()))
                     heroStateText.text = when {
-                        HardwareThermalControl.isManualBypassActive -> "BYPASS ACTIVE ($level%)"
+                        plugged && HardwareThermalControl.isManualBypassActive -> "BYPASS ACTIVE ($level%)"
                         pwr.isCharging -> "CHARGING ($level%)"
                         else -> "DISCHARGING ($level%)"
                     }
@@ -149,6 +152,11 @@ class MainActivity : Activity() {
                     if (::hwGpuText.isInitialized) {
                         hwGpuText.text = "Adreno 650 Load: $gpuLoad  •  Clock: $gpuFreq"
                         updateGpuLockButtonAppearance()
+                    }
+                    if (::turboModeSwitch.isInitialized) {
+                        isUpdatingTurboSwitch = true
+                        turboModeSwitch.isChecked = settings.gamingModeEnabled
+                        isUpdatingTurboSwitch = false
                     }
                     if (::hwRamText.isInitialized) {
                         hwRamText.text = ram.replace("\n", "  •  ")
@@ -341,7 +349,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // THEME PALETTES
+    // THEME PALETTES (Crisp Obsidian-Charcoal Active Pills — Zero Muddy Olive Tones)
     // =========================================================================
     private fun resolveTheme(mode: String): ThemePalette {
         val sysNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -350,14 +358,14 @@ class MainActivity : Activity() {
                 name = "Dark",
                 bgTop = Color.parseColor("#000000"),
                 bgBottom = Color.parseColor("#000000"),
-                cardBg = Color.parseColor("#0C0C0E"),
+                cardBg = Color.parseColor("#0D0D10"),
                 cardStroke = Color.parseColor("#222228"),
-                pillBg = Color.parseColor("#16161B"),
-                navBarBg = Color.parseColor("#0D0D11"),
+                pillBg = Color.parseColor("#17171C"),
+                navBarBg = Color.parseColor("#111115"),
                 textPrimary = Color.parseColor("#F4F4F6"),
                 textSecondary = Color.parseColor("#A1A1AA"),
-                accentPrimary = Color.parseColor("#27272A"),
-                accentSecondary = Color.parseColor("#3F3F46"),
+                accentPrimary = Color.parseColor("#27272E"),
+                accentSecondary = Color.parseColor("#32323B"),
                 toggleTrackOn = Color.parseColor("#10B981"),
                 toggleTrackOff = Color.parseColor("#27272E"),
                 toggleBorderOff = Color.parseColor("#52525B"),
@@ -379,7 +387,7 @@ class MainActivity : Activity() {
                 textPrimary = Color.parseColor("#FAF5FF"),
                 textSecondary = Color.parseColor("#D8B4FE"),
                 accentPrimary = Color.parseColor("#9333EA"),
-                accentSecondary = Color.parseColor("#C084FC"),
+                accentSecondary = Color.parseColor("#A855F7"),
                 toggleTrackOn = Color.parseColor("#A855F7"),
                 toggleTrackOff = Color.parseColor("#3B2559"),
                 toggleBorderOff = Color.parseColor("#6B4696"),
@@ -400,12 +408,12 @@ class MainActivity : Activity() {
                             cardBg = getColor(android.R.color.system_neutral2_800),
                             cardStroke = getColor(android.R.color.system_neutral2_600),
                             pillBg = getColor(android.R.color.system_neutral1_900),
-                            navBarBg = getColor(android.R.color.system_neutral1_900),
+                            navBarBg = getColor(android.R.color.system_neutral2_800),
                             textPrimary = getColor(android.R.color.system_neutral1_50),
                             textSecondary = getColor(android.R.color.system_neutral2_200),
-                            accentPrimary = getColor(android.R.color.system_accent1_600),
-                            accentSecondary = getColor(android.R.color.system_accent2_500),
-                            toggleTrackOn = getColor(android.R.color.system_accent1_400),
+                            accentPrimary = Color.parseColor("#27272E"),
+                            accentSecondary = Color.parseColor("#32323B"),
+                            toggleTrackOn = Color.parseColor("#10B981"),
                             toggleTrackOff = getColor(android.R.color.system_neutral2_700),
                             toggleBorderOff = getColor(android.R.color.system_neutral2_400),
                             toggleThumbOn = Color.WHITE,
@@ -426,9 +434,9 @@ class MainActivity : Activity() {
                             navBarBg = getColor(android.R.color.system_neutral1_0),
                             textPrimary = getColor(android.R.color.system_neutral1_900),
                             textSecondary = getColor(android.R.color.system_neutral2_600),
-                            accentPrimary = getColor(android.R.color.system_accent1_600),
-                            accentSecondary = getColor(android.R.color.system_accent2_600),
-                            toggleTrackOn = getColor(android.R.color.system_accent1_600),
+                            accentPrimary = Color.parseColor("#1E1E22"),
+                            accentSecondary = Color.parseColor("#2C2C32"),
+                            toggleTrackOn = Color.parseColor("#0D7A53"),
                             toggleTrackOff = getColor(android.R.color.system_neutral2_200),
                             toggleBorderOff = getColor(android.R.color.system_neutral2_400),
                             toggleThumbOn = Color.WHITE,
@@ -444,15 +452,15 @@ class MainActivity : Activity() {
             else -> ThemePalette(
                 name = "Default",
                 bgTop = Color.parseColor("#F5F4F0"),
-                bgBottom = Color.parseColor("#EBE9E2"),
+                bgBottom = Color.parseColor("#ECEAE3"),
                 cardBg = Color.parseColor("#FFFFFF"),
-                cardStroke = Color.parseColor("#E2DFD6"),
-                pillBg = Color.parseColor("#ECEAE2"),
-                navBarBg = Color.parseColor("#FAF9F6"),
-                textPrimary = Color.parseColor("#23221F"),
-                textSecondary = Color.parseColor("#69665F"),
-                accentPrimary = Color.parseColor("#2B2926"),
-                accentSecondary = Color.parseColor("#484540"),
+                cardStroke = Color.parseColor("#E2DFD7"),
+                pillBg = Color.parseColor("#EFECE4"),
+                navBarBg = Color.parseColor("#FFFFFF"),
+                textPrimary = Color.parseColor("#1C1C1E"),
+                textSecondary = Color.parseColor("#686662"),
+                accentPrimary = Color.parseColor("#1E1E22"),
+                accentSecondary = Color.parseColor("#2D2D33"),
                 toggleTrackOn = Color.parseColor("#0D7A53"),
                 toggleTrackOff = Color.parseColor("#DFDCD2"),
                 toggleBorderOff = Color.parseColor("#B5B0A4"),
@@ -645,30 +653,34 @@ class MainActivity : Activity() {
         mainBody.addView(contentFrame)
         root.addView(mainBody)
 
-        // Bottom Navigation Bar with Properly Centered Icons & Labels
+        // Bottom Navigation Bar: Zero Rectangular Shadow Bleed (No dark/muddy bottom corners!)
         val bottomDockContainer = FrameLayout(this).apply {
             setPadding(dp(18), dp(6), dp(18), dp(16))
+            clipChildren = false
+            clipToPadding = false
         }
 
         navSegmentedBar = FrameLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(68))
             background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(34).toFloat()
                 setColor(theme.navBarBg)
-                setStroke(2, theme.cardStroke)
+                setStroke(dp(1.5f.roundToInt().coerceAtLeast(1)), theme.cardStroke)
             }
-            elevation = dp(6).toFloat()
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+            clipToOutline = true
+            elevation = 0f
         }
 
         navIndicatorView = View(this).apply {
             layoutParams = FrameLayout.LayoutParams(0, dp(56)).apply {
                 gravity = Gravity.CENTER_VERTICAL
             }
-            background = GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(theme.accentPrimary, theme.accentSecondary)
-            ).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(28).toFloat()
+                setColor(theme.accentPrimary)
             }
         }
         navSegmentedBar.addView(navIndicatorView)
@@ -719,7 +731,6 @@ class MainActivity : Activity() {
         }
         navSegmentedBar.addView(navTabsRow)
 
-        // Unified Tap + Slide Touch Handler with Haptic Feedback on Every Tap and Slide
         navSegmentedBar.setOnTouchListener { bar, event ->
             val totalW = bar.width.toFloat().coerceAtLeast(1f)
             val slotW = totalW / 4f
@@ -735,8 +746,8 @@ class MainActivity : Activity() {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val indicatorW = slotW - dp(10)
-                    val rawX = (event.x - indicatorW / 2f).coerceIn(dp(5).toFloat(), totalW - indicatorW - dp(5))
+                    val indicatorW = slotW - dp(12)
+                    val rawX = (event.x - indicatorW / 2f).coerceIn(dp(6).toFloat(), totalW - indicatorW - dp(6))
                     navIndicatorView.x = rawX
                     if (targetIdx != currentTabIndex) {
                         hapticTick(bar)
@@ -768,8 +779,8 @@ class MainActivity : Activity() {
         val barW = navSegmentedBar.width.toFloat()
         if (barW <= 0f) return
         val slotW = barW / 4f
-        val indicatorW = slotW - dp(10)
-        val targetX = (index * slotW) + dp(5)
+        val indicatorW = slotW - dp(12)
+        val targetX = (index * slotW) + dp(6)
 
         val lp = navIndicatorView.layoutParams
         if (lp.width != indicatorW.roundToInt()) {
@@ -781,7 +792,7 @@ class MainActivity : Activity() {
             navIndicatorView.animate()
                 .x(targetX)
                 .setDuration(220)
-                .setInterpolator(OvershootInterpolator(1.1f))
+                .setInterpolator(OvershootInterpolator(1.05f))
                 .start()
         } else {
             navIndicatorView.x = targetX
@@ -1105,11 +1116,16 @@ class MainActivity : Activity() {
         val gameCard = createCard()
         gameCard.addView(createSectionLabel("TURBO PERFORMANCE ENGINE"))
 
-        gameCard.addView(createIconSwitchRow("game.png", "Turbo Mode", "Unlocks CPU clocks, locks GPU to 670 MHz, and stabilizes refresh rate", settings.gamingModeEnabled) { on ->
+        val turboRow = createIconSwitchRow("game.png", "Turbo Mode", "Unlocks CPU clocks, locks GPU to 670 MHz, and stabilizes refresh rate", settings.gamingModeEnabled) { on ->
+            if (isUpdatingTurboSwitch) return@createIconSwitchRow
             settings.gamingModeEnabled = on
             HardwareThermalControl.setPeakPerformanceMode(on)
-            uiHandler.postDelayed({ updateGpuLockButtonAppearance() }, 250)
-        })
+            uiHandler.postDelayed({ updateGpuLockButtonAppearance() }, 300)
+        }
+        // Save reference to Turbo Mode switch so livePoller keeps it synced
+        turboModeSwitch = turboRow.getChildAt(2) as Switch
+        gameCard.addView(turboRow)
+
         gameCard.addView(createIconSwitchRow("FloatingPill.png", "Floating Performance Pill", "Overlays live FPS and battery metrics above active apps", FpsOverlayService.isRunning) { on ->
             toggleOverlayPill(on)
         })
@@ -1256,15 +1272,15 @@ class MainActivity : Activity() {
             gpuLockIconView.setImageBitmap(loadCustomBitmap("charging.png"))
             gpuLockTitleText.text = "Locked at 670 MHz (Tap to Unlock)"
             gpuLockTitleText.setTextColor(Color.WHITE)
-            gpuLockSubText.text = "Adreno 650 pinned at maximum performance power level"
+            gpuLockSubText.text = "Adreno 650 pinned at Power Level 0 • Zero thermal downclocking"
             gpuLockSubText.setTextColor(Color.parseColor("#E4E4E7"))
-            gpuLockToggleBtn.background = GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(theme.toggleTrackOn, theme.accentSecondary)
-            ).apply { cornerRadius = dp(18).toFloat() }
+            gpuLockToggleBtn.background = GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(theme.toggleTrackOn)
+            }
         } else {
             gpuLockIconView.setImageBitmap(loadCustomBitmap("leaf.png"))
-            gpuLockTitleText.text = "Automatic Scaling (Tap to Lock)"
+            gpuLockTitleText.text = "Automatic Scaling (Tap to Lock 670 MHz)"
             gpuLockTitleText.setTextColor(theme.textPrimary)
             gpuLockSubText.text = "GPU dynamically scales frequencies based on processing load"
             gpuLockSubText.setTextColor(theme.textSecondary)
@@ -1391,7 +1407,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // INTERACTIVE GRAPH VIEW (Smart Touch Arbitration + Dynamic Temp Gradient)
+    // INTERACTIVE GRAPH VIEW
     // =========================================================================
     inner class InteractiveGraphView(
         context: Context,
@@ -2264,7 +2280,6 @@ class MainActivity : Activity() {
         sw.showText = false
         sw.switchMinWidth = dp(48)
 
-        // Custom Pill Track Drawable (prevents HyperOS from hiding the track in Dark Mode)
         val trackOn = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dp(14).toFloat()
@@ -2283,7 +2298,6 @@ class MainActivity : Activity() {
             addState(intArrayOf(), trackOff)
         }
 
-        // Custom Circular Thumb Drawable with Inset
         val thumbCircleOn = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(theme.toggleThumbOn)
@@ -2384,8 +2398,9 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = if (isAccent) {
-                GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(theme.accentPrimary, theme.accentSecondary)).apply {
+                GradientDrawable().apply {
                     cornerRadius = dp(20).toFloat()
+                    setColor(theme.accentPrimary)
                 }
             } else {
                 GradientDrawable().apply {
@@ -2428,7 +2443,7 @@ class MainActivity : Activity() {
             setColor(theme.cardBg)
             setStroke(2, theme.cardStroke)
         }
-        elevation = if (theme.isLight) dp(2).toFloat() else 0f
+        elevation = 0f
     }
 
     private fun createSectionLabel(txt: String) = TextView(this).apply {
@@ -2469,11 +2484,9 @@ class MainActivity : Activity() {
         gravity = Gravity.CENTER
         typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         setPadding(dp(16), dp(10), dp(16), dp(10))
-        background = GradientDrawable(
-            GradientDrawable.Orientation.LEFT_RIGHT,
-            intArrayOf(theme.accentPrimary, theme.accentSecondary)
-        ).apply {
+        background = GradientDrawable().apply {
             cornerRadius = dp(20).toFloat()
+            setColor(theme.accentPrimary)
         }
         attachSpringAnimation(this, onClick)
     }
