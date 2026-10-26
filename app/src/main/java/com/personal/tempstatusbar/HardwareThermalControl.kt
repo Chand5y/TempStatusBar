@@ -33,7 +33,7 @@ object HardwareThermalControl {
     var isChargingThrottled = false; private set
     var isManualBypassActive = false; private set
     var isEmergencyCooldownActive = false; private set
-    var isGpuPeakLocked = false; private set
+    @Volatile var isGpuPeakLocked = false; private set
 
     @Volatile var liveFps = -1
 
@@ -41,7 +41,7 @@ object HardwareThermalControl {
     private var cachedRootState: Boolean? = null
     private var lastRootCheckTime = 0L
 
-    var isPeakPerformanceActive = false; private set
+    @Volatile var isPeakPerformanceActive = false; private set
     private var isPrimeCoreThrottled: Boolean? = null
     private var lastOptimizedGame = ""
 
@@ -53,25 +53,52 @@ object HardwareThermalControl {
         thread {
             val root = isRootAvailable()
             if (root) {
-                val pwrLvl = readSysfsNode("/sys/class/kgsl/kgsl-3d0/min_pwrlevel")
-                isGpuPeakLocked = (pwrLvl == "0")
+                syncGpuLockState()
                 autoAddQuickSettingsTiles(context.applicationContext)
             }
             AppLogger.log("⚙️ [INIT] SoC: ${getHardwareInfo()} | Android ${Build.VERSION.RELEASE} | Root: ${if (root) "GRANTED (uid=0)" else "DENIED"}")
         }
     }
 
+    fun syncGpuLockState(): Boolean {
+        if (!isRootAvailable()) return false
+        val pwrLvl = readSysfsNode("/sys/class/kgsl/kgsl-3d0/min_pwrlevel").trim()
+        isGpuPeakLocked = (pwrLvl == "0")
+        return isGpuPeakLocked
+    }
+
+    // Detects foreground package via Root and ignores transient Notification Shade / Volume overlays so Turbo Mode never drops mid-game!
     fun getForegroundPackageRoot(): String {
         if (!isRootAvailable()) return ""
         return try {
             val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp|topResumedActivity'"))
             val out = BufferedReader(InputStreamReader(p.inputStream)).readText()
             p.waitFor()
+            if (out.contains("NotificationShade", ignoreCase = true) || out.contains("StatusBar", ignoreCase = true)) {
+                return "TRANSIENT_SYSTEM_SHADE"
+            }
             val regex = Regex("""([a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+)/""")
             val matches = regex.findAll(out).map { it.groupValues[1] }.toList()
-            matches.firstOrNull { !it.contains("systemui") && !it.contains("tempstatusbar") } ?: ""
+            matches.firstOrNull {
+                !it.contains("systemui") &&
+                !it.contains("tempstatusbar") &&
+                !it.contains("permissioncontroller") &&
+                !it.contains("miui.securitycenter")
+            } ?: ""
         } catch (e: Exception) {
             ""
+        }
+    }
+
+    // Checks if any target game process is still alive in RAM (so pulling down the notification shade never kills Turbo Mode)
+    fun isAnyGameProcessRunning(gamePackages: Set<String>): Boolean {
+        if (!isRootAvailable() || gamePackages.isEmpty()) return false
+        return try {
+            val pkgList = gamePackages.joinToString(" ")
+            val (_, out) = runRootShell("pidof $pkgList")
+            out.trim().any { it.isDigit() }
+        } catch (e: Exception) {
+            false
         }
     }
 
@@ -354,9 +381,10 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
+    // UNHINGED HARDWARE LOCK: Locks all 3 clusters (Silver 1.80GHz, Gold 2.42GHz, Prime 3.18GHz) to performance + Read-Only (0444)
     private fun buildCpuCeilingUnlockScript(
         c7MaxKhz: String = "3187200",
-        c7MinKhz: String = "2457600",
+        c7MinKhz: String = "3187200",
         lockReadOnly: Boolean = true
     ): String {
         val lockPerm = if (lockReadOnly) "0444" else "0644"
@@ -369,18 +397,31 @@ object HardwareThermalControl {
                 chmod 0644 ${'$'}c 2>/dev/null
                 echo 0 > ${'$'}c 2>/dev/null
             done
+            for i in 0 1 2 3 4 5 6 7; do
+                echo 1 > /sys/devices/system/cpu/cpu${'$'}i/online 2>/dev/null
+            done
             for p in /sys/devices/system/cpu/cpufreq/policy7 /sys/devices/system/cpu/cpu7/cpufreq; do
-                chmod 0644 ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                echo performance > ${'$'}p/scaling_governor 2>/dev/null
                 echo $c7MaxKhz > ${'$'}p/scaling_max_freq 2>/dev/null
                 echo $c7MinKhz > ${'$'}p/scaling_min_freq 2>/dev/null
                 chmod $lockPerm ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
             done
             for p in /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpu4/cpufreq; do
-                chmod 0644 ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                echo performance > ${'$'}p/scaling_governor 2>/dev/null
                 echo 2419200 > ${'$'}p/scaling_max_freq 2>/dev/null
                 echo 2419200 > ${'$'}p/scaling_min_freq 2>/dev/null
                 chmod $lockPerm ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
             done
+            for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpu0/cpufreq; do
+                chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                echo performance > ${'$'}p/scaling_governor 2>/dev/null
+                echo 1804800 > ${'$'}p/scaling_max_freq 2>/dev/null
+                echo 1804800 > ${'$'}p/scaling_min_freq 2>/dev/null
+            done
+            echo 0 > /proc/sys/kernel/sched_boost 2>/dev/null
+            echo 1 > /proc/sys/kernel/sched_boost 2>/dev/null
         """.trimIndent()
     }
 
@@ -389,15 +430,21 @@ object HardwareThermalControl {
         thread {
             if (lockTo670Mhz) {
                 val cmd = """
-                    chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+                    chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel /sys/class/kgsl/kgsl-3d0/force_clk_on /sys/class/kgsl/kgsl-3d0/force_bus_on /sys/class/kgsl/kgsl-3d0/force_rail_on /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
                     echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel
                     echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel
                     echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel
                     echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel
+                    echo 1 > /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
+                    echo 1 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null
+                    echo 1 > /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
+                    echo 670000000 > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
+                    echo 670000000 > /sys/class/kgsl/kgsl-3d0/devfreq/max_freq 2>/dev/null
                     chmod 0444 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
                 """.trimIndent()
-                val ok = executeVerifiedCommand("Lock GPU Peak (670 MHz)", cmd)
-                isGpuPeakLocked = ok
+                executeVerifiedCommand("Lock GPU Peak (670 MHz)", cmd)
+                syncGpuLockState()
                 val freqNow = getGpuFrequency()
                 onVerified?.invoke(isGpuPeakLocked, freqNow)
             } else {
@@ -405,11 +452,15 @@ object HardwareThermalControl {
                     chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
                     echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel
                     echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
+                    echo 1 > /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
                 """.trimIndent()
                 executeVerifiedCommand("Unlock GPU to Dynamic Auto", cmd)
-                isGpuPeakLocked = false
+                syncGpuLockState()
                 val freqNow = getGpuFrequency()
-                onVerified?.invoke(false, freqNow)
+                onVerified?.invoke(isGpuPeakLocked, freqNow)
             }
         }
     }
@@ -418,20 +469,20 @@ object HardwareThermalControl {
         setGpuPeakLock(true)
     }
 
+    // Runs completely unhinged (Prime Core locked at 3187 MHz & GPU at 670 MHz) until the user's Thermal Cap is reached!
     fun enforceNuclearHeartbeat(currentTemp: Int = 37) {
         if (!isRootAvailable()) return
-        val c7Max = if (currentTemp >= 42) "2745600" else "3187200"
-        val gpuMinPwr = if (currentTemp >= 42) "1" else "0"
         val cmd = """
             for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do p=${'$'}(pidof ${'$'}d); if [ ! -z "${'$'}p" ]; then kill -STOP ${'$'}p 2>/dev/null; fi; done
-            ${buildCpuCeilingUnlockScript(c7Max, "2457600", lockReadOnly = true)}
+            ${buildCpuCeilingUnlockScript("3187200", "3187200", lockReadOnly = true)}
             chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null
-            echo $gpuMinPwr > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
             chmod 0444 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
             settings put system min_refresh_rate 120 2>/dev/null
             settings put system peak_refresh_rate 120 2>/dev/null
+            settings put system speed_mode 1 2>/dev/null
             cmd power set-fixed-performance-mode-enabled true >/dev/null 2>&1
         """.trimIndent()
         try {
@@ -474,6 +525,8 @@ object HardwareThermalControl {
                 settings put system peak_refresh_rate $hz
                 settings put system min_refresh_rate $hz
                 settings put system user_refresh_rate $hz
+                settings put secure user_refresh_rate $hz
+                settings put secure miui_refresh_rate $hz
             """.trimIndent()
             executeVerifiedCommand("Force Refresh Rate", cmd)
         }
@@ -485,12 +538,15 @@ object HardwareThermalControl {
 
         thread {
             if (enable) {
+                AppLogger.log("🚀 TURBO MODE: UNHINGED HARDWARE PERFORMANCE ENGAGED")
+
                 val stopCmd = """
                     for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do
                         p=${'$'}(pidof ${'$'}d)
                         if [ ! -z "${'$'}p" ]; then kill -STOP ${'$'}p 2>/dev/null; fi
                     done
                     cmd power set-fixed-performance-mode-enabled true 2>/dev/null
+                    settings put system speed_mode 1 2>/dev/null
                 """.trimIndent()
                 executeVerifiedCommand("Freeze Daemons", stopCmd)
 
@@ -503,30 +559,41 @@ object HardwareThermalControl {
                 executeVerifiedCommand("Lock sconfig", killThermalsCmd)
 
                 executeVerifiedCommand(
-                    "CPU Perf",
-                    "echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor; echo performance > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor; echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor"
+                    "CPU Ceiling Unhinged",
+                    buildCpuCeilingUnlockScript("3187200", "3187200", lockReadOnly = true)
                 )
 
-                executeVerifiedCommand(
-                    "CPU Ceiling",
-                    buildCpuCeilingUnlockScript("3187200", "2457600", lockReadOnly = true)
-                )
+                // Boost DDR RAM & L3 Cache devfreq governors so CPU/GPU never starve for memory bandwidth
+                val busBoostCmd = """
+                    for b in /sys/class/devfreq/*cpu-cpu-llbw* /sys/class/devfreq/*llccbw* /sys/class/devfreq/*kgsl-busmon*; do
+                        if [ -d "${'$'}b" ]; then
+                            chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
+                            echo performance > ${'$'}b/governor 2>/dev/null
+                            cat ${'$'}b/max_freq > ${'$'}b/min_freq 2>/dev/null
+                        fi
+                    done
+                """.trimIndent()
+                executeVerifiedCommand("Boost DDR & L3 Cache Bus", busBoostCmd)
 
                 setGpuPeakLock(true)
                 forceRefreshRate(120)
             } else {
+                AppLogger.log("🌱 TURBO MODE: Balanced Performance Restored")
                 val restoreCmd = """
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                     echo 0 > /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > ${'$'}z 2>/dev/null; done
                     cmd power set-fixed-performance-mode-enabled false 2>/dev/null
+                    settings put system speed_mode 0 2>/dev/null
                     chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
-                    for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpufreq/policy7; do
-                        chmod 0644 ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                    for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpufreq/policy7 /sys/devices/system/cpu/cpu0/cpufreq /sys/devices/system/cpu/cpu4/cpufreq /sys/devices/system/cpu/cpu7/cpufreq; do
+                        chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                        echo schedutil > ${'$'}p/scaling_governor 2>/dev/null
                     done
-                    echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null
-                    echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null
-                    echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor 2>/dev/null
+                    cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null
+                    cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null
+                    cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
+                    cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
                     for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do
                         p=${'$'}(pidof ${'$'}d)
                         if [ ! -z "${'$'}p" ]; then kill -CONT ${'$'}p 2>/dev/null; fi
@@ -539,7 +606,7 @@ object HardwareThermalControl {
     }
 
     fun forceUnthrottleCPU() {
-        executeRootCommand("Force CPU Max", buildCpuCeilingUnlockScript("3187200", "2457600", lockReadOnly = true))
+        executeRootCommand("Force CPU Max", buildCpuCeilingUnlockScript("3187200", "3187200", lockReadOnly = true))
     }
 
     fun forceUnthrottlePrimeCore() = forceUnthrottleCPU()
@@ -552,13 +619,14 @@ object HardwareThermalControl {
                 val minF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
                 val cmd = """
                     chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq 2>/dev/null
+                    echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor 2>/dev/null
                     echo $minF > /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq
                     echo $minF > /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq
                 """.trimIndent()
                 executeVerifiedCommand("Throttle Prime Core", cmd)
             } else {
                 val maxF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq")
-                val minF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
+                val minF = if (isPeakPerformanceActive) maxF else readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
                 val cmd = buildCpuCeilingUnlockScript(maxF, minF, lockReadOnly = isPeakPerformanceActive)
                 executeVerifiedCommand("Unthrottle Prime Core", cmd)
             }
@@ -614,26 +682,25 @@ object HardwareThermalControl {
         }
     }
 
+    // FIXED: Parses gpu_busy_percentage cleanly so it never prints "Load: 0  0%"!
     fun getGpuUsage(): String {
+        if (isRootAvailable()) {
+            val raw = readSysfsNode("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage")
+            val num = Regex("""\d+""").find(raw)?.value
+            if (num != null) return "$num%"
+        }
         val paths = listOf("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage", "/sys/class/kgsl/kgsl-3d0/devfreq/gpu_load", "/sys/class/kgsl/kgsl-3d0/gpubusy")
         for (path in paths) {
             try {
                 val f = File(path)
-                if (f.exists()) {
+                if (f.exists() && f.canRead()) {
                     val raw = f.readText().trim()
-                    if (raw.contains(" ")) {
-                        val parts = raw.split(" ")
-                        if (parts.size == 2) {
-                            val busy = parts[0].toFloatOrNull() ?: 0f
-                            val total = parts[1].toFloatOrNull() ?: 1f
-                            return "${((busy / total) * 100).toInt()}%"
-                        }
-                    }
-                    return "${raw.replace("%", "")}%"
+                    val num = Regex("""\d+""").find(raw)?.value
+                    if (num != null) return "$num%"
                 }
             } catch (e: Exception) {}
         }
-        return "--%"
+        return "0%"
     }
 
     fun getGpuFrequency(): String {
