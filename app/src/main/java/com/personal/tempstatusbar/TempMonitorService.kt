@@ -73,11 +73,20 @@ class TempMonitorService : Service() {
         }
     }
 
-    // Reliable Game Detection: Uses Root window focus + UsageEvents so BGMI is never missed after 5 seconds!
+    // UNHINGED GAME WATCHDOG: Detects target games automatically and ignores notification shade pull-downs!
     private val gamingEngineRunnable = object : Runnable {
         override fun run() {
             if (isScreenOn && settings.gamingModeEnabled && HardwareThermalControl.isRootAvailable()) {
                 var currentForeground = HardwareThermalControl.getForegroundPackageRoot()
+
+                // If user pulled down the notification shade mid-game, keep current gaming state untouched!
+                if (currentForeground == "TRANSIENT_SYSTEM_SHADE") {
+                    if (isCurrentlyGaming && lastTemp < settings.gameThrottleTemp) {
+                        HardwareThermalControl.enforceNuclearHeartbeat(if (lastTemp > 0) lastTemp else 37)
+                    }
+                    backgroundHandler.postDelayed(this, 2000L)
+                    return
+                }
 
                 if (currentForeground.isEmpty()) {
                     val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
@@ -92,28 +101,31 @@ class TempMonitorService : Service() {
                     }
                 }
 
-                if (currentForeground.isNotEmpty()) {
-                    val targetGames = settings.gamingApps
-                    val isGamingApp = targetGames.any { currentForeground.contains(it, ignoreCase = true) }
+                val targetGames = settings.gamingApps
+                val isGamingApp = currentForeground.isNotEmpty() && targetGames.any { currentForeground.contains(it, ignoreCase = true) }
 
-                    if (isGamingApp) {
-                        if (!isCurrentlyGaming) {
-                            isCurrentlyGaming = true
-                            AppLogger.log("🎮 [GAME DETECTED] Foreground: $currentForeground -> Engaging Turbo Mode")
-                            HardwareThermalControl.setPeakPerformanceMode(true)
-                            HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
-                            backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
-                            backgroundHandler.post(deepDiagnosticRunnable)
-                        }
-                        if (lastTemp < settings.gameThrottleTemp) {
-                            HardwareThermalControl.enforceNuclearHeartbeat(if (lastTemp > 0) lastTemp else 37)
-                        } else {
-                            AppLogger.log("⚠️ [THERMAL CAP] Battery reached ${lastTemp}°C (Cap: ${settings.gameThrottleTemp}°C)")
-                            HardwareThermalControl.setPeakPerformanceMode(false)
-                            HardwareThermalControl.throttleCPU(true)
-                        }
-                    } else if (isCurrentlyGaming && !currentForeground.contains("tempstatusbar")) {
+                if (isGamingApp) {
+                    if (!isCurrentlyGaming) {
+                        isCurrentlyGaming = true
+                        AppLogger.log("🎮 [GAME DETECTED] Foreground: $currentForeground -> Engaging Unhinged Turbo Mode")
+                        HardwareThermalControl.setPeakPerformanceMode(true)
+                        HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
+                        backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
+                        backgroundHandler.post(deepDiagnosticRunnable)
+                    }
+                    if (lastTemp < settings.gameThrottleTemp) {
+                        HardwareThermalControl.enforceNuclearHeartbeat(if (lastTemp > 0) lastTemp else 37)
+                    } else {
+                        AppLogger.log("⚠️ [THERMAL CAP] Battery reached ${lastTemp}°C (Cap: ${settings.gameThrottleTemp}°C)")
+                        HardwareThermalControl.setPeakPerformanceMode(false)
+                        HardwareThermalControl.throttleCPU(true)
+                    }
+                } else if (isCurrentlyGaming && currentForeground.isNotEmpty() && !currentForeground.contains("tempstatusbar")) {
+                    // Only disengage if the user actually went to the launcher or another app AND didn't just trigger an overlay
+                    val isHomeOrOtherApp = currentForeground.contains("home") || currentForeground.contains("launcher") || !HardwareThermalControl.isAnyGameProcessRunning(targetGames)
+                    if (isHomeOrOtherApp) {
                         isCurrentlyGaming = false
+                        AppLogger.log("🏁 [GAME EXITED] Foreground: $currentForeground -> Restoring Balanced Mode")
                         backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
                         HardwareThermalControl.setPeakPerformanceMode(false)
                         HardwareThermalControl.clearGamingOptimization()
@@ -123,7 +135,7 @@ class TempMonitorService : Service() {
                     }
                 }
             }
-            backgroundHandler.postDelayed(this, 2500L)
+            backgroundHandler.postDelayed(this, 2000L)
         }
     }
 
@@ -140,10 +152,14 @@ class TempMonitorService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 Intent.ACTION_POWER_DISCONNECTED -> {
+                    lastPlugged = 0
+                    isThermalCutoff = false
+                    isPctCutoff = false
                     if (HardwareThermalControl.isManualBypassActive || HardwareThermalControl.isChargingThrottled) {
                         AppLogger.log("🔌 [FAIL-SAFE] Charger unplugged — resetting charging nodes to normal")
                         HardwareThermalControl.setChargingEnabled(true, isManualToggle = true)
                     }
+                    pushNotificationUpdate()
                 }
                 Intent.ACTION_BATTERY_CHANGED -> {
                     val currentTemp = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
@@ -152,16 +168,18 @@ class TempMonitorService : Service() {
                     val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
                     val pct = if (scale > 0) (level * 100 / scale.toFloat()).toInt() else 0
 
-                    if (plugged == 0 && lastPlugged > 0 && HardwareThermalControl.isManualBypassActive) {
-                        HardwareThermalControl.setChargingEnabled(true, isManualToggle = true)
+                    if (plugged == 0) {
+                        isThermalCutoff = false
+                        isPctCutoff = false
+                        if (lastPlugged > 0 && HardwareThermalControl.isManualBypassActive) {
+                            HardwareThermalControl.setChargingEnabled(true, isManualToggle = true)
+                        }
                     }
 
-                    handleSafetyAndChargingLimits(currentTemp, pct)
-
-                    if (currentTemp != lastTemp || plugged != lastPlugged) {
-                        lastTemp = currentTemp; lastPlugged = plugged
-                        pushNotificationUpdate()
-                    }
+                    lastPlugged = plugged
+                    lastTemp = currentTemp
+                    handleSafetyAndChargingLimits(currentTemp, pct, plugged != 0)
+                    pushNotificationUpdate()
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     isScreenOn = true
@@ -214,6 +232,10 @@ class TempMonitorService : Service() {
         if (sticky != null) {
             lastTemp = sticky.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10
             lastPlugged = sticky.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+            if (lastPlugged == 0) {
+                isThermalCutoff = false
+                isPctCutoff = false
+            }
         }
         pushNotificationUpdate()
     }
@@ -230,11 +252,17 @@ class TempMonitorService : Service() {
         }
     }
 
-    private fun handleSafetyAndChargingLimits(temp: Int, pct: Int) {
+    // FIXED: Uses gameThrottleTemp (e.g. 43°C) during active gaming, and never triggers charging cutoffs when charger is unplugged!
+    private fun handleSafetyAndChargingLimits(temp: Int, pct: Int, isPluggedIn: Boolean) {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-        val safeTemp = settings.warningTemp - 1
+        val activeWarnLimit = if (isCurrentlyGaming || HardwareThermalControl.isPeakPerformanceActive) {
+            settings.gameThrottleTemp
+        } else {
+            settings.warningTemp
+        }
+        val safeTemp = activeWarnLimit - 1
 
-        if (temp >= settings.warningTemp) {
+        if (temp >= activeWarnLimit) {
             HardwareThermalControl.playThermalAlert()
             if (isSmartGovernorActive && !settings.gamingModeEnabled && !HardwareThermalControl.isPeakPerformanceActive) {
                 backgroundHandler.post { HardwareThermalControl.applySmartThermalGovernor(applicationContext) }
@@ -245,7 +273,7 @@ class TempMonitorService : Service() {
 
             val alertNotif = Notification.Builder(this, ALERT_CHANNEL_ID)
                 .setContentTitle("OVERHEATING: ${temp}°C")
-                .setContentText("Hardware limits exceeded.")
+                .setContentText("Hardware thermal ceiling ($activeWarnLimit°C) reached.")
                 .setSmallIcon(drawIcon("!"))
                 .setColor(Color.RED)
                 .setOngoing(true)
@@ -266,6 +294,16 @@ class TempMonitorService : Service() {
             }
         }
 
+        // Only evaluate charging cutoffs if a charger is physically plugged in!
+        if (!isPluggedIn) {
+            isThermalCutoff = false
+            isPctCutoff = false
+            if (HardwareThermalControl.isChargingThrottled && !HardwareThermalControl.isManualBypassActive) {
+                HardwareThermalControl.setChargingEnabled(true)
+            }
+            return
+        }
+
         if (temp >= settings.cutoffTemp) isThermalCutoff = true
         else if (temp <= settings.resumeTemp) isThermalCutoff = false
 
@@ -277,8 +315,6 @@ class TempMonitorService : Service() {
         }
 
         if (!HardwareThermalControl.isEmergencyCooldownActive && !HardwareThermalControl.isManualBypassActive) {
-            if (isCurrentlyGaming || HardwareThermalControl.isPeakPerformanceActive) return
-
             val shouldBeThrottled = isThermalCutoff || isPctCutoff
             if (shouldBeThrottled && !HardwareThermalControl.isChargingThrottled) {
                 HardwareThermalControl.setChargingEnabled(false)
@@ -298,17 +334,25 @@ class TempMonitorService : Service() {
         }
     }
 
+    // FIXED: Never shows "Charging Paused by Limits" when the charger is unplugged (lastPlugged == 0)!
     private fun buildLiveNotification(): Notification {
-        val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
-        val bypassStr = if (HardwareThermalControl.isManualBypassActive) " • Pass-Through" else ""
+        val isPluggedIn = lastPlugged != 0
+        val stats = PowerHardwareHelper.readPowerStats(applicationContext, isPluggedIn)
 
         val bodyText = if (settings.showPowerMetrics) {
-            if (stats.isCharging) "Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)$bypassStr"
-            else if (HardwareThermalControl.isManualBypassActive) "Pass-Through Active (${abs(stats.currentMa)} mA)"
-            else if (isThermalCutoff || isPctCutoff) "Charging Paused by Limits"
-            else "Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)"
+            when {
+                isPluggedIn && HardwareThermalControl.isManualBypassActive -> "Pass-Through Active (${abs(stats.currentMa)} mA)"
+                isPluggedIn && (isThermalCutoff || isPctCutoff) -> "Charging Paused by Limits"
+                isPluggedIn && stats.isCharging -> "Charging: ${stats.wattage}W (+${abs(stats.currentMa)} mA)"
+                else -> "Discharging: ${abs(stats.currentMa)} mA (-${stats.wattage}W)"
+            }
         } else {
-            if (stats.isCharging) "Charging$bypassStr" else "Discharging$bypassStr"
+            when {
+                isPluggedIn && HardwareThermalControl.isManualBypassActive -> "Pass-Through Active"
+                isPluggedIn && (isThermalCutoff || isPctCutoff) -> "Charging Paused by Limits"
+                isPluggedIn && stats.isCharging -> "Charging"
+                else -> "Discharging"
+            }
         }
 
         return Notification.Builder(this, CHANNEL_ID)
