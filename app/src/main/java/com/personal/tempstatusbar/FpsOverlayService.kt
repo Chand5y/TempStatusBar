@@ -173,16 +173,20 @@ class FpsOverlayService : Service() {
             if (HardwareThermalControl.isRootAvailable()) {
                 thread {
                     val foundPkg = HardwareThermalControl.getForegroundPackageRoot()
-                    if (foundPkg.isNotEmpty() && !foundPkg.contains("miui.home")) {
+                    if (foundPkg.isNotEmpty() && foundPkg != "TRANSIENT_SYSTEM_SHADE" && !foundPkg.contains("miui.home")) {
                         foregroundApp = AppLabelHelper.getAppName(applicationContext, foundPkg)
                     } else {
                         foregroundApp = "Active Game"
                     }
-                    // Auto-engage Turbo Mode when recording a match so CPU/GPU/120Hz locks are guaranteed active!
-                    AppLogger.log("🔴 [FPS RECORDING STARTED] Target: $foregroundApp -> Engaging Turbo Mode Locks")
-                    HardwareThermalControl.setPeakPerformanceMode(true)
-                    if (foundPkg.isNotEmpty()) {
-                        HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, foundPkg)
+                    // Only engage Turbo Mode if the user actually has Turbo Mode enabled in the UI!
+                    if (settings.gamingModeEnabled) {
+                        AppLogger.log("🔴 [FPS RECORDING STARTED] Target: $foregroundApp (Turbo Mode ON)")
+                        HardwareThermalControl.setPeakPerformanceMode(true)
+                        if (foundPkg.isNotEmpty() && foundPkg != "TRANSIENT_SYSTEM_SHADE") {
+                            HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, foundPkg)
+                        }
+                    } else {
+                        AppLogger.log("🔴 [FPS RECORDING STARTED] Target: $foregroundApp (Stock Hardware / Turbo OFF)")
                     }
                 }
             } else {
@@ -193,7 +197,6 @@ class FpsOverlayService : Service() {
 
     private fun startHardwarePoller() {
         val prefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
-        var tickCounter = 0
 
         thread {
             while (isServiceActive) {
@@ -220,15 +223,6 @@ class FpsOverlayService : Service() {
                 if (isRecording) {
                     if (fpsRaw != null && fpsRaw > 0) fpsReadings.add(fpsRaw)
                     if (tempRaw != null && tempRaw > 0) tempReadings.add(tempRaw)
-
-                    // Every 2 seconds during active recording, enforce the read-only 3.18GHz / 670MHz / 120Hz heartbeat
-                    tickCounter++
-                    if (hasRoot && tickCounter % 2 == 0) {
-                        val curT = tempRaw ?: 37
-                        if (curT < settings.gameThrottleTemp) {
-                            HardwareThermalControl.enforceNuclearHeartbeat(curT)
-                        }
-                    }
                 }
 
                 HardwareThermalControl.liveFps = fpsRaw ?: -1
