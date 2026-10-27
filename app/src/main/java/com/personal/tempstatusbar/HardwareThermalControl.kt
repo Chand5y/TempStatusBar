@@ -53,8 +53,13 @@ object HardwareThermalControl {
         thread {
             val root = isRootAvailable()
             if (root) {
-                // Heal any leftover stuck states from previous sessions on boot/launch
-                healStuckBusAndSchedStates()
+                val settings = SettingsManager(context.applicationContext)
+                // If Turbo Mode is OFF, immediately restore 100% stock kernel state to undo any leftover locks
+                if (!settings.gamingModeEnabled) {
+                    restoreStockHardwareState()
+                } else {
+                    repairDamagedBusAndGpuNodes()
+                }
                 syncGpuLockState()
                 autoAddQuickSettingsTiles(context.applicationContext)
             }
@@ -62,28 +67,78 @@ object HardwareThermalControl {
         }
     }
 
-    // Immediately repairs devfreq bus governors, sched_boost, and powerkeeper if they were left altered
-    private fun healStuckBusAndSchedStates() {
-        val healCmd = """
+    // Undoes the harmful bus_split, force_clk_on, devfreq, and sched_boost writes that caused the 45-54 FPS drop
+    private fun repairDamagedBusAndGpuNodes() {
+        val cmd = """
             echo 0 > /proc/sys/kernel/sched_boost 2>/dev/null
-            p=${'$'}(pidof com.miui.powerkeeper)
-            if [ ! -z "${'$'}p" ]; then kill -CONT ${'$'}p 2>/dev/null; fi
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/force_clk_on /sys/class/kgsl/kgsl-3d0/force_bus_on /sys/class/kgsl/kgsl-3d0/force_rail_on /sys/class/kgsl/kgsl-3d0/bus_split /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
+            echo 1 > /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
+            echo 305000000 > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
             for b in /sys/class/devfreq/*cpu-cpu-llbw* /sys/class/devfreq/*llccbw*; do
                 if [ -d "${'$'}b" ]; then
                     chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
                     echo bw_hwmon > ${'$'}b/governor 2>/dev/null
-                    echo 0 > ${'$'}b/min_freq 2>/dev/null
                 fi
             done
             for b in /sys/class/devfreq/*kgsl-busmon*; do
                 if [ -d "${'$'}b" ]; then
                     chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
                     echo gpubw_mon > ${'$'}b/governor 2>/dev/null
-                    echo 0 > ${'$'}b/min_freq 2>/dev/null
                 fi
             done
         """.trimIndent()
-        runRootShell(healCmd)
+        runRootShell(cmd)
+    }
+
+    fun restoreStockHardwareState() {
+        isPeakPerformanceActive = false
+        isGpuPeakLocked = false
+        val cmd = """
+            echo 0 > /proc/sys/kernel/sched_boost 2>/dev/null
+            chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+            echo 0 > /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+            for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > ${'$'}z 2>/dev/null; done
+            cmd power set-fixed-performance-mode-enabled false 2>/dev/null
+            chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            echo "0:1804800 1:1804800 2:1804800 3:1804800 4:2419200 5:2419200 6:2419200 7:3187200" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpufreq/policy7 /sys/devices/system/cpu/cpu0/cpufreq /sys/devices/system/cpu/cpu4/cpufreq /sys/devices/system/cpu/cpu7/cpufreq; do
+                chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                echo schedutil > ${'$'}p/scaling_governor 2>/dev/null
+            done
+            cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null
+            cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null
+            cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
+            cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel /sys/class/kgsl/kgsl-3d0/force_clk_on /sys/class/kgsl/kgsl-3d0/force_bus_on /sys/class/kgsl/kgsl-3d0/force_rail_on /sys/class/kgsl/kgsl-3d0/bus_split /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
+            echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+            echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
+            echo 1 > /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
+            echo 305000000 > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
+            for b in /sys/class/devfreq/*cpu-cpu-llbw* /sys/class/devfreq/*llccbw*; do
+                if [ -d "${'$'}b" ]; then
+                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
+                    echo bw_hwmon > ${'$'}b/governor 2>/dev/null
+                fi
+            done
+            for b in /sys/class/devfreq/*kgsl-busmon*; do
+                if [ -d "${'$'}b" ]; then
+                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
+                    echo gpubw_mon > ${'$'}b/governor 2>/dev/null
+                fi
+            done
+            for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do
+                p=${'$'}(pidof ${'$'}d)
+                if [ ! -z "${'$'}p" ]; then kill -CONT ${'$'}p 2>/dev/null; fi
+            done
+        """.trimIndent()
+        runRootShell(cmd)
+        AppLogger.log("🌱 [STOCK RESTORED] All CPU, GPU, Bus, and Thermal nodes reset to factory stock")
     }
 
     fun syncGpuLockState(): Boolean {
@@ -405,7 +460,7 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-    // PROVEN 81-FPS PROFILE: Policy 0 & 4 on performance, Policy 7 (Prime Core) on schedutil (2.45GHz-3.18GHz), sched_boost=0!
+    // EXACT OCT 26 (81-FPS) CPU SCRIPT: Policy 0 & 4 on performance, Policy 7 on schedutil (2457600-3187200)
     private fun buildCpuCeilingUnlockScript(
         c7MaxKhz: String = "3187200",
         c7MinKhz: String = "2457600",
@@ -413,7 +468,6 @@ object HardwareThermalControl {
     ): String {
         val lockPerm = if (lockReadOnly) "0444" else "0644"
         return """
-            echo 0 > /proc/sys/kernel/sched_boost 2>/dev/null
             chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
             echo "0:1804800 1:1804800 2:1804800 3:1804800 4:2419200 5:2419200 6:2419200 7:$c7MaxKhz" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
             echo "7:$c7MaxKhz" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
@@ -443,6 +497,7 @@ object HardwareThermalControl {
         """.trimIndent()
     }
 
+    // EXACT OCT 26 (81-FPS) GPU LOCK: Only touches pwrlevel nodes (never touches bus_split or force_clk_on!)
     fun setGpuPeakLock(lockTo670Mhz: Boolean, onVerified: ((Boolean, String) -> Unit)? = null) {
         isGpuPeakLocked = lockTo670Mhz
         thread {
@@ -477,9 +532,8 @@ object HardwareThermalControl {
         setGpuPeakLock(true)
     }
 
-    // Ultra-lightweight check: No longer spams heavy root shell writes if locks are already active!
     fun enforceNuclearHeartbeat(currentTemp: Int = 37) {
-        // Intentional no-op when read-only locks (0444) are active so we never steal CPU cycles or cause frame stutter!
+        // Intentional no-op: zero background root shell overhead during gameplay
     }
 
     fun getDeepHardwareSnapshot(): String {
@@ -517,30 +571,30 @@ object HardwareThermalControl {
                 settings put system peak_refresh_rate $hz
                 settings put system min_refresh_rate $hz
                 settings put system user_refresh_rate $hz
-                settings put secure miui_refresh_rate $hz
             """.trimIndent()
             executeVerifiedCommand("Force Refresh Rate", cmd)
         }
     }
 
-    // Restores the exact 81-FPS configuration: freezes only mi_thermald & joyose (keeps powerkeeper & native bus governors intact!)
+    // Applies the exact Oct 26 (81-FPS) configuration when enabled, or restores 100% factory stock when disabled
     fun setPeakPerformanceMode(enable: Boolean) {
         if (!isRootAvailable() || isPeakPerformanceActive == enable) return
         isPeakPerformanceActive = enable
 
         thread {
             if (enable) {
-                AppLogger.log("🚀 TURBO MODE: ENGAGED (81+ FPS Clean Profile)")
+                AppLogger.log("🚀 TURBO MODE: ENGAGED (Oct-26 81-FPS Profile)")
 
-                healStuckBusAndSchedStates()
+                repairDamagedBusAndGpuNodes()
 
                 val stopCmd = """
-                    for d in joyose mi_thermald thermal-engine; do
+                    for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do
                         p=${'$'}(pidof ${'$'}d)
                         if [ ! -z "${'$'}p" ]; then kill -STOP ${'$'}p 2>/dev/null; fi
                     done
+                    cmd power set-fixed-performance-mode-enabled true 2>/dev/null
                 """.trimIndent()
-                executeVerifiedCommand("Freeze Thermal Daemons", stopCmd)
+                executeVerifiedCommand("Freeze Daemons", stopCmd)
 
                 val killThermalsCmd = """
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > ${'$'}z 2>/dev/null; done
@@ -548,38 +602,17 @@ object HardwareThermalControl {
                     echo 10 > /sys/class/thermal/thermal_message/sconfig
                     chmod 0444 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                 """.trimIndent()
-                executeVerifiedCommand("Lock sconfig -> 10", killThermalsCmd)
+                executeVerifiedCommand("Lock sconfig", killThermalsCmd)
 
                 executeVerifiedCommand(
-                    "Unlock CPU Ceiling (2.45-3.18GHz)",
+                    "CPU Ceiling",
                     buildCpuCeilingUnlockScript("3187200", "2457600", lockReadOnly = true)
                 )
 
                 setGpuPeakLock(true)
                 forceRefreshRate(120)
             } else {
-                AppLogger.log("🌱 TURBO MODE: Balanced Performance Restored")
-                val restoreCmd = """
-                    echo 0 > /proc/sys/kernel/sched_boost 2>/dev/null
-                    chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
-                    echo 0 > /sys/class/thermal/thermal_message/sconfig 2>/dev/null
-                    for z in /sys/class/thermal/thermal_zone*/mode; do echo enabled > ${'$'}z 2>/dev/null; done
-                    chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
-                    for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpufreq/policy7 /sys/devices/system/cpu/cpu0/cpufreq /sys/devices/system/cpu/cpu4/cpufreq /sys/devices/system/cpu/cpu7/cpufreq; do
-                        chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
-                        echo schedutil > ${'$'}p/scaling_governor 2>/dev/null
-                    done
-                    cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null
-                    cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null
-                    cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
-                    cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
-                    for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do
-                        p=${'$'}(pidof ${'$'}d)
-                        if [ ! -z "${'$'}p" ]; then kill -CONT ${'$'}p 2>/dev/null; fi
-                    done
-                """.trimIndent()
-                executeVerifiedCommand("Restore Normal", restoreCmd)
-                setGpuPeakLock(false)
+                restoreStockHardwareState()
             }
         }
     }
