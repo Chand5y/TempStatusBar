@@ -45,105 +45,85 @@ class TempMonitorService : Service() {
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
     }
 
-    private val deepDiagnosticRunnable = object : Runnable {
-        override fun run() {
-            if (isCurrentlyGaming && isScreenOn) {
-                thread {
-                    val hwSnap = HardwareThermalControl.getDeepHardwareSnapshot()
-                    val stats = PowerHardwareHelper.readPowerStats(applicationContext, lastPlugged != 0)
-                    val pwr = if (stats.isCharging) "+${stats.wattage}W" else "-${stats.wattage}W"
-                    val currentFps = HardwareThermalControl.liveFps
-                    val fpsStr = if (currentFps > 0) "$currentFps FPS" else "-- FPS"
-                    AppLogger.log("🔎 [DIAGNOSTIC] $fpsStr | ${lastTemp}°C | PWR: $pwr | $hwSnap")
-                }
-                backgroundHandler.postDelayed(this, 4000L)
-            }
-        }
-    }
-
     private val dbLogRunnable = object : Runnable {
         override fun run() {
-            val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            val currentTemp = (intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10
-            val plugged = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
-            if (currentTemp > 0) {
-                triggerDatabaseSnapshot(currentTemp, plugged != 0, isScreenOn)
+            // Do not run heavy top/dumpsys DB snapshots while actively in a game match!
+            if (!isCurrentlyGaming) {
+                val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                val currentTemp = (intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10
+                val plugged = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+                if (currentTemp > 0) {
+                    triggerDatabaseSnapshot(currentTemp, plugged != 0, isScreenOn)
+                }
             }
             backgroundHandler.postDelayed(this, 60000L)
         }
     }
 
-    // UNHINGED GAME WATCHDOG: Detects target games automatically and ignores notification shade pull-downs!
+    // ZERO-OVERHEAD GAME DETECTOR: Uses Android UsageStatsManager (no su shell spam!) and engages locks ONCE per match
     private val gamingEngineRunnable = object : Runnable {
         override fun run() {
-            if (isScreenOn && settings.gamingModeEnabled && HardwareThermalControl.isRootAvailable()) {
-                var currentForeground = HardwareThermalControl.getForegroundPackageRoot()
-
-                // If user pulled down the notification shade mid-game, keep current gaming state untouched!
-                if (currentForeground == "TRANSIENT_SYSTEM_SHADE") {
-                    if (isCurrentlyGaming && lastTemp < settings.gameThrottleTemp) {
-                        HardwareThermalControl.enforceNuclearHeartbeat(if (lastTemp > 0) lastTemp else 37)
-                    }
-                    backgroundHandler.postDelayed(this, 2000L)
-                    return
+            if (!settings.gamingModeEnabled) {
+                if (isCurrentlyGaming || HardwareThermalControl.isPeakPerformanceActive) {
+                    isCurrentlyGaming = false
+                    HardwareThermalControl.setPeakPerformanceMode(false)
+                    HardwareThermalControl.clearGamingOptimization()
                 }
+                backgroundHandler.postDelayed(this, 5000L)
+                return
+            }
 
-                if (currentForeground.isEmpty()) {
-                    val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-                    val time = System.currentTimeMillis()
-                    val events = usm.queryEvents(time - 15000, time)
-                    val event = UsageEvents.Event()
-                    while (events.hasNextEvent()) {
-                        events.getNextEvent(event)
-                        if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
-                            currentForeground = event.packageName
+            if (isScreenOn && HardwareThermalControl.isRootAvailable()) {
+                val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+                val time = System.currentTimeMillis()
+                val events = usm.queryEvents(time - 10000, time)
+                val event = UsageEvents.Event()
+                var latestResumedPkg = ""
+
+                while (events.hasNextEvent()) {
+                    events.getNextEvent(event)
+                    if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                        val pkg = event.packageName
+                        if (!pkg.contains("systemui") && !pkg.contains("tempstatusbar") && !pkg.contains("permissioncontroller")) {
+                            latestResumedPkg = pkg
                         }
                     }
                 }
 
                 val targetGames = settings.gamingApps
-                val isGamingApp = currentForeground.isNotEmpty() && targetGames.any { currentForeground.contains(it, ignoreCase = true) }
-
-                if (isGamingApp) {
-                    if (!isCurrentlyGaming) {
+                if (latestResumedPkg.isNotEmpty()) {
+                    val isGamingApp = targetGames.any { latestResumedPkg.contains(it, ignoreCase = true) }
+                    if (isGamingApp && !isCurrentlyGaming) {
                         isCurrentlyGaming = true
-                        AppLogger.log("🎮 [GAME DETECTED] Foreground: $currentForeground -> Engaging Unhinged Turbo Mode")
+                        AppLogger.log("🎮 [GAME DETECTED] $latestResumedPkg -> Engaging Turbo Mode (Zero-Polling)")
                         HardwareThermalControl.setPeakPerformanceMode(true)
-                        HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, currentForeground)
-                        backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
-                        backgroundHandler.post(deepDiagnosticRunnable)
-                    }
-                    if (lastTemp < settings.gameThrottleTemp) {
-                        HardwareThermalControl.enforceNuclearHeartbeat(if (lastTemp > 0) lastTemp else 37)
-                    } else {
-                        AppLogger.log("⚠️ [THERMAL CAP] Battery reached ${lastTemp}°C (Cap: ${settings.gameThrottleTemp}°C)")
-                        HardwareThermalControl.setPeakPerformanceMode(false)
-                        HardwareThermalControl.throttleCPU(true)
-                    }
-                } else if (isCurrentlyGaming && currentForeground.isNotEmpty() && !currentForeground.contains("tempstatusbar")) {
-                    // Only disengage if the user actually went to the launcher or another app AND didn't just trigger an overlay
-                    val isHomeOrOtherApp = currentForeground.contains("home") || currentForeground.contains("launcher") || !HardwareThermalControl.isAnyGameProcessRunning(targetGames)
-                    if (isHomeOrOtherApp) {
+                        HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, latestResumedPkg)
+                    } else if (!isGamingApp && isCurrentlyGaming && (latestResumedPkg.contains("home") || latestResumedPkg.contains("launcher"))) {
                         isCurrentlyGaming = false
-                        AppLogger.log("🏁 [GAME EXITED] Foreground: $currentForeground -> Restoring Balanced Mode")
-                        backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
+                        AppLogger.log("🏁 [GAME EXITED] Returned to Home -> Restoring Stock Mode")
                         HardwareThermalControl.setPeakPerformanceMode(false)
                         HardwareThermalControl.clearGamingOptimization()
-                        if (!isSmartGovernorActive || lastTemp < settings.warningTemp) {
-                            HardwareThermalControl.throttleCPU(false)
-                        }
                     }
                 }
+
+                // Only check thermal cap using already-cached battery temperature (zero root shell calls!)
+                if (isCurrentlyGaming && lastTemp >= settings.gameThrottleTemp) {
+                    AppLogger.log("⚠️ [THERMAL CAP] Battery reached ${lastTemp}°C (Cap: ${settings.gameThrottleTemp}°C)")
+                    HardwareThermalControl.setPeakPerformanceMode(false)
+                    HardwareThermalControl.throttleCPU(true)
+                }
             }
-            backgroundHandler.postDelayed(this, 2000L)
+            backgroundHandler.postDelayed(this, 4000L)
         }
     }
 
     private val powerRunnable = object : Runnable {
         override fun run() {
-            if (isScreenOn && settings.showNotification && settings.showPowerMetrics) {
+            if (isScreenOn && !isCurrentlyGaming && settings.showNotification && settings.showPowerMetrics) {
                 checkPowerDeltaAndUpdate()
-                backgroundHandler.postDelayed(this, 1500L)
+                backgroundHandler.postDelayed(this, 2000L)
+            } else if (isScreenOn) {
+                backgroundHandler.postDelayed(this, 5000L)
             }
         }
     }
@@ -156,7 +136,6 @@ class TempMonitorService : Service() {
                     isThermalCutoff = false
                     isPctCutoff = false
                     if (HardwareThermalControl.isManualBypassActive || HardwareThermalControl.isChargingThrottled) {
-                        AppLogger.log("🔌 [FAIL-SAFE] Charger unplugged — resetting charging nodes to normal")
                         HardwareThermalControl.setChargingEnabled(true, isManualToggle = true)
                     }
                     pushNotificationUpdate()
@@ -191,7 +170,6 @@ class TempMonitorService : Service() {
                     isCurrentlyGaming = false
                     backgroundHandler.removeCallbacks(powerRunnable)
                     backgroundHandler.removeCallbacks(gamingEngineRunnable)
-                    backgroundHandler.removeCallbacks(deepDiagnosticRunnable)
                     HardwareThermalControl.setPeakPerformanceMode(false)
                 }
                 "ACTION_TOGGLE_SMART_GOVERNOR" -> {
@@ -252,7 +230,6 @@ class TempMonitorService : Service() {
         }
     }
 
-    // FIXED: Uses gameThrottleTemp (e.g. 43°C) during active gaming, and never triggers charging cutoffs when charger is unplugged!
     private fun handleSafetyAndChargingLimits(temp: Int, pct: Int, isPluggedIn: Boolean) {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         val activeWarnLimit = if (isCurrentlyGaming || HardwareThermalControl.isPeakPerformanceActive) {
@@ -294,7 +271,6 @@ class TempMonitorService : Service() {
             }
         }
 
-        // Only evaluate charging cutoffs if a charger is physically plugged in!
         if (!isPluggedIn) {
             isThermalCutoff = false
             isPctCutoff = false
@@ -334,7 +310,6 @@ class TempMonitorService : Service() {
         }
     }
 
-    // FIXED: Never shows "Charging Paused by Limits" when the charger is unplugged (lastPlugged == 0)!
     private fun buildLiveNotification(): Notification {
         val isPluggedIn = lastPlugged != 0
         val stats = PowerHardwareHelper.readPowerStats(applicationContext, isPluggedIn)
