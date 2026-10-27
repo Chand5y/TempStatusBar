@@ -24,7 +24,6 @@ class FpsOverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: TextView
     private lateinit var dbHelper: DatabaseHelper
-    private lateinit var settings: SettingsManager
     private var isServiceActive = true
     private var isRecording = false
     private var sessionStartTime = 0L
@@ -56,7 +55,6 @@ class FpsOverlayService : Service() {
         super.onCreate()
         isRunning = true
         dbHelper = DatabaseHelper(this)
-        settings = SettingsManager(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         val prefs = getSharedPreferences("TempMonitorPrefs", Context.MODE_PRIVATE)
@@ -160,6 +158,7 @@ class FpsOverlayService : Service() {
         }
     }
 
+    // PURE PASSIVE RECORDER: Never turns on Turbo Mode or touches CPU/GPU nodes!
     private fun toggleRecordingState() {
         if (isRecording) {
             endAndSaveSession()
@@ -173,21 +172,13 @@ class FpsOverlayService : Service() {
             if (HardwareThermalControl.isRootAvailable()) {
                 thread {
                     val foundPkg = HardwareThermalControl.getForegroundPackageRoot()
-                    if (foundPkg.isNotEmpty() && foundPkg != "TRANSIENT_SYSTEM_SHADE" && !foundPkg.contains("miui.home")) {
-                        foregroundApp = AppLabelHelper.getAppName(applicationContext, foundPkg)
+                    foregroundApp = if (foundPkg.isNotEmpty() && foundPkg != "TRANSIENT_SYSTEM_SHADE" && !foundPkg.contains("miui.home")) {
+                        AppLabelHelper.getAppName(applicationContext, foundPkg)
                     } else {
-                        foregroundApp = "Active Game"
+                        "Battlegrounds India"
                     }
-                    // Only engage Turbo Mode if the user actually has Turbo Mode enabled in the UI!
-                    if (settings.gamingModeEnabled) {
-                        AppLogger.log("🔴 [FPS RECORDING STARTED] Target: $foregroundApp (Turbo Mode ON)")
-                        HardwareThermalControl.setPeakPerformanceMode(true)
-                        if (foundPkg.isNotEmpty() && foundPkg != "TRANSIENT_SYSTEM_SHADE") {
-                            HardwareThermalControl.optimizeBackgroundForGaming(settings.exemptApps, foundPkg)
-                        }
-                    } else {
-                        AppLogger.log("🔴 [FPS RECORDING STARTED] Target: $foregroundApp (Stock Hardware / Turbo OFF)")
-                    }
+                    val modeTag = if (HardwareThermalControl.isPeakPerformanceActive) "Turbo ACTIVE" else "Stock Hardware / Turbo OFF"
+                    AppLogger.log("🔴 [FPS RECORDING STARTED] Target: $foregroundApp ($modeTag)")
                 }
             } else {
                 foregroundApp = "Android System (Non-Root)"
