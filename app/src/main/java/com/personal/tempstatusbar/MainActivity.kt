@@ -1116,12 +1116,15 @@ class MainActivity : Activity() {
         val gameCard = createCard()
         gameCard.addView(createSectionLabel("TURBO PERFORMANCE ENGINE"))
 
-        val turboRow = createIconSwitchRow("game.png", "Turbo Mode", "Unlocks CPU clocks, locks GPU to 670 MHz, and stabilizes refresh rate", settings.gamingModeEnabled) { on ->
+                val turboRow = createIconSwitchRow("game.png", "Turbo Mode", "Automatically engages when a target game is in the foreground", settings.gamingModeEnabled) { on ->
             if (isUpdatingTurboSwitch) return@createIconSwitchRow
             settings.gamingModeEnabled = on
-            HardwareThermalControl.setPeakPerformanceMode(on)
+            if (!on) {
+                HardwareThermalControl.setPeakPerformanceMode(false)
+            }
             uiHandler.postDelayed({ updateGpuLockButtonAppearance() }, 300)
-        }
+                }
+                
         // Save reference to Turbo Mode switch so livePoller keeps it synced
         turboModeSwitch = turboRow.getChildAt(2) as Switch
         gameCard.addView(turboRow)
