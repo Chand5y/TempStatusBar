@@ -43,7 +43,6 @@ object HardwareThermalControl {
 
     @Volatile var isPeakPerformanceActive = false; private set
     private var isPrimeCoreThrottled: Boolean? = null
-    private var lastOptimizedGame = ""
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -53,13 +52,8 @@ object HardwareThermalControl {
         thread {
             val root = isRootAvailable()
             if (root) {
-                val settings = SettingsManager(context.applicationContext)
-                // If Turbo Mode is OFF, immediately restore 100% stock kernel state to undo any leftover locks
-                if (!settings.gamingModeEnabled) {
-                    restoreStockHardwareState()
-                } else {
-                    repairDamagedBusAndGpuNodes()
-                }
+                // Always heal any stuck states (especially powerkeeper & taskset affinities) on startup
+                healSystemState()
                 syncGpuLockState()
                 autoAddQuickSettingsTiles(context.applicationContext)
             }
@@ -67,9 +61,11 @@ object HardwareThermalControl {
         }
     }
 
-    // Undoes the harmful bus_split, force_clk_on, devfreq, and sched_boost writes that caused the 45-54 FPS drop
-    private fun repairDamagedBusAndGpuNodes() {
+    // Ensures powerkeeper is running (never frozen!) and all broken bus/sched nodes are healed
+    private fun healSystemState() {
         val cmd = """
+            p=${'$'}(pidof com.miui.powerkeeper)
+            if [ ! -z "${'$'}p" ]; then kill -CONT ${'$'}p 2>/dev/null; fi
             echo 0 > /proc/sys/kernel/sched_boost 2>/dev/null
             chmod 0644 /sys/class/kgsl/kgsl-3d0/force_clk_on /sys/class/kgsl/kgsl-3d0/force_bus_on /sys/class/kgsl/kgsl-3d0/force_rail_on /sys/class/kgsl/kgsl-3d0/bus_split /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
@@ -120,25 +116,13 @@ object HardwareThermalControl {
             echo 0 > /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
             echo 1 > /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
             echo 305000000 > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
-            for b in /sys/class/devfreq/*cpu-cpu-llbw* /sys/class/devfreq/*llccbw*; do
-                if [ -d "${'$'}b" ]; then
-                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
-                    echo bw_hwmon > ${'$'}b/governor 2>/dev/null
-                fi
-            done
-            for b in /sys/class/devfreq/*kgsl-busmon*; do
-                if [ -d "${'$'}b" ]; then
-                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
-                    echo gpubw_mon > ${'$'}b/governor 2>/dev/null
-                fi
-            done
             for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do
                 p=${'$'}(pidof ${'$'}d)
                 if [ ! -z "${'$'}p" ]; then kill -CONT ${'$'}p 2>/dev/null; fi
             done
         """.trimIndent()
         runRootShell(cmd)
-        AppLogger.log("🌱 [STOCK RESTORED] All CPU, GPU, Bus, and Thermal nodes reset to factory stock")
+        AppLogger.log("🌱 [STOCK RESTORED] All CPU, GPU, and Thermal nodes reset to factory stock")
     }
 
     fun syncGpuLockState(): Boolean {
@@ -497,7 +481,6 @@ object HardwareThermalControl {
         """.trimIndent()
     }
 
-    // EXACT OCT 26 (81-FPS) GPU LOCK: Only touches pwrlevel nodes (never touches bus_split or force_clk_on!)
     fun setGpuPeakLock(lockTo670Mhz: Boolean, onVerified: ((Boolean, String) -> Unit)? = null) {
         isGpuPeakLocked = lockTo670Mhz
         thread {
@@ -533,7 +516,7 @@ object HardwareThermalControl {
     }
 
     fun enforceNuclearHeartbeat(currentTemp: Int = 37) {
-        // Intentional no-op: zero background root shell overhead during gameplay
+        // Intentional no-op
     }
 
     fun getDeepHardwareSnapshot(): String {
@@ -576,25 +559,25 @@ object HardwareThermalControl {
         }
     }
 
-    // Applies the exact Oct 26 (81-FPS) configuration when enabled, or restores 100% factory stock when disabled
+    // FIXED: Always executes when called (removed the broken early-return guard!) and NEVER freezes com.miui.powerkeeper!
     fun setPeakPerformanceMode(enable: Boolean) {
-        if (!isRootAvailable() || isPeakPerformanceActive == enable) return
+        if (!isRootAvailable()) return
         isPeakPerformanceActive = enable
 
         thread {
             if (enable) {
                 AppLogger.log("🚀 TURBO MODE: ENGAGED (Oct-26 81-FPS Profile)")
 
-                repairDamagedBusAndGpuNodes()
+                healSystemState()
 
+                // Freeze ONLY thermal daemons — NEVER freeze com.miui.powerkeeper (PowerKeeper unlocks 90/120Hz in HyperOS!)
                 val stopCmd = """
-                    for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do
+                    for d in joyose mi_thermald thermal-engine; do
                         p=${'$'}(pidof ${'$'}d)
                         if [ ! -z "${'$'}p" ]; then kill -STOP ${'$'}p 2>/dev/null; fi
                     done
-                    cmd power set-fixed-performance-mode-enabled true 2>/dev/null
                 """.trimIndent()
-                executeVerifiedCommand("Freeze Daemons", stopCmd)
+                executeVerifiedCommand("Freeze Thermal Daemons", stopCmd)
 
                 val killThermalsCmd = """
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > ${'$'}z 2>/dev/null; done
@@ -648,39 +631,10 @@ object HardwareThermalControl {
     fun throttlePrimeCore(throttle: Boolean) = throttleCPU(throttle)
 
     fun optimizeBackgroundForGaming(exemptPackages: Set<String>, foregroundPkg: String) {
-        if (!isRootAvailable() || lastOptimizedGame == foregroundPkg) return
-        lastOptimizedGame = foregroundPkg
-        thread {
-            try {
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "ps -A -o pid,NAME"))
-                val reader = p.inputStream.bufferedReader()
-                var line: String?
-                val pidsToPin = mutableListOf<Int>()
-
-                while (reader.readLine().also { line = it } != null) {
-                    val parts = line!!.trim().split(Regex("\\s+"))
-                    if (parts.size >= 2) {
-                        val pid = parts[0].toIntOrNull() ?: continue
-                        val name = parts[1]
-
-                        if (name.contains(".") && !name.startsWith("android.") && !name.startsWith("com.android.") && !name.startsWith("com.miui.") && !name.startsWith("com.qualcomm.")) {
-                            val isExempt = exemptPackages.any { name.contains(it) }
-                            val isForeground = name.contains(foregroundPkg)
-                            val isSelf = name.contains("tempstatusbar")
-
-                            if (!isExempt && !isForeground && !isSelf) pidsToPin.add(pid)
-                        }
-                    }
-                }
-                if (pidsToPin.isNotEmpty()) {
-                    val pidList = pidsToPin.joinToString(" ")
-                    executeVerifiedCommand("Pin Bg Apps", "for p in $pidList; do taskset -p 0f \$p >/dev/null 2>&1; done")
-                }
-            } catch (e: Exception) {}
-        }
+        // Intentional no-op: pinning 105 processes to 0f without unpinning was throttling game helper services
     }
 
-    fun clearGamingOptimization() { lastOptimizedGame = "" }
+    fun clearGamingOptimization() {}
 
     fun getHardwareInfo(): String {
         val soc = (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE).uppercase(java.util.Locale.getDefault())
