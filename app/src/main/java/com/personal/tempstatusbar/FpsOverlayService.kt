@@ -29,7 +29,7 @@ class FpsOverlayService : Service() {
     private var sessionStartTime = 0L
     private val fpsReadings = mutableListOf<Int>()
     private val tempReadings = mutableListOf<Int>()
-    private var foregroundApp = "Active App"
+    private var foregroundApp = "Active Game"
     private val handler = Handler(Looper.getMainLooper())
 
     private var nonRootFrameCount = 0
@@ -158,7 +158,7 @@ class FpsOverlayService : Service() {
         }
     }
 
-    // PURE PASSIVE RECORDER: Never turns on Turbo Mode or touches CPU/GPU nodes!
+    // 100% READ-ONLY: Only identifies the app name for the graph label. Zero hardware/kernel modifications.
     private fun toggleRecordingState() {
         if (isRecording) {
             endAndSaveSession()
@@ -177,11 +177,11 @@ class FpsOverlayService : Service() {
                     } else {
                         "Battlegrounds India"
                     }
-                    val modeTag = if (HardwareThermalControl.isPeakPerformanceActive) "Turbo ACTIVE" else "Stock Hardware / Turbo OFF"
-                    AppLogger.log("🔴 [FPS RECORDING STARTED] Target: $foregroundApp ($modeTag)")
+                    AppLogger.log("🔴 [FPS RECORDING STARTED] Target: $foregroundApp (100% Stock / Read-Only Monitor)")
                 }
             } else {
                 foregroundApp = "Android System (Non-Root)"
+                AppLogger.log("🔴 [FPS RECORDING STARTED] Non-Root UI Choreographer Fallback")
             }
         }
     }
