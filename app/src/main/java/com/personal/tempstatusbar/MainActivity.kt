@@ -349,7 +349,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // THEME PALETTES (Crisp Obsidian-Charcoal Active Pills — Zero Muddy Olive Tones)
+    // THEME PALETTES
     // =========================================================================
     private fun resolveTheme(mode: String): ThemePalette {
         val sysNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -653,7 +653,7 @@ class MainActivity : Activity() {
         mainBody.addView(contentFrame)
         root.addView(mainBody)
 
-        // Bottom Navigation Bar: Zero Rectangular Shadow Bleed (No dark/muddy bottom corners!)
+        // Bottom Navigation Bar
         val bottomDockContainer = FrameLayout(this).apply {
             setPadding(dp(18), dp(6), dp(18), dp(16))
             clipChildren = false
@@ -1116,16 +1116,15 @@ class MainActivity : Activity() {
         val gameCard = createCard()
         gameCard.addView(createSectionLabel("TURBO PERFORMANCE ENGINE"))
 
-                val turboRow = createIconSwitchRow("game.png", "Turbo Mode", "Automatically engages when a target game is in the foreground", settings.gamingModeEnabled) { on ->
+        // FIXED: Only arms the detector; does not trigger setPeakPerformanceMode immediately
+        val turboRow = createIconSwitchRow("game.png", "Turbo Mode", "Automatically engages when a target game is in the foreground", settings.gamingModeEnabled) { on ->
             if (isUpdatingTurboSwitch) return@createIconSwitchRow
             settings.gamingModeEnabled = on
             if (!on) {
-                HardwareThermalControl.setPeakPerformanceMode(false)
+                HardwareThermalControl.restoreStockHardwareState()
             }
             uiHandler.postDelayed({ updateGpuLockButtonAppearance() }, 300)
-                }
-                
-        // Save reference to Turbo Mode switch so livePoller keeps it synced
+        }
         turboModeSwitch = turboRow.getChildAt(2) as Switch
         gameCard.addView(turboRow)
 
@@ -2273,234 +2272,6 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
             Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    // =========================================================================
-    // UI BUILDER HELPERS (Custom High-Contrast Pill Track & Thumb Switch)
-    // =========================================================================
-    private fun createCustomSwitch(checked: Boolean, onToggle: (Boolean) -> Unit): Switch {
-        val sw = Switch(this)
-        sw.showText = false
-        sw.switchMinWidth = dp(48)
-
-        val trackOn = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(14).toFloat()
-            setColor(theme.toggleTrackOn)
-            setSize(dp(48), dp(26))
-        }
-        val trackOff = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(14).toFloat()
-            setColor(theme.toggleTrackOff)
-            setStroke(dp(1.5f.roundToInt().coerceAtLeast(1)), theme.toggleBorderOff)
-            setSize(dp(48), dp(26))
-        }
-        val trackStates = StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_checked), trackOn)
-            addState(intArrayOf(), trackOff)
-        }
-
-        val thumbCircleOn = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(theme.toggleThumbOn)
-            setSize(dp(20), dp(20))
-        }
-        val thumbCircleOff = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(theme.toggleThumbOff)
-            setSize(dp(20), dp(20))
-        }
-        val pad = dp(3)
-        val thumbLayerOn = LayerDrawable(arrayOf(thumbCircleOn)).apply { setLayerInset(0, pad, pad, pad, pad) }
-        val thumbLayerOff = LayerDrawable(arrayOf(thumbCircleOff)).apply { setLayerInset(0, pad, pad, pad, pad) }
-
-        val thumbStates = StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_checked), thumbLayerOn)
-            addState(intArrayOf(), thumbLayerOff)
-        }
-
-        sw.trackDrawable = trackStates
-        sw.thumbDrawable = thumbStates
-        sw.isChecked = checked
-
-        sw.setOnCheckedChangeListener { v, isChecked ->
-            v.animate().scaleX(0.95f).scaleY(0.95f).setDuration(60).withEndAction {
-                v.animate().scaleX(1f).scaleY(1f).setDuration(140).setInterpolator(OvershootInterpolator()).start()
-            }.start()
-            hapticTap(v)
-            onToggle(isChecked)
-        }
-        return sw
-    }
-
-    private fun createAccessChip(iconFile: String, label: String, onClick: () -> Unit): Pair<LinearLayout, TextView> {
-        val tv = TextView(this).apply {
-            text = label
-            textSize = 10f
-            isSingleLine = true
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(dp(6), dp(8), dp(6), dp(8))
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(dp(3), 0, dp(3), 0)
-            }
-            addView(createIconView(iconFile, 16).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(16), dp(16)).apply { setMargins(0, 0, dp(4), 0) }
-            })
-            addView(tv)
-        }
-        attachSpringAnimation(box, onClick)
-        return box to tv
-    }
-
-    private fun createIconSwitchRow(
-        iconFile: String,
-        title: String,
-        subtitle: String,
-        checked: Boolean,
-        onToggle: (Boolean) -> Unit
-    ): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(8), 0, dp(8))
-            addView(createIconBadge(iconFile, 24, 40))
-
-            val textCol = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    setMargins(0, 0, dp(8), 0)
-                }
-            }
-            textCol.addView(TextView(context).apply {
-                text = title
-                setTextColor(theme.textPrimary)
-                textSize = 13.5f
-                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            })
-            textCol.addView(TextView(context).apply {
-                text = subtitle
-                setTextColor(theme.textSecondary)
-                textSize = 11f
-                setPadding(0, dp(2), 0, 0)
-            })
-            addView(textCol)
-
-            val sw = createCustomSwitch(checked, onToggle)
-            addView(sw)
-        }
-    }
-
-    private fun createIconPillButton(iconFile: String, label: String, isAccent: Boolean, onClick: () -> Unit): LinearLayout {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = if (isAccent) {
-                GradientDrawable().apply {
-                    cornerRadius = dp(20).toFloat()
-                    setColor(theme.accentPrimary)
-                }
-            } else {
-                GradientDrawable().apply {
-                    cornerRadius = dp(20).toFloat()
-                    setColor(theme.pillBg)
-                    setStroke(2, theme.cardStroke)
-                }
-            }
-            addView(createIconView(iconFile, 16).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(16), dp(16)).apply { setMargins(0, 0, dp(6), 0) }
-            })
-            addView(TextView(context).apply {
-                text = label
-                setTextColor(if (isAccent) Color.WHITE else theme.textPrimary)
-                textSize = 12f
-                isSingleLine = true
-                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            })
-        }
-        attachSpringAnimation(box, onClick)
-        return box
-    }
-
-    private fun createScroll() = ScrollView(this).apply {
-        layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-        isFillViewport = true
-        isVerticalScrollBarEnabled = false
-    }
-
-    private fun createCol() = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(2), dp(2), dp(2), dp(16))
-    }
-
-    private fun createCard() = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(18), dp(18), dp(18), dp(18))
-        background = GradientDrawable().apply {
-            cornerRadius = dp(24).toFloat()
-            setColor(theme.cardBg)
-            setStroke(2, theme.cardStroke)
-        }
-        elevation = 0f
-    }
-
-    private fun createSectionLabel(txt: String) = TextView(this).apply {
-        text = txt
-        setTextColor(theme.textSecondary)
-        textSize = 11f
-        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        letterSpacing = 0.06f
-    }
-
-    private fun createBodyText(txt: String) = TextView(this).apply {
-        text = txt
-        setTextColor(theme.textPrimary)
-        textSize = 13f
-        setPadding(0, dp(4), 0, dp(2))
-    }
-
-    private fun createPillButton(label: String, onClick: () -> Unit) = TextView(this).apply {
-        text = label
-        setTextColor(theme.textPrimary)
-        textSize = 12f
-        gravity = Gravity.CENTER
-        isSingleLine = true
-        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        setPadding(dp(12), dp(10), dp(12), dp(10))
-        background = GradientDrawable().apply {
-            cornerRadius = dp(18).toFloat()
-            setColor(theme.pillBg)
-            setStroke(2, theme.cardStroke)
-        }
-        attachSpringAnimation(this, onClick)
-    }
-
-    private fun createAccentPillButton(label: String, onClick: () -> Unit) = TextView(this).apply {
-        text = label
-        setTextColor(Color.WHITE)
-        textSize = 12f
-        gravity = Gravity.CENTER
-        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        setPadding(dp(16), dp(10), dp(16), dp(10))
-        background = GradientDrawable().apply {
-            cornerRadius = dp(20).toFloat()
-            setColor(theme.accentPrimary)
-        }
-        attachSpringAnimation(this, onClick)
-    }
-
-    private fun createDivider() = View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2).apply { setMargins(0, dp(10), 0, dp(10)) }
-        setBackgroundColor(theme.cardStroke)
-    }
-
-    private fun addSpace(parent: LinearLayout, px: Int) {
-        parent.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(1, px) })
     }
 
     private fun toggleOverlayPill(enable: Boolean) {
