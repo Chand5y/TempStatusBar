@@ -11,8 +11,8 @@ android {
         applicationId "com.personal.tempstatusbar"
         minSdk 26
         targetSdk 34
-        versionCode 5
-        versionName "2.3"
+        versionCode 6
+        versionName "2.4"
     }
 
     buildTypes {
@@ -31,7 +31,6 @@ android {
         jvmTarget = '17'
     }
 
-    // Includes both ../Icons (capital I) and ../icons so Linux builds always bundle your PNGs
     sourceSets {
         main {
             if (file('../Icons').exists()) {
@@ -86,6 +85,21 @@ android {
             text = text.replaceAll('android:roundIcon="[^"]*"', 'android:roundIcon="@mipmap/ic_launcher_round"')
             if (!text.contains("QUERY_ALL_PACKAGES")) {
                 text = text.replace("<application", "<uses-permission android:name=\"android.permission.QUERY_ALL_PACKAGES\" />\n    <application")
+            }
+            if (!text.contains("TurboTileService")) {
+                def turboServiceXml = """
+        <service
+            android:name=".TurboTileService"
+            android:exported="true"
+            android:label="Turbo Mode"
+            android:icon="@mipmap/ic_launcher"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+    </application>"""
+                text = text.replace("</application>", turboServiceXml)
             }
             manifestFile.write(text, "UTF-8")
         }
