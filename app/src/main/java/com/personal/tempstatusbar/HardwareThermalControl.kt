@@ -68,7 +68,11 @@ object HardwareThermalControl {
     private fun repairDamagedBusAndGpuNodes() {
         val cmd = """
             echo 0 > /proc/sys/kernel/sched_boost 2>/dev/null
-            chmod 0644 /sys/class/kgsl/kgsl-3d0/force_clk_on /sys/class/kgsl/kgsl-3d0/force_bus_on /sys/class/kgsl/kgsl-3d0/force_rail_on /sys/class/kgsl/kgsl-3d0/bus_split /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
@@ -76,13 +80,15 @@ object HardwareThermalControl {
             echo 305000000 > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
             for b in /sys/class/devfreq/*cpu-cpu-llbw* /sys/class/devfreq/*llccbw*; do
                 if [ -d "${'$'}b" ]; then
-                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
+                    chmod 0644 ${'$'}b/governor 2>/dev/null
+                    chmod 0644 ${'$'}b/min_freq 2>/dev/null
                     echo bw_hwmon > ${'$'}b/governor 2>/dev/null
                 fi
             done
             for b in /sys/class/devfreq/*kgsl-busmon*; do
                 if [ -d "${'$'}b" ]; then
-                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
+                    chmod 0644 ${'$'}b/governor 2>/dev/null
+                    chmod 0644 ${'$'}b/min_freq 2>/dev/null
                     echo gpubw_mon > ${'$'}b/governor 2>/dev/null
                 fi
             done
@@ -90,6 +96,7 @@ object HardwareThermalControl {
         runRootShell(cmd)
     }
 
+    // FIXED: Unlocks each KGSL node individually so toybox chmod never skips min_pwrlevel!
     fun restoreStockHardwareState() {
         isPeakPerformanceActive = false
         isGpuPeakLocked = false
@@ -102,44 +109,47 @@ object HardwareThermalControl {
             chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
             echo "0:1804800 1:1804800 2:1804800 3:1804800 4:2419200 5:2419200 6:2419200 7:3187200" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
             for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpufreq/policy7 /sys/devices/system/cpu/cpu0/cpufreq /sys/devices/system/cpu/cpu4/cpufreq /sys/devices/system/cpu/cpu7/cpufreq; do
-                chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_governor 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_max_freq 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_min_freq 2>/dev/null
                 echo schedutil > ${'$'}p/scaling_governor 2>/dev/null
             done
             cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null
             cat /sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq 2>/dev/null
             cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_min_freq 2>/dev/null
             cat /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq > /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2>/dev/null
-            chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel /sys/class/kgsl/kgsl-3d0/force_clk_on /sys/class/kgsl/kgsl-3d0/force_bus_on /sys/class/kgsl/kgsl-3d0/force_rail_on /sys/class/kgsl/kgsl-3d0/bus_split /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
             echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
             echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null
             echo 0 > /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
             echo 1 > /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
             echo 305000000 > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
-            for b in /sys/class/devfreq/*cpu-cpu-llbw* /sys/class/devfreq/*llccbw*; do
-                if [ -d "${'$'}b" ]; then
-                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
-                    echo bw_hwmon > ${'$'}b/governor 2>/dev/null
-                fi
-            done
-            for b in /sys/class/devfreq/*kgsl-busmon*; do
-                if [ -d "${'$'}b" ]; then
-                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
-                    echo gpubw_mon > ${'$'}b/governor 2>/dev/null
-                fi
-            done
             for d in joyose mi_thermald thermal-engine com.miui.powerkeeper; do
                 p=${'$'}(pidof ${'$'}d)
                 if [ ! -z "${'$'}p" ]; then kill -CONT ${'$'}p 2>/dev/null; fi
             done
         """.trimIndent()
         runRootShell(cmd)
+        syncGpuLockState()
         AppLogger.log("🌱 [STOCK RESTORED] All CPU, GPU, and Thermal nodes reset to factory stock")
     }
 
     fun syncGpuLockState(): Boolean {
-        if (!isRootAvailable()) return false
+        if (!isRootAvailable()) {
+            isGpuPeakLocked = false
+            return false
+        }
         val pwrLvl = readSysfsNode("/sys/class/kgsl/kgsl-3d0/min_pwrlevel").trim()
         isGpuPeakLocked = (pwrLvl == "0")
         return isGpuPeakLocked
@@ -457,7 +467,6 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-    // OCT 26 (81-FPS) SCRIPT: Policy 0 & 4 on performance, Policy 7 on schedutil (2.45-3.18GHz). Zero sched_boost modifications!
     private fun buildCpuCeilingUnlockScript(
         c7MaxKhz: String = "3187200",
         c7MinKhz: String = "2457600",
@@ -474,18 +483,24 @@ object HardwareThermalControl {
                 echo 0 > ${'$'}c 2>/dev/null
             done
             for p in /sys/devices/system/cpu/cpufreq/policy7 /sys/devices/system/cpu/cpu7/cpufreq; do
-                chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_governor 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_max_freq 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_min_freq 2>/dev/null
                 echo schedutil > ${'$'}p/scaling_governor 2>/dev/null
                 echo $c7MaxKhz > ${'$'}p/scaling_max_freq 2>/dev/null
                 echo $c7MinKhz > ${'$'}p/scaling_min_freq 2>/dev/null
-                chmod $lockPerm ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod $lockPerm ${'$'}p/scaling_max_freq 2>/dev/null
+                chmod $lockPerm ${'$'}p/scaling_min_freq 2>/dev/null
             done
             for p in /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpu4/cpufreq; do
-                chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_governor 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_max_freq 2>/dev/null
+                chmod 0644 ${'$'}p/scaling_min_freq 2>/dev/null
                 echo performance > ${'$'}p/scaling_governor 2>/dev/null
                 echo 2419200 > ${'$'}p/scaling_max_freq 2>/dev/null
                 echo 2419200 > ${'$'}p/scaling_min_freq 2>/dev/null
-                chmod $lockPerm ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod $lockPerm ${'$'}p/scaling_max_freq 2>/dev/null
+                chmod $lockPerm ${'$'}p/scaling_min_freq 2>/dev/null
             done
             for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpu0/cpufreq; do
                 chmod 0644 ${'$'}p/scaling_governor 2>/dev/null
@@ -494,33 +509,42 @@ object HardwareThermalControl {
         """.trimIndent()
     }
 
+    private fun buildGpuLockScript(lockTo670Mhz: Boolean): String {
+        return if (lockTo670Mhz) {
+            """
+                chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
+                chmod 0644 /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null
+                chmod 0644 /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+                chmod 0644 /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+                echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
+                echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null
+                echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+                echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+                chmod 0444 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
+                chmod 0444 /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+            """.trimIndent()
+        } else {
+            """
+                chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null
+                chmod 0644 /sys/class/kgsl/kgsl-3d0/max_pwrlevel 2>/dev/null
+                chmod 0644 /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+                chmod 0644 /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+                echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+                echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+            """.trimIndent()
+        }
+    }
+
     fun setGpuPeakLock(lockTo670Mhz: Boolean, onVerified: ((Boolean, String) -> Unit)? = null) {
         isGpuPeakLocked = lockTo670Mhz
         thread {
-            if (lockTo670Mhz) {
-                val cmd = """
-                    chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
-                    echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel
-                    echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel
-                    echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel
-                    echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel
-                    chmod 0444 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
-                """.trimIndent()
-                executeVerifiedCommand("Lock GPU Peak (670 MHz)", cmd)
-                syncGpuLockState()
-                val freqNow = getGpuFrequency()
-                onVerified?.invoke(isGpuPeakLocked, freqNow)
-            } else {
-                val cmd = """
-                    chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
-                    echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel
-                    echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel
-                """.trimIndent()
-                executeVerifiedCommand("Unlock GPU to Dynamic Auto", cmd)
-                syncGpuLockState()
-                val freqNow = getGpuFrequency()
-                onVerified?.invoke(isGpuPeakLocked, freqNow)
-            }
+            executeVerifiedCommand(
+                if (lockTo670Mhz) "Lock GPU Peak (670 MHz)" else "Unlock GPU to Dynamic Auto",
+                buildGpuLockScript(lockTo670Mhz)
+            )
+            syncGpuLockState()
+            val freqNow = getGpuFrequency()
+            onVerified?.invoke(isGpuPeakLocked, freqNow)
         }
     }
 
@@ -528,9 +552,7 @@ object HardwareThermalControl {
         setGpuPeakLock(true)
     }
 
-    fun enforceNuclearHeartbeat(currentTemp: Int = 37) {
-        // Intentional no-op
-    }
+    fun enforceNuclearHeartbeat(currentTemp: Int = 37) {}
 
     fun getDeepHardwareSnapshot(): String = "Snapshot Disabled"
 
@@ -545,6 +567,7 @@ object HardwareThermalControl {
         }
     }
 
+    // Synchronous execution on a single worker thread so GPU lock and stock restore never race each other!
     fun setPeakPerformanceMode(enable: Boolean) {
         if (!isRootAvailable() || isPeakPerformanceActive == enable) return
         isPeakPerformanceActive = enable
@@ -554,30 +577,23 @@ object HardwareThermalControl {
                 AppLogger.log("🚀 TURBO MODE: ENGAGED (Oct-26 81-FPS Profile)")
                 repairDamagedBusAndGpuNodes()
 
-                // Freeze ONLY thermal daemons — NEVER freeze com.miui.powerkeeper
-                val stopCmd = """
+                val fullEngageCmd = """
                     for d in joyose mi_thermald thermal-engine; do
                         p=${'$'}(pidof ${'$'}d)
                         if [ ! -z "${'$'}p" ]; then kill -STOP ${'$'}p 2>/dev/null; fi
                     done
-                """.trimIndent()
-                executeVerifiedCommand("Freeze Thermal Daemons", stopCmd)
-
-                val killThermalsCmd = """
                     for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > ${'$'}z 2>/dev/null; done
                     chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
                     echo 10 > /sys/class/thermal/thermal_message/sconfig
                     chmod 0444 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+                    ${buildCpuCeilingUnlockScript("3187200", "2457600", lockReadOnly = true)}
+                    ${buildGpuLockScript(true)}
+                    settings put system peak_refresh_rate 120 2>/dev/null
+                    settings put system min_refresh_rate 120 2>/dev/null
+                    settings put system user_refresh_rate 120 2>/dev/null
                 """.trimIndent()
-                executeVerifiedCommand("Lock sconfig", killThermalsCmd)
-
-                executeVerifiedCommand(
-                    "CPU Ceiling",
-                    buildCpuCeilingUnlockScript("3187200", "2457600", lockReadOnly = true)
-                )
-
-                setGpuPeakLock(true)
-                forceRefreshRate(120)
+                executeVerifiedCommand("Engage Turbo Profile", fullEngageCmd)
+                syncGpuLockState()
             } else {
                 restoreStockHardwareState()
             }
@@ -597,7 +613,8 @@ object HardwareThermalControl {
             if (throttle) {
                 val minF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
                 val cmd = """
-                    chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq 2>/dev/null
+                    chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq 2>/dev/null
+                    chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq 2>/dev/null
                     echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor 2>/dev/null
                     echo $minF > /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq
                     echo $minF > /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq
