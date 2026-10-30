@@ -42,6 +42,7 @@ object HardwareThermalControl {
     private var lastRootCheckTime = 0L
 
     @Volatile var isPeakPerformanceActive = false; private set
+    private var isPrimeCoreThrottled: Boolean? = null
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -51,12 +52,42 @@ object HardwareThermalControl {
         thread {
             val root = isRootAvailable()
             if (root) {
-                // Ensure 100% stock hardware state on startup
-                restoreStockHardwareState()
+                val settings = SettingsManager(context.applicationContext)
+                if (!settings.gamingModeEnabled) {
+                    restoreStockHardwareState()
+                } else {
+                    repairDamagedBusAndGpuNodes()
+                }
+                syncGpuLockState()
                 autoAddQuickSettingsTiles(context.applicationContext)
             }
-            AppLogger.log("⚙️ [INIT] SoC: ${getHardwareInfo()} | Android ${Build.VERSION.RELEASE} | Root: ${if (root) "GRANTED (Pure Monitor Mode)" else "DENIED"}")
+            AppLogger.log("⚙️ [INIT] SoC: ${getHardwareInfo()} | Android ${Build.VERSION.RELEASE} | Root: ${if (root) "GRANTED (uid=0)" else "DENIED"}")
         }
+    }
+
+    private fun repairDamagedBusAndGpuNodes() {
+        val cmd = """
+            echo 0 > /proc/sys/kernel/sched_boost 2>/dev/null
+            chmod 0644 /sys/class/kgsl/kgsl-3d0/force_clk_on /sys/class/kgsl/kgsl-3d0/force_bus_on /sys/class/kgsl/kgsl-3d0/force_rail_on /sys/class/kgsl/kgsl-3d0/bus_split /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/force_clk_on 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/force_bus_on 2>/dev/null
+            echo 0 > /sys/class/kgsl/kgsl-3d0/force_rail_on 2>/dev/null
+            echo 1 > /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
+            echo 305000000 > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
+            for b in /sys/class/devfreq/*cpu-cpu-llbw* /sys/class/devfreq/*llccbw*; do
+                if [ -d "${'$'}b" ]; then
+                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
+                    echo bw_hwmon > ${'$'}b/governor 2>/dev/null
+                fi
+            done
+            for b in /sys/class/devfreq/*kgsl-busmon*; do
+                if [ -d "${'$'}b" ]; then
+                    chmod 0644 ${'$'}b/governor ${'$'}b/min_freq 2>/dev/null
+                    echo gpubw_mon > ${'$'}b/governor 2>/dev/null
+                fi
+            done
+        """.trimIndent()
+        runRootShell(cmd)
     }
 
     fun restoreStockHardwareState() {
@@ -104,11 +135,14 @@ object HardwareThermalControl {
             done
         """.trimIndent()
         runRootShell(cmd)
+        AppLogger.log("🌱 [STOCK RESTORED] All CPU, GPU, and Thermal nodes reset to factory stock")
     }
 
     fun syncGpuLockState(): Boolean {
-        isGpuPeakLocked = false
-        return false
+        if (!isRootAvailable()) return false
+        val pwrLvl = readSysfsNode("/sys/class/kgsl/kgsl-3d0/min_pwrlevel").trim()
+        isGpuPeakLocked = (pwrLvl == "0")
+        return isGpuPeakLocked
     }
 
     fun getForegroundPackageRoot(): String {
@@ -133,7 +167,16 @@ object HardwareThermalControl {
         }
     }
 
-    fun isAnyGameProcessRunning(gamePackages: Set<String>): Boolean = false
+    fun isAnyGameProcessRunning(gamePackages: Set<String>): Boolean {
+        if (!isRootAvailable() || gamePackages.isEmpty()) return false
+        return try {
+            val pkgList = gamePackages.joinToString(" ")
+            val (_, out) = runRootShell("pidof $pkgList")
+            out.trim().any { it.isDigit() }
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     fun loadQuickTileIcon(context: Context, exactFileName: String): Icon? {
         try {
@@ -286,6 +329,24 @@ object HardwareThermalControl {
             }
         } catch (e: Exception) {}
 
+        if (isRootAvailable()) {
+            try {
+                val (_, out) = runRootShell("pm list packages -3")
+                for (line in out.lines()) {
+                    val pkg = line.removePrefix("package:").trim()
+                    if (pkg.isNotEmpty() && pkg != context.packageName && !map.containsKey(pkg)) {
+                        val label = try {
+                            val ai = pm.getApplicationInfo(pkg, 0)
+                            pm.getApplicationLabel(ai).toString()
+                        } catch (e: Exception) {
+                            pkg.substringAfterLast(".").replaceFirstChar { it.uppercase() }
+                        }
+                        map[pkg] = label
+                    }
+                }
+            } catch (e: Exception) {}
+        }
+
         return map.entries
             .map { AppEntry(it.value, it.key, selectedSet.contains(it.key)) }
             .sortedWith(compareByDescending<AppEntry> { it.isSelected }.thenBy { it.label.lowercase() })
@@ -396,23 +457,163 @@ object HardwareThermalControl {
         } catch (e: Exception) { false }
     }
 
-    // DISABLED: All performance/clock manipulation functions are neutralized for pure stock monitoring
-    fun setGpuPeakLock(lockTo670Mhz: Boolean, onVerified: ((Boolean, String) -> Unit)? = null) {
-        isGpuPeakLocked = false
-        onVerified?.invoke(false, getGpuFrequency())
+    // OCT 26 (81-FPS) SCRIPT: Policy 0 & 4 on performance, Policy 7 on schedutil (2.45-3.18GHz). Zero sched_boost modifications!
+    private fun buildCpuCeilingUnlockScript(
+        c7MaxKhz: String = "3187200",
+        c7MinKhz: String = "2457600",
+        lockReadOnly: Boolean = true
+    ): String {
+        val lockPerm = if (lockReadOnly) "0444" else "0644"
+        return """
+            chmod 0644 /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            echo "0:1804800 1:1804800 2:1804800 3:1804800 4:2419200 5:2419200 6:2419200 7:$c7MaxKhz" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            echo "7:$c7MaxKhz" > /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            chmod $lockPerm /sys/module/msm_performance/parameters/cpu_max_freq 2>/dev/null
+            for c in /sys/class/thermal/cooling_device*/cur_state; do
+                chmod 0644 ${'$'}c 2>/dev/null
+                echo 0 > ${'$'}c 2>/dev/null
+            done
+            for p in /sys/devices/system/cpu/cpufreq/policy7 /sys/devices/system/cpu/cpu7/cpufreq; do
+                chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                echo schedutil > ${'$'}p/scaling_governor 2>/dev/null
+                echo $c7MaxKhz > ${'$'}p/scaling_max_freq 2>/dev/null
+                echo $c7MinKhz > ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod $lockPerm ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+            done
+            for p in /sys/devices/system/cpu/cpufreq/policy4 /sys/devices/system/cpu/cpu4/cpufreq; do
+                chmod 0644 ${'$'}p/scaling_governor ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+                echo performance > ${'$'}p/scaling_governor 2>/dev/null
+                echo 2419200 > ${'$'}p/scaling_max_freq 2>/dev/null
+                echo 2419200 > ${'$'}p/scaling_min_freq 2>/dev/null
+                chmod $lockPerm ${'$'}p/scaling_max_freq ${'$'}p/scaling_min_freq 2>/dev/null
+            done
+            for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpu0/cpufreq; do
+                chmod 0644 ${'$'}p/scaling_governor 2>/dev/null
+                echo performance > ${'$'}p/scaling_governor 2>/dev/null
+            done
+        """.trimIndent()
     }
 
-    fun forceUnthrottleGPU() {}
-    fun enforceNuclearHeartbeat(currentTemp: Int = 37) {}
-    fun getDeepHardwareSnapshot(): String = "Stock Monitoring Mode"
-    fun forceRefreshRate(hz: Int) {}
-    fun setPeakPerformanceMode(enable: Boolean) {
-        isPeakPerformanceActive = false
+    fun setGpuPeakLock(lockTo670Mhz: Boolean, onVerified: ((Boolean, String) -> Unit)? = null) {
+        isGpuPeakLocked = lockTo670Mhz
+        thread {
+            if (lockTo670Mhz) {
+                val cmd = """
+                    chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/max_pwrlevel
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel
+                    echo 0 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel
+                    chmod 0444 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
+                """.trimIndent()
+                executeVerifiedCommand("Lock GPU Peak (670 MHz)", cmd)
+                syncGpuLockState()
+                val freqNow = getGpuFrequency()
+                onVerified?.invoke(isGpuPeakLocked, freqNow)
+            } else {
+                val cmd = """
+                    chmod 0644 /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/default_pwrlevel 2>/dev/null
+                    echo 6 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel
+                    echo 5 > /sys/class/kgsl/kgsl-3d0/default_pwrlevel
+                """.trimIndent()
+                executeVerifiedCommand("Unlock GPU to Dynamic Auto", cmd)
+                syncGpuLockState()
+                val freqNow = getGpuFrequency()
+                onVerified?.invoke(isGpuPeakLocked, freqNow)
+            }
+        }
     }
-    fun forceUnthrottleCPU() {}
-    fun forceUnthrottlePrimeCore() {}
-    fun throttleCPU(throttle: Boolean) {}
-    fun throttlePrimeCore(throttle: Boolean) {}
+
+    fun forceUnthrottleGPU() {
+        setGpuPeakLock(true)
+    }
+
+    fun enforceNuclearHeartbeat(currentTemp: Int = 37) {
+        // Intentional no-op
+    }
+
+    fun getDeepHardwareSnapshot(): String = "Snapshot Disabled"
+
+    fun forceRefreshRate(hz: Int) {
+        thread {
+            val cmd = """
+                settings put system peak_refresh_rate $hz
+                settings put system min_refresh_rate $hz
+                settings put system user_refresh_rate $hz
+            """.trimIndent()
+            executeVerifiedCommand("Force Refresh Rate", cmd)
+        }
+    }
+
+    fun setPeakPerformanceMode(enable: Boolean) {
+        if (!isRootAvailable() || isPeakPerformanceActive == enable) return
+        isPeakPerformanceActive = enable
+
+        thread {
+            if (enable) {
+                AppLogger.log("🚀 TURBO MODE: ENGAGED (Oct-26 81-FPS Profile)")
+                repairDamagedBusAndGpuNodes()
+
+                // Freeze ONLY thermal daemons — NEVER freeze com.miui.powerkeeper
+                val stopCmd = """
+                    for d in joyose mi_thermald thermal-engine; do
+                        p=${'$'}(pidof ${'$'}d)
+                        if [ ! -z "${'$'}p" ]; then kill -STOP ${'$'}p 2>/dev/null; fi
+                    done
+                """.trimIndent()
+                executeVerifiedCommand("Freeze Thermal Daemons", stopCmd)
+
+                val killThermalsCmd = """
+                    for z in /sys/class/thermal/thermal_zone*/mode; do echo disabled > ${'$'}z 2>/dev/null; done
+                    chmod 0666 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+                    echo 10 > /sys/class/thermal/thermal_message/sconfig
+                    chmod 0444 /sys/class/thermal/thermal_message/sconfig 2>/dev/null
+                """.trimIndent()
+                executeVerifiedCommand("Lock sconfig", killThermalsCmd)
+
+                executeVerifiedCommand(
+                    "CPU Ceiling",
+                    buildCpuCeilingUnlockScript("3187200", "2457600", lockReadOnly = true)
+                )
+
+                setGpuPeakLock(true)
+                forceRefreshRate(120)
+            } else {
+                restoreStockHardwareState()
+            }
+        }
+    }
+
+    fun forceUnthrottleCPU() {
+        executeRootCommand("Force CPU Max", buildCpuCeilingUnlockScript("3187200", "2457600", lockReadOnly = true))
+    }
+
+    fun forceUnthrottlePrimeCore() = forceUnthrottleCPU()
+
+    fun throttleCPU(throttle: Boolean) {
+        if (isPrimeCoreThrottled == throttle) return
+        isPrimeCoreThrottled = throttle
+        thread {
+            if (throttle) {
+                val minF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
+                val cmd = """
+                    chmod 0644 /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq 2>/dev/null
+                    echo schedutil > /sys/devices/system/cpu/cpufreq/policy7/scaling_governor 2>/dev/null
+                    echo $minF > /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq
+                    echo $minF > /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq
+                """.trimIndent()
+                executeVerifiedCommand("Throttle Prime Core", cmd)
+            } else {
+                val maxF = readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq")
+                val minF = if (isPeakPerformanceActive) "2457600" else readSysfsNode("/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq")
+                val cmd = buildCpuCeilingUnlockScript(maxF, minF, lockReadOnly = isPeakPerformanceActive)
+                executeVerifiedCommand("Unthrottle Prime Core", cmd)
+            }
+        }
+    }
+
+    fun throttlePrimeCore(throttle: Boolean) = throttleCPU(throttle)
+
     fun optimizeBackgroundForGaming(exemptPackages: Set<String>, foregroundPkg: String) {}
     fun clearGamingOptimization() {}
 
